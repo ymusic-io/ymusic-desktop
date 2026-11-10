@@ -7,8 +7,10 @@ use gpui_kit::{App, Global};
 use tokio::runtime::Handle;
 use ym_common::http::HttpClients;
 use ym_common::log::Logger;
-use ym_engine::{CookieJar, DiskCacheStore, DynamicEngine, EngineConfig, EngineError, MemoryCookieJar};
-use ym_settings::{MemorySettings, SettingsStore};
+use ym_engine::{CookieJar, DiskCacheStore, DynamicEngine, EngineConfig, EngineError, PersistentCookieJar};
+use ym_settings::{AppDb, SettingsStore};
+
+const COOKIES_SECRET: &str = "cookies";
 
 /// The bundles every build embeds; the remote-update seam replaces them at runtime later.
 const ENGINE_JS: &str = include_str!(concat!(env!("YMUSIC_V4_DIR"), "/engine-js/build/dist/engine.js"));
@@ -40,8 +42,19 @@ impl AppGraph {
         .await
         .map_err(|error| open_failed(error.to_string()))?
         .map_err(|error| open_failed(error.to_string()))?;
-        let cookies: Arc<dyn CookieJar> = Arc::new(MemoryCookieJar::default());
-        let settings: Arc<dyn SettingsStore> = Arc::new(MemorySettings::default());
+        let app_db_path = data_dir.join("app.db");
+        let app_db = tokio::task::spawn_blocking(move || AppDb::open(&app_db_path))
+            .await
+            .map_err(|error| EngineError::site("R90005", format!("app.db: {error}")))?
+            .map_err(|error| EngineError::site("R90005", format!("app.db: {error}")))?;
+        let app_db = Arc::new(app_db);
+        let saved_cookies = app_db.secret(COOKIES_SECRET).ok().flatten();
+        let cookie_db = app_db.clone();
+        let cookies: Arc<dyn CookieJar> = Arc::new(PersistentCookieJar::new(
+            saved_cookies.as_deref(),
+            Box::new(move |bytes| Ok(cookie_db.put_secret(COOKIES_SECRET, bytes)?)),
+        ));
+        let settings: Arc<dyn SettingsStore> = app_db;
         let graph = Self {
             engine: Arc::new(
                 DynamicEngine::create(

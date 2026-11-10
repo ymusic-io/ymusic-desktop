@@ -22,6 +22,10 @@ use crate::playback::Playback;
 
 const SUGGEST_DEBOUNCE: Duration = Duration::from_millis(150);
 
+/// Shared with the JVM app: the section and Discover tab a restart resumes, by their stable ids.
+const LAST_SECTION_KEY: &str = "app.lastSection";
+const LAST_DISCOVER_TAB_KEY: &str = "app.lastDiscoverTab";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum Section {
     Discover,
@@ -41,6 +45,27 @@ impl Section {
         &[Section::PlayAgain, Section::Downloads, Section::Settings],
         &[Section::Donate, Section::Telegram, Section::Feedback],
     ];
+
+    const ALL: [Section; 9] = [
+        Section::Discover,
+        Section::YtMusic,
+        Section::Library,
+        Section::PlayAgain,
+        Section::Downloads,
+        Section::Settings,
+        Section::Donate,
+        Section::Telegram,
+        Section::Feedback,
+    ];
+
+    /// The persisted id (the Compose `AppSection.id`): stable, never reused.
+    fn id(self) -> i32 {
+        Self::ALL.iter().position(|section| *section == self).unwrap_or(0) as i32 + 1
+    }
+
+    fn from_id(id: i32) -> Option<Self> {
+        Self::ALL.get(usize::try_from(id - 1).ok()?).copied()
+    }
 
     fn label(self) -> &'static str {
         t(match self {
@@ -80,6 +105,19 @@ enum DiscoverTab {
 
 impl DiscoverTab {
     const ALL: [DiscoverTab; 3] = [DiscoverTab::Home, DiscoverTab::Trending, DiscoverTab::Recommended];
+
+    /// The persisted id (the Compose `DiscoverTab.id`).
+    fn id(self) -> i32 {
+        match self {
+            DiscoverTab::Home => 1,
+            DiscoverTab::Trending => 2,
+            DiscoverTab::Recommended => 3,
+        }
+    }
+
+    fn from_id(id: i32) -> Option<Self> {
+        Self::ALL.into_iter().find(|tab| tab.id() == id)
+    }
 
     fn label(self) -> &'static str {
         t(match self {
@@ -138,7 +176,7 @@ impl Shell {
                 }
                 InputEvent::Blur => {}
             });
-        let playback = cx.new(|_| Playback::new());
+        let playback = cx.new(|cx| Playback::new(cx));
         let mini_player = cx.new(|cx| MiniPlayer::new(playback.clone(), window, cx));
         let now_playing = cx.new(|cx| NowPlaying::new(playback.clone(), cx));
         let media_session = cx.new(|cx| MediaSession::new(playback.clone(), cx));
@@ -146,14 +184,18 @@ impl Shell {
             shell.now_playing_open = !shell.now_playing_open;
             cx.notify();
         });
+        let settings = cx.global::<AppGraph>().settings.clone();
+        let section = settings.int(LAST_SECTION_KEY, 1).ok().and_then(Section::from_id).unwrap_or(Section::Discover);
+        let discover_tab =
+            settings.int(LAST_DISCOVER_TAB_KEY, 1).ok().and_then(DiscoverTab::from_id).unwrap_or(DiscoverTab::Home);
         Self {
             playback,
             mini_player,
             now_playing,
             now_playing_open: false,
             _media_session: media_session,
-            section: Section::Discover,
-            discover_tab: DiscoverTab::Home,
+            section,
+            discover_tab,
             roots: HashMap::new(),
             stacks: HashMap::new(),
             search,
@@ -259,6 +301,7 @@ impl Shell {
             stack.pushed.clear();
         }
         self.section = section;
+        persist_setting(cx, LAST_SECTION_KEY, section.id().to_string());
         cx.notify();
     }
 
@@ -330,6 +373,7 @@ impl Shell {
                                         entity
                                             .update(cx, |shell, cx| {
                                                 shell.discover_tab = tab;
+                                                persist_setting(cx, LAST_DISCOVER_TAB_KEY, tab.id().to_string());
                                                 cx.notify();
                                             })
                                             .ok();
@@ -473,6 +517,17 @@ impl Render for Shell {
             )
             .child(self.mini_player.clone())
     }
+}
+
+/// Writes a setting off the UI thread; a failed write is logged, the UI state stands.
+fn persist_setting(cx: &App, key: &'static str, value: String) {
+    let graph = cx.global::<AppGraph>();
+    let (settings, log) = (graph.settings.clone(), graph.log.clone());
+    graph.tokio.spawn_blocking(move || {
+        if let Err(error) = settings.put_raw(key, value) {
+            log.warn(&format!("R90006 setting {key} not saved"), Some(error.as_ref()));
+        }
+    });
 }
 
 impl std::hash::Hash for FeedSource {

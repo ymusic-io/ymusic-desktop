@@ -15,6 +15,8 @@ use ym_mse::MseHost;
 use crate::feed::error_text;
 use crate::graph::{AppGraph, PLAYER_JS, on_core};
 
+const VOLUME_KEY: &str = "playback.volume";
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum PlayState {
     Idle,
@@ -50,9 +52,11 @@ pub struct Playback {
 }
 
 impl Playback {
-    pub fn new() -> Self {
+    pub fn new(cx: &App) -> Self {
         // Debug runs can be silenced for automated checks.
         let muted = cfg!(debug_assertions) && std::env::var_os("YMUSIC_DEV_MUTE").is_some();
+        let saved_volume =
+            cx.global::<AppGraph>().settings.string(VOLUME_KEY, "1").ok().and_then(|raw| raw.parse::<f32>().ok());
         Self {
             session: None,
             booting: false,
@@ -66,7 +70,7 @@ impl Playback {
             duration_ms: 0,
             loading_video: None,
             gain: 1.0,
-            volume: if muted { 0.0 } else { 1.0 },
+            volume: if muted { 0.0 } else { saved_volume.unwrap_or(1.0).clamp(0.0, 1.0) },
             _status: None,
         }
     }
@@ -139,6 +143,11 @@ impl Playback {
     pub fn set_volume(&mut self, volume: f32, cx: &mut Context<Self>) {
         self.volume = volume.clamp(0.0, 1.0);
         self.apply_volume();
+        let settings = cx.global::<AppGraph>().settings.clone();
+        let raw = format!("{:.2}", self.volume);
+        let saved =
+            on_core(cx, async move { tokio::task::spawn_blocking(move || settings.put_raw(VOLUME_KEY, raw)).await });
+        cx.background_executor().spawn(saved).detach();
         cx.notify();
     }
 

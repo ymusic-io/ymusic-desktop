@@ -36,3 +36,5 @@ R90001 - app boot: the engine cache store could not be opened (data dir I/O, ind
 R90002 - playback: the native MSE host could not be created
 R90003 - playback: the player reported an error state without a code of its own
 R90004 - media session: the OS media controls could not be created or attached (logged; the app runs without them)
+R90005 - app boot: app.db could not be opened
+R90006 - a setting could not be saved to app.db (logged; the UI state stands)
