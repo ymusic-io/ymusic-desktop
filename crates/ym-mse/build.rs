@@ -89,4 +89,9 @@ fn main() {
         println!("cargo:rustc-link-lib=dylib={name}");
     }
     println!("cargo:ffmpeg_lib={}", lib.display());
+    // The packed ffmpeg executable (rpath @loader_path to its own libav) the download mux runs.
+    let packed = ffmpeg.join("pack/ffmpeg");
+    if packed.is_file() {
+        println!("cargo:ffmpeg_bin={}", packed.display());
+    }
 }
