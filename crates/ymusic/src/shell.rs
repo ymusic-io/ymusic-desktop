@@ -217,8 +217,8 @@ impl Shell {
         if !cfg!(debug_assertions) {
             return;
         }
-        if let Ok(spec) = std::env::var("YMUSIC_DEV_EFFECTS") {
-            self.dev_effects(&spec, cx);
+        if let Ok(spec) = std::env::var("YMUSIC_DEV_PLAYER") {
+            self.dev_player(&spec, cx);
         }
         let Ok(route) = std::env::var("YMUSIC_DEV_ROUTE") else { return };
         match route.split_once(':') {
@@ -274,19 +274,32 @@ impl Shell {
         });
     }
 
-    /// Debug: `<speed>:<pitch>:<preset index>` applied at start.
-    fn dev_effects(&mut self, spec: &str, cx: &mut Context<Self>) {
-        let parts: Vec<&str> = spec.split(':').collect();
-        let number = |index: usize| parts.get(index).and_then(|part| part.parse::<f32>().ok());
+    /// Debug: `speed=2,pitch=1,preset=1,loop=One,shuffle=1,sleep=<seconds>` applied at start.
+    fn dev_player(&mut self, spec: &str, cx: &mut Context<Self>) {
         let mut effects = self.playback.read(cx).effects;
-        effects.speed = number(0).unwrap_or(effects.speed);
-        effects.pitch = number(1).unwrap_or(effects.pitch);
-        if let Some((_, bands)) = parts
-            .get(2)
-            .and_then(|part| part.parse::<usize>().ok())
-            .and_then(|index| crate::audio_effects::EQ_PRESETS.get(index))
-        {
-            effects.tone.eq_db = *bands;
+        for (key, value) in spec.split(',').filter_map(|pair| pair.split_once('=')) {
+            let number = value.parse::<f32>().ok();
+            match key {
+                "speed" => effects.speed = number.unwrap_or(effects.speed),
+                "pitch" => effects.pitch = number.unwrap_or(effects.pitch),
+                "preset" => {
+                    if let Some((_, bands)) =
+                        value.parse::<usize>().ok().and_then(|index| crate::audio_effects::EQ_PRESETS.get(index))
+                    {
+                        effects.tone.eq_db = *bands;
+                    }
+                }
+                "loop" => {
+                    let mode = crate::queue_nav::LoopMode::from_name(value);
+                    self.playback.update(cx, |playback, cx| playback.set_loop_mode(mode, cx));
+                }
+                "shuffle" => self.playback.update(cx, |playback, cx| playback.set_shuffle(value == "1", cx)),
+                "sleep" => {
+                    let duration = value.parse().ok().map(std::time::Duration::from_secs);
+                    self.playback.update(cx, |playback, cx| playback.set_sleep_timer(duration, cx));
+                }
+                _ => {}
+            }
         }
         self.playback.update(cx, |playback, cx| playback.set_effects(effects, cx));
     }

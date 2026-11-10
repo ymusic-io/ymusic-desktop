@@ -3,14 +3,16 @@
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::base::slider::{SliderEvent, SliderState};
 use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::component::slider::Slider;
 use gpui_kit::component::spinner::Spinner;
-use gpui_kit::component::{ActiveTheme, Disableable, Icon, Sizable, StyledExt, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme, Disableable, Icon, Selectable, Sizable, StyledExt, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
-use ym_i18n::{Str, t};
+use ym_i18n::{Str, t, tf};
 
 use crate::playback::{PlayState, Playback};
+use crate::queue_nav::LoopMode;
 
 /// The user asked to open (or close) Now Playing.
 pub struct ToggleNowPlaying;
@@ -64,6 +66,49 @@ impl MiniPlayer {
     }
 }
 
+const SLEEP_PRESET_MINUTES: [u64; 5] = [15, 30, 45, 60, 90];
+
+impl MiniPlayer {
+    fn sleep_button(&self, remaining: Option<std::time::Duration>, after_current: bool) -> impl IntoElement {
+        let tooltip = match remaining {
+            Some(left) => tf(Str::SleepPausingIn, &[&clock(left.as_millis() as i64)]),
+            None if after_current => t(Str::SleepPausingAfterTrack).to_owned(),
+            None => t(Str::CdSleepTimer).to_owned(),
+        };
+        let playback = self.playback.clone();
+        let armed = remaining.is_some() || after_current;
+        Button::new("sleep-timer")
+            .ghost()
+            .small()
+            .icon(Icon::new(Lucide::Timer))
+            .selected(armed)
+            .tooltip(tooltip)
+            .dropdown_menu_with_anchor(Anchor::BottomRight, move |mut menu, _, _| {
+                for minutes in SLEEP_PRESET_MINUTES {
+                    let playback = playback.clone();
+                    menu =
+                        menu.item(PopupMenuItem::new(tf(Str::SleepMinutes, &[&minutes])).on_click(move |_, _, cx| {
+                            playback.update(cx, |playback, cx| {
+                                playback.set_sleep_timer(Some(std::time::Duration::from_secs(minutes * 60)), cx)
+                            })
+                        }));
+                }
+                let end_of_track = playback.clone();
+                menu = menu.item(PopupMenuItem::new(t(Str::SleepEndOfTrack)).checked(after_current).on_click(
+                    move |_, _, cx| end_of_track.update(cx, |playback, cx| playback.set_sleep_after_current(true, cx)),
+                ));
+                if armed {
+                    let off = playback.clone();
+                    menu =
+                        menu.separator().item(PopupMenuItem::new(t(Str::SleepTurnOff)).on_click(move |_, _, cx| {
+                            off.update(cx, |playback, cx| playback.set_sleep_timer(None, cx))
+                        }));
+                }
+                menu
+            })
+    }
+}
+
 pub fn clock(ms: i64) -> String {
     let seconds = ms.max(0) / 1000;
     let (hours, minutes, seconds) = (seconds / 3600, seconds / 60 % 60, seconds % 60);
@@ -77,7 +122,10 @@ impl Render for MiniPlayer {
         let theme = cx.theme();
         let state = playback.state.clone();
         let (position, duration) = (playback.position_ms, playback.duration_ms);
-        let has_next = playback.index + 1 < playback.queue.len();
+        let has_next = playback.has_next();
+        let (loop_mode, shuffle) = (playback.nav.loop_mode, playback.nav.shuffle);
+        let sleep_remaining = playback.sleep_remaining();
+        let sleep_after_current = playback.sleep_after_current;
         let thumb = item.thumb(120);
         let artist = item.artist.clone();
         let failure = match &state {
@@ -151,6 +199,17 @@ impl Render for MiniPlayer {
                             .gap_2()
                             .items_center()
                             .child(
+                                Button::new("shuffle")
+                                    .ghost()
+                                    .small()
+                                    .icon(Icon::new(Lucide::Shuffle))
+                                    .selected(shuffle)
+                                    .tooltip(t(Str::CdShuffle))
+                                    .on_click(cx.listener(move |player, _, _, cx| {
+                                        player.playback.update(cx, |playback, cx| playback.set_shuffle(!shuffle, cx))
+                                    })),
+                            )
+                            .child(
                                 Button::new("previous")
                                     .ghost()
                                     .icon(Icon::new(Lucide::SkipBack))
@@ -169,6 +228,27 @@ impl Render for MiniPlayer {
                                     .on_click(cx.listener(|player, _, _, cx| {
                                         player.playback.update(cx, |playback, cx| playback.next(cx))
                                     })),
+                            )
+                            .child(
+                                Button::new("repeat")
+                                    .ghost()
+                                    .small()
+                                    .icon(Icon::new(if loop_mode == LoopMode::One {
+                                        Lucide::Repeat1
+                                    } else {
+                                        Lucide::Repeat
+                                    }))
+                                    .selected(loop_mode != LoopMode::None)
+                                    .tooltip(t(match loop_mode {
+                                        LoopMode::None => Str::CdRepeatOff,
+                                        LoopMode::All => Str::CdRepeatAll,
+                                        LoopMode::One => Str::CdRepeatOne,
+                                    }))
+                                    .on_click(cx.listener(move |player, _, _, cx| {
+                                        player
+                                            .playback
+                                            .update(cx, |playback, cx| playback.set_loop_mode(loop_mode.cycled(), cx))
+                                    })),
                             ),
                     )
                     .child(
@@ -184,9 +264,10 @@ impl Render for MiniPlayer {
             )
             .child(
                 h_flex()
-                    .w(px(160.))
+                    .w(px(200.))
                     .gap_2()
                     .items_center()
+                    .child(self.sleep_button(sleep_remaining, sleep_after_current))
                     .child(Icon::new(Lucide::Volume2).small().text_color(theme.muted_foreground))
                     .child(div().flex_1().child(Slider::new(&self.volume))),
             )

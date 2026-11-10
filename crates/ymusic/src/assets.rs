@@ -20,7 +20,11 @@ gpui_kit::assets::icon_assets!(
         Pause,
         SkipBack,
         SkipForward,
-        Volume2
+        Volume2,
+        Repeat,
+        Repeat1,
+        Shuffle,
+        Timer
     ]
 );
 

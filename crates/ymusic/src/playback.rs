@@ -4,7 +4,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use futures::StreamExt;
 use futures::channel::mpsc;
@@ -20,9 +20,13 @@ use crate::audio_effects::AudioEffects;
 use crate::feed::error_text;
 use crate::graph::{AppGraph, on_core};
 use crate::local_engine::{LocalCommand, LocalEngine};
+use crate::queue_nav::{LoopMode, QueueNav};
 use crate::youtube_session::YoutubeSession;
 
 const VOLUME_KEY: &str = "playback.volume";
+/// The JVM app's keys.
+const LOOP_MODE_KEY: &str = "player.loopMode";
+const SHUFFLE_KEY: &str = "player.shuffle";
 const LOCAL_POLL: Duration = Duration::from_millis(250);
 
 #[derive(Debug, Clone, PartialEq)]
@@ -122,6 +126,10 @@ pub struct Playback {
     gain: f32,
     pub volume: f32,
     pub effects: AudioEffects,
+    pub nav: QueueNav,
+    sleep_deadline: Option<Instant>,
+    pub sleep_after_current: bool,
+    _sleep: Option<Task<()>>,
     /// Video on: loads request pictures and the presenter shows them; off: audio only.
     pub video: bool,
     /// Presents into the Now Playing video layer, which outlives it.
@@ -154,6 +162,14 @@ impl Playback {
             gain: 1.0,
             volume: if muted { 0.0 } else { saved_volume.unwrap_or(1.0).clamp(0.0, 1.0) },
             effects: AudioEffects::load(cx.global::<AppGraph>().settings.as_ref()),
+            nav: {
+                let settings = &cx.global::<AppGraph>().settings;
+                let saved = |key: &str| settings.get_raw(key).ok().flatten().unwrap_or_default();
+                QueueNav::new(LoopMode::from_name(&saved(LOOP_MODE_KEY)), saved(SHUFFLE_KEY) == "1")
+            },
+            sleep_deadline: None,
+            sleep_after_current: false,
+            _sleep: None,
             video: true,
             presenter: None,
             _status: None,
@@ -184,6 +200,7 @@ impl Playback {
                 self.fetch_radio(item.id.clone(), cx);
             }
         }
+        self.nav.reset(self.index);
         self.load_current(cx);
     }
 
@@ -192,6 +209,7 @@ impl Playback {
         self.queue_continuation = None;
         self.index = index.min(items.len().saturating_sub(1));
         self.queue = items;
+        self.nav.reset(self.index);
         self.load_current(cx);
     }
 
@@ -218,25 +236,141 @@ impl Playback {
         cx.notify();
     }
 
+    pub fn has_next(&self) -> bool {
+        self.nav.peek_next(true, self.index, self.queue.len()).is_some() || self.queue_continuation.is_some()
+    }
+
+    /// A user skip.
     pub fn next(&mut self, cx: &mut Context<Self>) {
-        if self.index + 1 < self.queue.len() {
-            self.index += 1;
+        if let Some(next) = self.nav.peek_next(true, self.index, self.queue.len()) {
+            self.nav.commit(next, self.queue.len());
+            self.index = next;
             self.load_current(cx);
         }
         self.extend_queue_if_near_end(cx);
     }
 
+    /// Restarts the current item when it has played more than ~3 s.
     pub fn previous(&mut self, cx: &mut Context<Self>) {
-        if self.position_ms > 3_000 || self.index == 0 {
+        if self.position_ms > 3_000 {
             self.seek(0, cx);
-        } else {
-            self.index -= 1;
-            self.load_current(cx);
+            return;
         }
+        match self.nav.previous(self.index, self.queue.len()) {
+            Some(previous) => {
+                self.index = previous;
+                self.load_current(cx);
+            }
+            None => self.seek(0, cx),
+        }
+    }
+
+    /// The current item finished on its own.
+    fn track_ended(&mut self, cx: &mut Context<Self>) {
+        if self.sleep_after_current {
+            self.sleep_after_current = false;
+            self.state = PlayState::Ended;
+            return;
+        }
+        match self.nav.peek_next(false, self.index, self.queue.len()) {
+            Some(next) if next == self.index => {
+                self.seek(0, cx);
+                self.resume(cx);
+            }
+            Some(next) => {
+                self.nav.commit(next, self.queue.len());
+                self.index = next;
+                self.load_current(cx);
+            }
+            None => self.state = PlayState::Ended,
+        }
+        self.extend_queue_if_near_end(cx);
+    }
+
+    fn resume(&mut self, cx: &mut Context<Self>) {
+        match self.active {
+            Some(Active::Local) => self.send_local(LocalCommand::Play),
+            _ => self.command(cx, |engine, log| async move { engine.player_play(&log).await }),
+        }
+    }
+
+    fn pause(&mut self, cx: &mut Context<Self>) {
+        match self.active {
+            Some(Active::Local) => {
+                self.send_local(LocalCommand::Pause);
+                self.state = PlayState::Paused;
+            }
+            _ => self.command(cx, |engine, log| async move { engine.player_pause(&log).await }),
+        }
+        cx.notify();
+    }
+
+    pub fn set_loop_mode(&mut self, mode: LoopMode, cx: &mut Context<Self>) {
+        self.nav.loop_mode = mode;
+        self.save_setting(LOOP_MODE_KEY, mode.name().to_owned(), cx);
+        cx.notify();
+    }
+
+    pub fn set_shuffle(&mut self, shuffle: bool, cx: &mut Context<Self>) {
+        self.nav.set_shuffle(shuffle, self.index);
+        self.save_setting(SHUFFLE_KEY, if shuffle { "1" } else { "0" }.to_owned(), cx);
+        cx.notify();
+    }
+
+    /// Pauses after `duration`; none disarms. Disarms the end-of-track sleep.
+    pub fn set_sleep_timer(&mut self, duration: Option<Duration>, cx: &mut Context<Self>) {
+        self.sleep_after_current = false;
+        self.sleep_deadline = duration.map(|duration| Instant::now() + duration);
+        self._sleep = duration.map(|_| {
+            let executor = cx.background_executor().clone();
+            cx.spawn(async move |this, cx| {
+                loop {
+                    executor.timer(Duration::from_secs(1)).await;
+                    let done = this.update(cx, |playback, cx| {
+                        let expired = playback.sleep_deadline.is_none_or(|deadline| Instant::now() >= deadline);
+                        if expired {
+                            playback.sleep_deadline = None;
+                            playback.pause(cx);
+                        }
+                        cx.notify();
+                        expired
+                    });
+                    if !matches!(done, Ok(false)) {
+                        return;
+                    }
+                }
+            })
+        });
+        cx.notify();
+    }
+
+    /// Stops when the current item ends; arming disarms a running timer.
+    pub fn set_sleep_after_current(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        if enabled {
+            self.set_sleep_timer(None, cx);
+        }
+        self.sleep_after_current = enabled;
+        cx.notify();
+    }
+
+    /// What is left of the sleep timer, ticking each second.
+    pub fn sleep_remaining(&self) -> Option<Duration> {
+        self.sleep_deadline.map(|deadline| deadline.saturating_duration_since(Instant::now()))
+    }
+
+    fn save_setting(&self, key: &'static str, value: String, cx: &mut Context<Self>) {
+        let graph = cx.global::<AppGraph>();
+        let (settings, log) = (graph.settings.clone(), graph.log.fork("playback"));
+        graph.tokio.spawn_blocking(move || {
+            if let Err(error) = settings.put_raw(key, value) {
+                log.warn(&format!("{key} could not be saved: {error}"), None);
+            }
+        });
     }
 
     pub fn jump_to(&mut self, index: usize, cx: &mut Context<Self>) {
         if index < self.queue.len() && index != self.index {
+            self.nav.commit(index, self.queue.len());
             self.index = index;
             self.load_current(cx);
             self.extend_queue_if_near_end(cx);
@@ -442,9 +576,9 @@ impl Playback {
         }
         if status.ended {
             self.state = PlayState::Ended;
-            self.next(cx);
+            self.track_ended(cx);
             cx.notify();
-            return false;
+            return self.active == Some(Active::Local) && generation == self.local_generation;
         }
         self.state = if status.playing { PlayState::Playing } else { PlayState::Paused };
         cx.notify();
@@ -569,7 +703,7 @@ impl Playback {
                 _ => self.state.clone(),
             };
             if self.state == PlayState::Ended {
-                self.next(cx);
+                self.track_ended(cx);
             }
         }
         if let Some(gain) = status.get("gain").and_then(|gain| gain.get("value")).and_then(Value::as_f64) {

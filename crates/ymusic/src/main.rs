@@ -10,6 +10,7 @@ mod media_session;
 mod mini_player;
 mod now_playing;
 mod playback;
+mod queue_nav;
 mod shell;
 mod signin;
 mod telemetry;
