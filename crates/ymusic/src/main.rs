@@ -19,6 +19,7 @@ mod queue_nav;
 mod search_view;
 mod settings_view;
 mod shell;
+mod shortcuts;
 mod signin;
 mod signin_dialog;
 mod sound_panel;
@@ -64,6 +65,7 @@ fn main() {
 
     application().with_assets(crate::assets::AppAssets).with_http_client(images).run(move |cx| {
         init(cx);
+        crate::shortcuts::bind(cx);
         // No enter/exit animations anywhere: dialogs, popovers, menus and tabs change in one frame.
         cx.set_reduce_motion(true);
         let theme = graph.settings.get_raw(crate::settings_view::THEME_KEY).ok().flatten().unwrap_or_default();

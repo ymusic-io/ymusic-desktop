@@ -4,14 +4,15 @@
 //! and the mini player along the bottom.
 
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::tab::{Tab, TabBar};
-use gpui_kit::component::{ActiveTheme, Icon, IconName, StyledExt, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme, Icon, IconName, StyledExt, WindowExt, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
-use ym_i18n::{Str, t};
+use ym_i18n::{Str, t, tf};
 
 use crate::download_dialog::{DownloadPicker, DownloadTarget};
 use crate::downloads_view::DownloadsView;
@@ -37,6 +38,9 @@ const WEBSITE: &str = "https://ymusic.io";
 /// Shared with the JVM app: the section and Discover tab a restart resumes, by their stable ids.
 const LAST_SECTION_KEY: &str = "app.lastSection";
 const LAST_DISCOVER_TAB_KEY: &str = "app.lastDiscoverTab";
+const SEEK_STEP_MS: i64 = 10_000;
+const VOLUME_STEP: f32 = 0.05;
+const DOUBLE_ESCAPE: Duration = Duration::from_millis(500);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum Section {
@@ -230,6 +234,10 @@ pub struct Shell {
     /// The (rail mode, expanded-by-width) the window last had.
     rail_auto: Option<(bool, bool)>,
     drawer_open: bool,
+    /// Holds keyboard focus when nothing else does, so the shortcuts always reach the Shell.
+    focus: FocusHandle,
+    /// The last Esc that had nothing to close; a second one soon after goes back.
+    idle_escape_at: Option<Instant>,
     playback: Entity<Playback>,
     mini_player: Entity<MiniPlayer>,
     now_playing: Entity<NowPlaying>,
@@ -299,6 +307,8 @@ impl Shell {
             rail_manual: None,
             rail_auto: None,
             drawer_open: false,
+            focus: cx.focus_handle(),
+            idle_escape_at: None,
             _subscriptions: vec![toggle, now_playing_events],
         }
     }
@@ -316,6 +326,26 @@ impl Shell {
             cx.spawn(async move |_, cx| {
                 executor.timer(std::time::Duration::from_secs(seconds)).await;
                 cx.update(|cx| cx.quit());
+            })
+            .detach();
+        }
+        // `YMUSIC_DEV_KEYS=secondary-n,escape` presses those keys 4 s apart, through the window's
+        // own key dispatch, to check shortcuts without driving the real keyboard.
+        if let Ok(keys) = std::env::var("YMUSIC_DEV_KEYS") {
+            let keys: Vec<&'static str> =
+                keys.split(',').map(|key| &*Box::leak(key.trim().to_owned().into_boxed_str())).collect();
+            let executor = cx.background_executor().clone();
+            cx.spawn_in(window, async move |_, cx| {
+                for key in keys {
+                    executor.timer(Duration::from_secs(4)).await;
+                    cx.update(|window, cx| match Keystroke::parse(key) {
+                        Ok(keystroke) => {
+                            window.dispatch_keystroke(keystroke, cx);
+                        }
+                        Err(error) => eprintln!("YMUSIC_DEV_KEYS: {key}: {error}"),
+                    })
+                    .ok();
+                }
             })
             .detach();
         }
@@ -345,7 +375,7 @@ impl Shell {
                 self.section = Section::Library;
                 let view = self.library_view(cx);
                 let index = index.parse().unwrap_or(0);
-                view.update(cx, |library, cx| library.dev_select_tab(index, cx));
+                view.update(cx, |library, cx| library.select_tab_index(index, cx));
             }
             Some(("signin-paste", path)) => self.dev_sign_in_paste(path.into(), cx),
             Some(("downloaddialog", video_id)) => {
@@ -1138,8 +1168,110 @@ impl Shell {
     }
 }
 
+impl Shell {
+    fn step_volume(&mut self, steps: f32, window: &mut Window, cx: &mut Context<Self>) {
+        let volume = self.playback.read(cx).volume;
+        let snapped = (((volume / VOLUME_STEP).round() + steps) * VOLUME_STEP).clamp(0., 1.);
+        self.playback.update(cx, |playback, cx| playback.set_volume(snapped, cx));
+        window.push_notification(tf(Str::SoundVolume, &[&((snapped * 100.).round() as i32)]), cx);
+    }
+
+    fn select_tab(&mut self, index: usize, cx: &mut Context<Self>) {
+        match self.section {
+            Section::Discover => {
+                if let Some(tab) = DiscoverTab::ALL.get(index).copied() {
+                    self.discover_tab = tab;
+                    persist_setting(cx, LAST_DISCOVER_TAB_KEY, tab.id().to_string());
+                }
+            }
+            Section::YtMusic => {
+                if let Some(tab) = MusicTab::ALL.get(index).copied() {
+                    self.music_tab = tab;
+                }
+            }
+            Section::Library => {
+                let view = self.library_view(cx);
+                view.update(cx, |library, cx| library.select_tab_index(index, cx));
+            }
+            _ => return,
+        }
+        cx.notify();
+    }
+
+    /// Peels back full screen, Now Playing, then the drawer; with none open, a second Esc within
+    /// the double-click window goes back.
+    fn escape(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if window.is_fullscreen() {
+            window.toggle_fullscreen();
+        } else if self.now_playing_open {
+            self.now_playing_open = false;
+        } else if self.drawer_open {
+            self.drawer_open = false;
+        } else if self.idle_escape_at.take().is_some_and(|at| at.elapsed() <= DOUBLE_ESCAPE) {
+            self.back(cx);
+            return;
+        } else {
+            self.idle_escape_at = Some(Instant::now());
+            return;
+        }
+        cx.notify();
+    }
+
+    fn shortcut_listeners(&self, root: Div, cx: &mut Context<Self>) -> Div {
+        use crate::shortcuts::*;
+        root.track_focus(&self.focus)
+            .key_context(CONTEXT)
+            .on_action(cx.listener(|shell, _: &TogglePlay, _, cx| shell.playback.update(cx, |p, cx| p.toggle(cx))))
+            .on_action(cx.listener(|shell, _: &SeekBackward, _, cx| {
+                shell.playback.update(cx, |p, cx| p.seek_by(-SEEK_STEP_MS, cx))
+            }))
+            .on_action(cx.listener(|shell, _: &SeekForward, _, cx| {
+                shell.playback.update(cx, |p, cx| p.seek_by(SEEK_STEP_MS, cx))
+            }))
+            .on_action(cx.listener(|shell, _: &PreviousTrack, _, cx| shell.playback.update(cx, |p, cx| p.previous(cx))))
+            .on_action(cx.listener(|shell, _: &NextTrack, _, cx| shell.playback.update(cx, |p, cx| p.next(cx))))
+            .on_action(cx.listener(|shell, _: &VolumeUp, window, cx| shell.step_volume(1., window, cx)))
+            .on_action(cx.listener(|shell, _: &VolumeDown, window, cx| shell.step_volume(-1., window, cx)))
+            .on_action(cx.listener(|shell, _: &ToggleNowPlaying, _, cx| {
+                if shell.playback.read(cx).current().is_some() {
+                    shell.now_playing_open = !shell.now_playing_open;
+                    cx.notify();
+                }
+            }))
+            .on_action(cx.listener(|shell, _: &ToggleDrawer, window, cx| {
+                let viewport = window.viewport_size();
+                let rail_mode = f32::from(viewport.width) >= 750. && f32::from(viewport.height) >= 480.;
+                if !rail_mode {
+                    shell.drawer_open = !shell.drawer_open;
+                    cx.notify();
+                }
+            }))
+            .on_action(cx.listener(|shell, _: &OpenSearch, window, cx| {
+                let searchable = matches!(shell.section, Section::Discover | Section::YtMusic | Section::Library);
+                let searching = matches!(
+                    shell.stacks.get(&shell.section).and_then(|stack| stack.pushed.last()),
+                    Some(Layer::Search(_))
+                );
+                if searchable && !searching {
+                    shell.open_search(String::new(), window, cx);
+                }
+            }))
+            .on_action(cx.listener(|_, _: &ToggleFullscreen, window, _| window.toggle_fullscreen()))
+            .on_action(cx.listener(|shell, _: &Escape, window, cx| shell.escape(window, cx)))
+            .on_action(cx.listener(|shell, _: &SelectTab1, _, cx| shell.select_tab(0, cx)))
+            .on_action(cx.listener(|shell, _: &SelectTab2, _, cx| shell.select_tab(1, cx)))
+            .on_action(cx.listener(|shell, _: &SelectTab3, _, cx| shell.select_tab(2, cx)))
+            .on_action(cx.listener(|shell, _: &SelectTab4, _, cx| shell.select_tab(3, cx)))
+            .on_action(cx.listener(|shell, _: &SelectTab5, _, cx| shell.select_tab(4, cx)))
+            .on_action(cx.listener(|shell, _: &SelectTab6, _, cx| shell.select_tab(5, cx)))
+    }
+}
+
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if window.focused(cx).is_none() {
+            self.focus.focus(window, cx);
+        }
         if let Some(target) = self.pending_download.take() {
             DownloadPicker::open(target, window, cx);
         }
@@ -1180,8 +1312,8 @@ impl Render for Shell {
                 .into_any_element()
         };
         let drawer = (self.drawer_open && !now_playing).then(|| self.render_drawer(cx));
-        v_flex()
-            .relative()
+        let root = self.shortcut_listeners(v_flex(), cx);
+        root.relative()
             .size_full()
             .when(!now_playing, |shell| shell.bg(cx.theme().background))
             .child(div().flex_1().min_h_0().w_full().child(body))

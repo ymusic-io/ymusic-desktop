@@ -123,8 +123,7 @@ impl LibraryView {
         .detach();
     }
 
-    /// Debug routes: opens the tab at `index`.
-    pub fn dev_select_tab(&mut self, index: usize, cx: &mut Context<Self>) {
+    pub fn select_tab_index(&mut self, index: usize, cx: &mut Context<Self>) {
         self.select_tab(Tab::ALL[index.min(Tab::ALL.len() - 1)], cx);
     }
 
