@@ -23,6 +23,8 @@ souvlaki = { version = "0.9", default-features = false }
 raw-window-handle = "0.6"
 ym-store = { path = "../ym-store" }
 ym-remote-config = { path = "../ym-remote-config" }
+ym-logstore = { path = "../ym-logstore" }
+ym-telemetry = { path = "../ym-telemetry" }
 uuid = { version = "1", features = ["v4"] }
 rfd = { version = "0.15", default-features = false, features = ["tokio"] }
 

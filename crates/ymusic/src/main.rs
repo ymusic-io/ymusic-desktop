@@ -9,13 +9,11 @@ mod mini_player;
 mod now_playing;
 mod playback;
 mod shell;
+mod telemetry;
 mod video_layer;
-
-use std::sync::Arc;
 
 use gpui_kit::*;
 use ym_common::http::HttpClients;
-use ym_common::log::{Level, Logger, StderrSink};
 use ym_i18n::{Str, t};
 
 use crate::graph::AppGraph;
@@ -24,11 +22,12 @@ use crate::shell::Shell;
 
 fn main() {
     ym_i18n::use_system_locale();
-    let log = Logger::new(Arc::new(StderrSink { min_level: Level::Info }));
+    let data_dir = dirs::data_local_dir().unwrap_or_else(std::env::temp_dir).join("YMusicRust");
+    let log_setup = crate::telemetry::logger(&data_dir);
+    let log = log_setup.log.clone();
     let tokio =
         tokio::runtime::Builder::new_multi_thread().enable_all().thread_name("ym-core").build().expect("tokio runtime");
     let http = HttpClients::new().expect("HTTP client");
-    let data_dir = dirs::data_local_dir().unwrap_or_else(std::env::temp_dir).join("YMusicRust");
     let graph = match tokio.block_on(AppGraph::boot(tokio.handle().clone(), log.clone(), http.clone(), data_dir)) {
         Ok(graph) => graph,
         Err(error) => {
@@ -37,6 +36,7 @@ fn main() {
             std::process::exit(1);
         }
     };
+    let _reporting = crate::telemetry::start_reporting(&log_setup, &graph);
     let images = ReqwestHttpClient::new(http.following.clone(), tokio.handle().clone());
 
     application().with_assets(crate::assets::AppAssets).with_http_client(images).run(move |cx| {

@@ -13,7 +13,9 @@ app in YMusicV4. It builds C sources and the `engine-js` bundle straight from a 
 One sentence each; detail lives in the crate's own README.
 
 - **`ym-quickjs`** — QuickJS binding: the YMusicV4 C (vendored engine + pipe transport) built with `cc`, the async `Pipe` layer on a dedicated engine thread, host timers.
-- **`ym-common`** — shared primitives: the `Logger` crumb trail and the app's reqwest clients (no cookie store; following / non-following).
+- **`ym-common`** — shared primitives: the `Logger` crumb trail (+ `TeeSink`, `DeferredSink`) and the app's reqwest clients (no cookie store; following / non-following).
+- **`ym-logstore`** — the app log (`logs.db`, the JVM schema): non-blocking enqueue, one writer, trim to a cap, claim lines for an error event, gzip export for feedback.
+- **`ym-telemetry`** — Sentry: warnings/errors as breadcrumbs, `capture_error` as the job's one event (trail + error code tags, newest app-log lines attached; network category never sent), panics by the SDK.
 - **`ym-engine`** — the engine host: boots `engine.js` (`DynamicEngine`), wire errors, logger grafting, host protocols (http, cookie, cache + `DiskCacheStore`, settings, remote-config, log/capture), `EngineManager` (boot the best bundle, swap a newer one without restart, retire with shutdown + drain), the typed `yt/*` / `ytmusic/*` command calls (`ym_engine::yt`), and the player bundle's `player/*` commands + `listen/player/*` streams (`ym_engine::player`; MSE attach and `host/main/*` proxy via `EngineConfig`).
 - **`ym-store`** — the local library: `:media-store`'s schema (version 6) on SQLite and `scan_folder`, which reconciles a directory tree into buckets and items (in-process probe, unchanged files skipped, vanished ones soft-deleted, per-file errors in the report).
 - **`ym-mse`** — YMusicV4's `:mse` C host (MSE over ffmpeg, audio DAC, video decode/presenters) built with `cc` against `ffmpeg-build/out/<slug>` (macOS so far); owns one host, the VideoToolbox layer presenter (`Presenter`), the local file player (`LocalAv` over `file_av.c`), the scan probe (`probe`, `native/ym_probe.c` on libavformat), and the process-wide C→JS event and log hooks; `native/vt_overlay_stub.c` fills the JVM-only JAWT overlay symbols.
@@ -24,7 +26,7 @@ One sentence each; detail lives in the crate's own README.
 
 ## Build inputs
 
-`YMUSIC_REMOTE_CONFIG_URL`, `YMUSIC_BUNDLE_PUBLIC_KEY` and `YMUSIC_API_KEY` are read at compile time (private release inputs; unset = embedded bundles and defaults only). The embedded bundle revisions come from YMusicV4's `Versions.engineJsVersion` / `playerJsVersion`.
+`YMUSIC_REMOTE_CONFIG_URL`, `YMUSIC_BUNDLE_PUBLIC_KEY`, `YMUSIC_API_KEY` and `YMUSIC_SENTRY_DSN` are read at compile time (private release inputs; unset = embedded bundles and defaults only). The embedded bundle revisions come from YMusicV4's `Versions.engineJsVersion` / `playerJsVersion`.
 
 ## Rules
 

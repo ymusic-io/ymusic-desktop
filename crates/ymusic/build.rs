@@ -22,7 +22,7 @@ fn main() {
         println!("cargo:rustc-env={variable}={value}");
     }
     // Private release inputs; empty leaves the app on its embedded bundles and defaults.
-    for variable in ["YMUSIC_REMOTE_CONFIG_URL", "YMUSIC_BUNDLE_PUBLIC_KEY", "YMUSIC_API_KEY"] {
+    for variable in ["YMUSIC_REMOTE_CONFIG_URL", "YMUSIC_BUNDLE_PUBLIC_KEY", "YMUSIC_API_KEY", "YMUSIC_SENTRY_DSN"] {
         println!("cargo:rerun-if-env-changed={variable}");
     }
 }
