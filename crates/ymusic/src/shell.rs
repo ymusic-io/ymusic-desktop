@@ -266,7 +266,7 @@ impl Shell {
     }
 
     /// Debug builds only: `YMUSIC_DEV_ROUTE` opens a surface at start (`trending`, `music`,
-    /// `search:<query>`, `play:<youtube url>`, `nowplaying:<url>`, `library:<dir>`, `localplay:<dir>`, `signin-paste:<file>`, `devicelink`, `signout`,
+    /// `search:<query>`, `open:<app link>`, `play:<youtube url>`, `nowplaying:<url>`, `library:<dir>`, `localplay:<dir>`, `signin-paste:<file>`, `devicelink`, `signout`,
     /// `download:<FORMAT>:<videoId>` into `YMUSIC_DEV_DOWNLOAD_DIR` or the chosen folder), for
     /// screenshots and checks without driving the UI.
     pub fn apply_dev_route(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -287,6 +287,11 @@ impl Shell {
         let Ok(route) = std::env::var("YMUSIC_DEV_ROUTE") else { return };
         match route.split_once(':') {
             Some(("search", query)) => self.show_results(query.to_owned(), cx),
+            Some(("open", link)) => {
+                if let Some(source) = FeedSource::from_link(link) {
+                    self.push(source, None, cx);
+                }
+            }
             Some(("play", url)) => self.play_link(url.to_owned(), cx),
             Some((route @ ("library" | "localplay"), path)) => {
                 self.section = Section::Library;
@@ -580,8 +585,13 @@ impl Shell {
             shell.push(event.source.clone(), event.title.clone(), cx);
         });
         let play = cx.subscribe(&view, |shell, _, event: &Play, cx| {
-            let (item, queue) = (event.item.clone(), event.queue.clone());
-            shell.playback.update(cx, |playback, cx| playback.play_feed(item, queue, cx));
+            let (item, queue, shuffle) = (event.item.clone(), event.queue.clone(), event.shuffle);
+            shell.playback.update(cx, |playback, cx| {
+                playback.play_feed(item, queue, cx);
+                if shuffle {
+                    playback.set_shuffle(true, cx);
+                }
+            });
         });
         let action = cx.subscribe(&view, |shell, _, event: &ItemAction, cx| {
             let item = event.item.clone();
@@ -713,7 +723,13 @@ impl Shell {
             Some(Layer::Feed { view, title }) => {
                 let view = view.clone();
                 // A channel's name arrives with its page header.
-                let title = if title.is_empty() { view.read(cx).title().unwrap_or_default() } else { title.clone() };
+                let title = if view.read(cx).is_playlist_page() {
+                    t(Str::DetailPlaylist).into()
+                } else if title.is_empty() {
+                    view.read(cx).title().unwrap_or_default()
+                } else {
+                    title.clone()
+                };
                 return v_flex()
                     .size_full()
                     .child(self.detail_bar(title, None, cx))

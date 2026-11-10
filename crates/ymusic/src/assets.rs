@@ -46,7 +46,10 @@ gpui_kit::assets::icon_assets!(
         Maximize,
         Minimize,
         ShieldCheck,
-        ShieldOff
+        ShieldOff,
+        ListPlus,
+        ListCheck,
+        Share2
     ]
 );
 

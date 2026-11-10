@@ -3,10 +3,13 @@
 
 use std::sync::Arc;
 
+use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::component::spinner::Spinner;
-use gpui_kit::component::{ActiveTheme, Icon, IconName, Selectable, Sizable, StyledExt, WindowExt, h_flex, v_flex};
+use gpui_kit::component::{
+    ActiveTheme, Disableable, Icon, IconName, Selectable, Sizable, StyledExt, WindowExt, h_flex, v_flex,
+};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use ym_common::log::Logger;
@@ -118,6 +121,7 @@ async fn top_tracks(history: Arc<ym_history::PlayHistory>) -> Result<YtFeedPage,
 pub struct Play {
     pub item: YtFeedItem,
     pub queue: Option<Vec<YtFeedItem>>,
+    pub shuffle: bool,
 }
 
 /// Something to do with a video besides opening it.
@@ -157,6 +161,20 @@ pub struct FeedView {
     scroll: ScrollHandle,
     /// Collapsible sections the user expanded, by index.
     expanded: std::collections::HashSet<usize>,
+    /// A header action (save, subscribe) is running.
+    header_busy: bool,
+}
+
+/// Which page header a detail page shows.
+#[derive(Clone, Copy, PartialEq)]
+enum HeaderKind {
+    /// Title, meta, and the actions row ending in the shuffle circle.
+    Playlist,
+    /// Banner, avatar, name and Subscribe.
+    Channel,
+    /// A YT Music category page: Play all and Shuffle all pills.
+    Category,
+    Generic,
 }
 
 impl EventEmitter<Navigate> for FeedView {}
@@ -175,6 +193,7 @@ impl FeedView {
             generation: 0,
             scroll: ScrollHandle::new(),
             expanded: std::collections::HashSet::new(),
+            header_busy: false,
         };
         view.reload(cx);
         view
@@ -182,6 +201,122 @@ impl FeedView {
 
     pub fn title(&self) -> Option<SharedString> {
         self.title.clone().or_else(|| self.page.page_header.as_ref()?.title.clone().map(Into::into))
+    }
+
+    /// Playlists title their bar "Playlist", not with the playlist's name.
+    pub fn is_playlist_page(&self) -> bool {
+        self.header_kind() == HeaderKind::Playlist
+    }
+
+    fn header_kind(&self) -> HeaderKind {
+        let header = self.page.page_header.as_ref();
+        let channel_like = header.is_some_and(|header| {
+            header.channel_id.is_some() || header.subscribed.is_some() || !header.banner.is_empty()
+        });
+        let playlist_like =
+            header.is_some_and(|header| header.save_playlist_id.is_some() || header.item_count.is_some());
+        match &self.source {
+            FeedSource::Playlist(_) => HeaderKind::Playlist,
+            FeedSource::Channel(_) if header.is_some() => HeaderKind::Channel,
+            FeedSource::MusicBrowse(_) if channel_like => HeaderKind::Channel,
+            FeedSource::MusicBrowse(_) if playlist_like => HeaderKind::Playlist,
+            FeedSource::MusicBrowse(_) => HeaderKind::Category,
+            _ => HeaderKind::Generic,
+        }
+    }
+
+    fn videos(&self) -> Vec<YtFeedItem> {
+        self.page
+            .sections
+            .iter()
+            .flat_map(|section| section.items.iter())
+            .filter(|item| item.kind == "video")
+            .cloned()
+            .collect()
+    }
+
+    fn play_all(&mut self, shuffle: bool, cx: &mut Context<Self>) {
+        let videos = self.videos();
+        if videos.is_empty() {
+            return;
+        }
+        let start = if shuffle { rand::Rng::random_range(&mut rand::rng(), 0..videos.len()) } else { 0 };
+        cx.emit(Play { item: videos[start].clone(), queue: Some(videos), shuffle });
+    }
+
+    fn share_page(&self) -> Option<String> {
+        match &self.source {
+            FeedSource::Playlist(url) | FeedSource::Channel(url) if url.starts_with('/') => {
+                Some(format!("https://www.youtube.com{url}"))
+            }
+            _ => {
+                let header = self.page.page_header.as_ref()?;
+                header
+                    .save_playlist_id
+                    .as_ref()
+                    .map(|id| format!("https://www.youtube.com/playlist?list={id}"))
+                    .or_else(|| header.channel_id.as_ref().map(|id| format!("https://www.youtube.com/channel/{id}")))
+            }
+        }
+    }
+
+    /// Saves the playlist to (or removes it from) the account library.
+    fn toggle_saved(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(header) = &self.page.page_header else { return };
+        let (Some(playlist_id), Some(saved)) = (header.save_playlist_id.clone(), header.saved) else { return };
+        let graph = cx.global::<AppGraph>();
+        let (engine, log) = (graph.engine(), graph.log.fork("save-playlist"));
+        let request = on_core(cx, async move { engine.save_playlist(&playlist_id, !saved, &log).await });
+        self.run_header_action(request, window, cx, move |header| {
+            header.saved = Some(!saved);
+            Some(t(if saved { Str::PlaylistRemoved } else { Str::PlaylistSaved }))
+        });
+    }
+
+    fn toggle_subscribed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(header) = &self.page.page_header else { return };
+        let (Some(channel_id), Some(subscribed)) = (header.channel_id.clone(), header.subscribed) else { return };
+        let graph = cx.global::<AppGraph>();
+        let (engine, log) = (graph.engine(), graph.log.fork("subscribe"));
+        let request = on_core(cx, async move { engine.subscribe_channel(&channel_id, !subscribed, &log).await });
+        self.run_header_action(request, window, cx, move |header| {
+            header.subscribed = Some(!subscribed);
+            None
+        });
+    }
+
+    /// Runs a header request: busy until it lands, then applies `done` (showing the message it
+    /// returns), or shows the error.
+    fn run_header_action(
+        &mut self,
+        request: impl Future<Output = Option<Result<(), EngineError>>> + 'static,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        done: impl FnOnce(&mut YtPageHeader) -> Option<&'static str> + 'static,
+    ) {
+        if self.header_busy {
+            return;
+        }
+        self.header_busy = true;
+        cx.notify();
+        cx.spawn_in(window, async move |this, cx| {
+            let result = request.await;
+            this.update_in(cx, |view, window, cx| {
+                view.header_busy = false;
+                match result {
+                    Some(Ok(())) => {
+                        if let Some(message) = view.page.page_header.as_mut().and_then(done) {
+                            window.push_notification(message, cx);
+                        }
+                    }
+                    Some(Err(error)) => window.push_notification(error_text(&error), cx),
+                    None => {}
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     fn reload(&mut self, cx: &mut Context<Self>) {
@@ -253,7 +388,7 @@ impl FeedView {
         let title = Some(SharedString::from(item.title.clone()));
         let source = match item.kind.as_str() {
             "video" => {
-                cx.emit(Play { item: item.clone(), queue });
+                cx.emit(Play { item: item.clone(), queue, shuffle: false });
                 return;
             }
             "playlist" => item
@@ -335,10 +470,184 @@ fn centered(content: impl IntoElement) -> Div {
 }
 
 impl FeedView {
-    fn render_header(&self, header: &YtPageHeader, cx: &App) -> impl IntoElement + use<> {
+    fn render_header(&self, header: &YtPageHeader, cx: &mut Context<Self>) -> AnyElement {
+        match self.header_kind() {
+            HeaderKind::Playlist => self.render_playlist_header(header, cx),
+            HeaderKind::Channel => self.render_channel_header(header, cx),
+            HeaderKind::Category => self.render_category_bar(cx),
+            HeaderKind::Generic => self.render_generic_header(header, cx),
+        }
+    }
+
+    /// Title and meta, then save · share ... the shuffle circle, over an inset divider.
+    fn render_playlist_header(&self, header: &YtPageHeader, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme().clone();
+        let meta = [header.subtitle_line1.clone(), header.subtitle_line2.clone()]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join(" · ");
+        let share = self.share_page();
+        let has_videos = self.page.sections.iter().any(|section| section.items.iter().any(|item| item.kind == "video"));
+        let mut actions = h_flex().px_4().py_2().gap_4().items_center();
+        if let Some(saved) = header.saved.filter(|_| header.save_playlist_id.is_some()) {
+            let label = t(if saved { Str::CdRemovePlaylistFromLibrary } else { Str::CdSavePlaylist });
+            actions = actions.child(if self.header_busy {
+                Spinner::new().into_any_element()
+            } else {
+                Button::new("playlist-save")
+                    .ghost()
+                    .icon(if saved { Lucide::ListCheck } else { Lucide::ListPlus })
+                    .selected(saved)
+                    .accessibility_label(label)
+                    .tooltip(label)
+                    .on_click(cx.listener(|view, _, window, cx| view.toggle_saved(window, cx)))
+                    .into_any_element()
+            });
+        }
+        actions = actions.child(
+            Button::new("playlist-share")
+                .ghost()
+                .icon(Lucide::Share2)
+                .disabled(share.is_none())
+                .accessibility_label(t(Str::CdShare))
+                .tooltip(t(Str::CdShare))
+                .on_click(move |_, window, cx| {
+                    if let Some(link) = share.clone() {
+                        cx.write_to_clipboard(ClipboardItem::new_string(link));
+                        window.push_notification(t(Str::LinkCopied), cx);
+                    }
+                }),
+        );
+        actions = actions.child(div().flex_1()).child(
+            div()
+                .id("playlist-shuffle")
+                .role(Role::Button)
+                .aria_label(t(Str::ShuffleAll))
+                .tab_stop(true)
+                .size(px(46.))
+                .flex_shrink_0()
+                .rounded_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(theme.primary)
+                .text_color(theme.primary_foreground)
+                .when(has_videos, |circle| circle.cursor_pointer())
+                .when(!has_videos, |circle| circle.opacity(0.5))
+                .child(Icon::new(Lucide::Shuffle))
+                .on_click(cx.listener(|view, _, _, cx| view.play_all(true, cx))),
+        );
+        v_flex()
+            .child(
+                v_flex()
+                    .px_4()
+                    .pt_2()
+                    .gap_1()
+                    .when_some(header.title.clone(), |column, title| {
+                        column.child(div().text_xl().font_semibold().child(title))
+                    })
+                    .when(!meta.is_empty(), |column| {
+                        column.child(div().text_sm().text_color(theme.muted_foreground).child(meta))
+                    }),
+            )
+            .child(actions)
+            .child(div().mx_4().mb_2().h(px(1.)).bg(theme.border))
+            .into_any_element()
+    }
+
+    /// The banner (when there is one), then avatar, name, meta and Subscribe.
+    fn render_channel_header(&self, header: &YtPageHeader, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme().clone();
+        let avatar = thumb_for(&header.thumbs, 128);
+        let banner = thumb_for(&header.banner, 1280);
+        let meta = [header.subtitle_line1.clone(), header.subtitle_line2.clone()]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join(" · ");
+        let subscribe = header.subscribed.filter(|_| header.channel_id.is_some()).map(|subscribed| {
+            let label = t(if subscribed { Str::Subscribed } else { Str::Subscribe });
+            let pill = Button::new("subscribe").rounded_full().label(label).loading(self.header_busy);
+            let pill = if subscribed { pill.outline() } else { pill.primary() };
+            pill.on_click(cx.listener(|view, _, window, cx| view.toggle_subscribed(window, cx)))
+        });
+        v_flex()
+            .when_some(banner, |column, url| {
+                column.child(
+                    div()
+                        .mx_4()
+                        .mt_2()
+                        .h(px(96.))
+                        .rounded(px(12.))
+                        .overflow_hidden()
+                        .bg(theme.secondary)
+                        .child(img(url).size_full().object_fit(ObjectFit::Cover)),
+                )
+            })
+            .child(
+                h_flex()
+                    .px_4()
+                    .py_2()
+                    .gap_4()
+                    .items_center()
+                    .when_some(avatar, |row, url| {
+                        row.child(img(url).size(px(64.)).rounded_full().object_fit(ObjectFit::Cover).flex_shrink_0())
+                    })
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .when_some(header.title.clone(), |column, title| {
+                                column.child(div().font_semibold().truncate().child(title))
+                            })
+                            .when(!meta.is_empty(), |column| {
+                                column.child(
+                                    div()
+                                        .pt(px(2.))
+                                        .text_sm()
+                                        .text_color(theme.muted_foreground)
+                                        .truncate()
+                                        .child(meta),
+                                )
+                            }),
+                    )
+                    .children(subscribe),
+            )
+            .into_any_element()
+    }
+
+    /// Play all (filled) and Shuffle all (outlined) pills.
+    fn render_category_bar(&self, cx: &mut Context<Self>) -> AnyElement {
+        h_flex()
+            .px_4()
+            .py_2()
+            .gap_2()
+            .child(
+                Button::new("play-all")
+                    .primary()
+                    .rounded_full()
+                    .icon(Lucide::Play)
+                    .label(t(Str::PlayAll))
+                    .on_click(cx.listener(|view, _, _, cx| view.play_all(false, cx))),
+            )
+            .child(
+                Button::new("shuffle-all")
+                    .outline()
+                    .rounded_full()
+                    .icon(Lucide::Shuffle)
+                    .label(t(Str::ShuffleAll))
+                    .on_click(cx.listener(|view, _, _, cx| view.play_all(true, cx))),
+            )
+            .into_any_element()
+    }
+
+    fn render_generic_header(&self, header: &YtPageHeader, cx: &App) -> AnyElement {
         let theme = cx.theme();
         let avatar = thumb_for(&header.thumbs, 160);
         h_flex()
+            .px_4()
+            .pt_2()
             .gap_4()
             .pb_2()
             .when_some(avatar, |row, url| {
@@ -358,6 +667,7 @@ impl FeedView {
                         column.child(div().text_sm().text_color(theme.muted_foreground).child(line))
                     }),
             )
+            .into_any_element()
     }
 }
 
@@ -479,7 +789,7 @@ impl FeedView {
 
     fn menu_action(&mut self, item: YtFeedItem, action: MenuAction, window: &mut Window, cx: &mut Context<Self>) {
         match action {
-            MenuAction::PlaySingle => cx.emit(Play { item: item.clone(), queue: Some(vec![item]) }),
+            MenuAction::PlaySingle => cx.emit(Play { item: item.clone(), queue: Some(vec![item]), shuffle: false }),
             MenuAction::Feed(action) => cx.emit(ItemAction { item, action }),
             MenuAction::Share => {
                 if let Some(link) = share_link(&item) {
@@ -949,28 +1259,30 @@ impl Render for FeedView {
         let bands = Bands::for_width(feed_width(window));
         let theme = cx.theme().clone();
         let mut column = v_flex().w_full().pb_4();
-        if let Some(header) = &self.page.page_header {
-            column = column.child(div().px_4().pt_2().child(self.render_header(header, cx)));
+        let tabs = self.page.page_tabs.clone();
+        let selected_tab = tabs.iter().position(|tab| tab.selected).unwrap_or(0);
+        let on_home_tab = tabs.get(selected_tab).is_none_or(|tab| tab.home);
+        let category = self.header_kind() == HeaderKind::Category;
+        if on_home_tab && let Some(header) = self.page.page_header.clone() {
+            column = column.child(self.render_header(&header, cx));
+        } else if category {
+            column = column.child(self.render_category_bar(cx));
         }
-        if !self.page.page_tabs.is_empty() {
-            let tabs = self.page.page_tabs.clone();
-            let selected = tabs.iter().position(|tab| tab.selected).unwrap_or(0);
+        let tab_row = (!tabs.is_empty()).then(|| {
             let urls: Vec<Option<String>> = tabs.iter().map(|tab| tab.url.clone()).collect();
             let entity = cx.entity().downgrade();
-            column = column.child(
-                div().px_3().child(
-                    gpui_kit::component::tab::TabBar::new("page-tabs")
-                        .underline()
-                        .selected_index(selected)
-                        .children(tabs.iter().map(|tab| gpui_kit::component::tab::Tab::new().label(tab.title.clone())))
-                        .on_click(move |index, _, cx| {
-                            if let Some(Some(url)) = urls.get(*index).cloned() {
-                                entity.update(cx, |view, cx| view.open_tab(url, cx)).ok();
-                            }
-                        }),
-                ),
-            );
-        }
+            div().px_3().border_b_1().border_color(theme.border).child(
+                gpui_kit::component::tab::TabBar::new("page-tabs")
+                    .underline()
+                    .selected_index(selected_tab)
+                    .children(tabs.iter().map(|tab| gpui_kit::component::tab::Tab::new().label(tab.title.clone())))
+                    .on_click(move |index, _, cx| {
+                        if let Some(Some(url)) = urls.get(*index).cloned() {
+                            entity.update(cx, |view, cx| view.open_tab(url, cx)).ok();
+                        }
+                    }),
+            )
+        });
         if !self.page.chips.is_empty() {
             let mut chips = h_flex().gap_2().px_4().py_2().when(self.page.chips_wrap, |row| row.flex_wrap());
             for (index, chip) in self.page.chips.clone().into_iter().enumerate() {
@@ -984,7 +1296,7 @@ impl Render for FeedView {
                 })));
             }
             column = column.child(div().id("chips").overflow_x_scroll().child(chips));
-        } else if self.page.page_header.is_none() {
+        } else if self.page.page_header.is_none() && !category {
             column = column.child(div().h(px(6.)));
         }
 
@@ -1031,12 +1343,12 @@ impl Render for FeedView {
                 ),
             );
         }
-        div()
-            .id("feed-scroll")
+        v_flex()
             .size_full()
-            .overflow_y_scroll()
-            .track_scroll(&self.scroll)
-            .child(column)
+            .children(tab_row)
+            .child(
+                div().id("feed-scroll").flex_1().min_h_0().overflow_y_scroll().track_scroll(&self.scroll).child(column),
+            )
             .into_any_element()
     }
 }
