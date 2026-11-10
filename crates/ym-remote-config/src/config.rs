@@ -107,10 +107,22 @@ pub struct ApiIdentity {
 pub enum RelayError {
     #[error("this build has no config service")]
     NoService,
-    #[error("relay unreachable: {0}")]
+    #[error("config service unreachable: {0}")]
     Transport(String),
-    #[error("relay answered HTTP {0}")]
+    #[error("config service answered HTTP {0}")]
     Status(u16),
+}
+
+/// The config service's call errors, relay or not.
+pub type ServiceError = RelayError;
+
+/// One span to skip, in seconds; the service already merged and filtered them.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SkipSegment {
+    pub start_time: f64,
+    pub end_time: f64,
+    pub category: String,
+    pub video_duration: f64,
 }
 
 impl RelayError {
@@ -230,6 +242,36 @@ impl RemoteConfig {
             request = request.header("x-api-key", key);
         }
         Some(request)
+    }
+
+    /// The SponsorBlock spans to skip in a YouTube video, sorted; empty when it has none. HTTP 503
+    /// while the service has no SponsorBlock data yet.
+    pub async fn skip_segments(&self, video_id: &str) -> Result<Vec<SkipSegment>, ServiceError> {
+        let video_id: String = url::form_urlencoded::byte_serialize(video_id.as_bytes()).collect();
+        let request = self
+            .request(reqwest::Method::GET, &format!("/v1/sponsorblock/segments?v={video_id}"))
+            .ok_or(ServiceError::NoService)?;
+        let response = request.send().await.map_err(ServiceError::transport)?;
+        if !response.status().is_success() {
+            return Err(ServiceError::Status(response.status().as_u16()));
+        }
+        let body: serde_json::Value = serde_json::from_slice(&response.bytes().await.map_err(ServiceError::transport)?)
+            .map_err(|_| ServiceError::Status(0))?;
+        let number = |segment: &serde_json::Value, key: &str| segment.get(key).and_then(serde_json::Value::as_f64);
+        body.get("segments")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .map(|segment| {
+                Some(SkipSegment {
+                    start_time: number(segment, "startTime")?,
+                    end_time: number(segment, "endTime")?,
+                    category: segment.get("category")?.as_str()?.to_owned(),
+                    video_duration: number(segment, "videoDuration").unwrap_or(0.0),
+                })
+            })
+            .collect::<Option<Vec<_>>>()
+            .ok_or(ServiceError::Status(0))
     }
 
     /// Opens a one-shot relay slot for a device-link handoff; returns its id.

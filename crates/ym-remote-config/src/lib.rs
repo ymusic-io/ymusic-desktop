@@ -5,4 +5,6 @@ mod bundle;
 mod config;
 
 pub use bundle::{BundleError, BundleSource, VerifiedBundle, verify_signature};
-pub use config::{ApiIdentity, AppUpdate, BundleVersion, RelayError, RemoteConfig, RemoteConfigData};
+pub use config::{
+    ApiIdentity, AppUpdate, BundleVersion, RelayError, RemoteConfig, RemoteConfigData, ServiceError, SkipSegment,
+};
