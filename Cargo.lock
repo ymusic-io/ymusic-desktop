@@ -9219,6 +9219,7 @@ dependencies = [
  "ym-common",
  "ym-download",
  "ym-engine",
+ "ym-history",
  "ym-i18n",
  "ym-logstore",
  "ym-mse",

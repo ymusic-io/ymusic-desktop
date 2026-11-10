@@ -9,6 +9,8 @@ mod local_engine;
 mod media_session;
 mod mini_player;
 mod now_playing;
+mod play_again;
+mod play_history;
 mod playback;
 mod queue_nav;
 mod shell;

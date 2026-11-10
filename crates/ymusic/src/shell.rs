@@ -19,6 +19,8 @@ use crate::library::{LibraryView, PlayLocal};
 use crate::media_session::MediaSession;
 use crate::mini_player::{MiniPlayer, ToggleNowPlaying};
 use crate::now_playing::NowPlaying;
+use crate::play_again::{PlayAgainView, ResumeQueue};
+use crate::play_history::HistoryRecorder;
 use crate::playback::Playback;
 
 const SUGGEST_DEBOUNCE: Duration = Duration::from_millis(150);
@@ -158,7 +160,9 @@ pub struct Shell {
     now_playing: Entity<NowPlaying>,
     now_playing_open: bool,
     library: Option<Entity<LibraryView>>,
+    play_again: Option<Entity<PlayAgainView>>,
     _media_session: Entity<MediaSession>,
+    _history: Entity<HistoryRecorder>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -182,6 +186,7 @@ impl Shell {
         let mini_player = cx.new(|cx| MiniPlayer::new(playback.clone(), window, cx));
         let now_playing = cx.new(|cx| NowPlaying::new(playback.clone(), cx));
         let media_session = cx.new(|cx| MediaSession::new(playback.clone(), cx));
+        let history = cx.new(|cx| HistoryRecorder::new(playback.clone(), cx));
         let toggle = cx.subscribe(&mini_player, |shell, _, _: &ToggleNowPlaying, cx| {
             shell.now_playing_open = !shell.now_playing_open;
             cx.notify();
@@ -196,7 +201,9 @@ impl Shell {
             now_playing,
             now_playing_open: false,
             library: None,
+            play_again: None,
             _media_session: media_session,
+            _history: history,
             section,
             discover_tab,
             roots: HashMap::new(),
@@ -216,6 +223,14 @@ impl Shell {
     pub fn apply_dev_route(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !cfg!(debug_assertions) {
             return;
+        }
+        if let Some(seconds) = std::env::var("YMUSIC_DEV_QUIT_AFTER").ok().and_then(|value| value.parse().ok()) {
+            let executor = cx.background_executor().clone();
+            cx.spawn(async move |_, cx| {
+                executor.timer(std::time::Duration::from_secs(seconds)).await;
+                cx.update(|cx| cx.quit());
+            })
+            .detach();
         }
         if let Ok(spec) = std::env::var("YMUSIC_DEV_PLAYER") {
             self.dev_player(&spec, cx);
@@ -240,8 +255,30 @@ impl Shell {
             }
             _ if route == "trending" => self.discover_tab = DiscoverTab::Trending,
             _ if route == "music" => self.section = Section::YtMusic,
+            _ if route == "playagain" => self.section = Section::PlayAgain,
+            Some(("playagain", "resume")) => {
+                self.section = Section::PlayAgain;
+                let view = self.play_again_view(cx);
+                view.update(cx, |view, cx| view.resume_newest(cx));
+            }
             _ => {}
         }
+    }
+
+    fn play_again_view(&mut self, cx: &mut Context<Self>) -> Entity<PlayAgainView> {
+        if let Some(view) = &self.play_again {
+            return view.clone();
+        }
+        let history = cx.global::<AppGraph>().history.clone();
+        let view = cx.new(|cx| PlayAgainView::new(history, cx));
+        let resume = cx.subscribe(&view, |shell, _, event: &ResumeQueue, cx| {
+            let (queue_id, items, index, start_ms) =
+                (event.queue_id.clone(), event.items.clone(), event.index, event.start_ms);
+            shell.playback.update(cx, |playback, cx| playback.resume_queue(queue_id, items, index, start_ms, cx));
+        });
+        self._subscriptions.push(resume);
+        self.play_again = Some(view.clone());
+        view
     }
 
     fn library_view(&mut self, cx: &mut Context<Self>) -> Entity<LibraryView> {
@@ -484,6 +521,11 @@ impl Shell {
             stack.pushed.clear();
         }
         self.section = section;
+        if section == Section::PlayAgain
+            && let Some(view) = &self.play_again
+        {
+            view.update(cx, |view, cx| view.refresh(cx));
+        }
         persist_setting(cx, LAST_SECTION_KEY, section.id().to_string());
         cx.notify();
     }
@@ -570,6 +612,7 @@ impl Shell {
             }
             Section::YtMusic => self.root(FeedSource::MusicHome, cx).into_any_element(),
             Section::Library => self.library_view(cx).into_any_element(),
+            Section::PlayAgain => self.play_again_view(cx).into_any_element(),
             other => {
                 let theme = cx.theme();
                 div()

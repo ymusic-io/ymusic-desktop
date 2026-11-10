@@ -59,6 +59,7 @@ pub struct AppGraph {
     /// The YouTube player session playback and downloads share.
     pub youtube: Arc<YoutubeSessions>,
     pub downloads: DownloadService,
+    pub history: Arc<ym_history::PlayHistory>,
 }
 
 impl Global for AppGraph {}
@@ -181,6 +182,14 @@ impl AppGraph {
             .map_err(|error| boot_error("R90015", "downloads")(error.to_string()))?
             .map_err(boot_error("R90015", "downloads"))?;
 
+        let history_path = data_dir.join("play_history.db");
+        let history = Arc::new(
+            tokio::task::spawn_blocking(move || ym_history::PlayHistory::open(&history_path))
+                .await
+                .map_err(|error| boot_error("R90016", "play history")(error.to_string()))?
+                .map_err(|error| boot_error("R90016", "play history")(error.to_string()))?,
+        );
+
         let graph = Self {
             engines,
             tokio,
@@ -194,6 +203,7 @@ impl AppGraph {
             cookies_locked,
             youtube,
             downloads,
+            history,
         };
         graph.follow_published_bundles(engine_source);
         Ok(graph)

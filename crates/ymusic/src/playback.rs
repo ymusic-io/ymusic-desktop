@@ -54,6 +54,10 @@ pub struct QueueItem {
     pub duration_ms: Option<i64>,
     pub duration_label: Option<String>,
     pub thumbs: Vec<YtThumb>,
+    /// A local file's play-history key: its YouTube id when tagged, else size and length.
+    pub history_code: Option<String>,
+    /// A local file downloaded from YouTube (its `composer` tag).
+    pub youtube_vid: Option<String>,
 }
 
 impl QueueItem {
@@ -65,6 +69,8 @@ impl QueueItem {
             duration_ms: item.duration_ms,
             duration_label: item.duration.clone(),
             thumbs: item.thumbs.clone(),
+            history_code: None,
+            youtube_vid: None,
         }
     }
 
@@ -76,6 +82,12 @@ impl QueueItem {
             duration_ms: item.duration_ms,
             duration_label: item.duration_ms.map(crate::mini_player::clock),
             thumbs: Vec::new(),
+            history_code: Some(
+                item.youtube_vid
+                    .clone()
+                    .unwrap_or_else(|| format!("@{}:{}", item.file_size, item.duration_ms.unwrap_or(0) / 1000)),
+            ),
+            youtube_vid: item.youtube_vid.clone(),
         }
     }
 
@@ -93,7 +105,7 @@ impl QueueItem {
         }
     }
 
-    fn video_id(&self) -> Option<&str> {
+    pub fn video_id(&self) -> Option<&str> {
         match &self.source {
             Source::YouTube(video_id) => Some(video_id),
             Source::Local(_) => None,
@@ -117,6 +129,12 @@ pub struct Playback {
     active: Option<Active>,
     pub queue: Vec<QueueItem>,
     pub index: usize,
+    /// Names the queue the last play started: Play again saves it under this.
+    pub queue_id: String,
+    /// Bumped whenever the queue's items change.
+    pub queue_revision: u64,
+    /// Where the next load starts, once.
+    start_position_ms: i64,
     queue_continuation: Option<String>,
     loading_queue: bool,
     pub state: PlayState,
@@ -153,6 +171,9 @@ impl Playback {
             active: None,
             queue: Vec::new(),
             index: 0,
+            queue_id: String::new(),
+            queue_revision: 0,
+            start_position_ms: 0,
             queue_continuation: None,
             loading_queue: false,
             state: PlayState::Idle,
@@ -200,7 +221,35 @@ impl Playback {
                 self.fetch_radio(item.id.clone(), cx);
             }
         }
+        self.new_queue();
+        self.load_current(cx);
+    }
+
+    fn new_queue(&mut self) {
+        self.queue_id = uuid::Uuid::new_v4().to_string();
+        self.queue_revision += 1;
         self.nav.reset(self.index);
+    }
+
+    /// Resumes a saved queue as the same queue, `start_ms` into its current item.
+    pub fn resume_queue(
+        &mut self,
+        queue_id: String,
+        items: Vec<QueueItem>,
+        index: usize,
+        start_ms: i64,
+        cx: &mut Context<Self>,
+    ) {
+        if items.is_empty() {
+            return;
+        }
+        self.queue_continuation = None;
+        self.index = index.min(items.len() - 1);
+        self.queue = items;
+        self.queue_id = queue_id;
+        self.queue_revision += 1;
+        self.nav.reset(self.index);
+        self.start_position_ms = start_ms.max(0);
         self.load_current(cx);
     }
 
@@ -209,7 +258,7 @@ impl Playback {
         self.queue_continuation = None;
         self.index = index.min(items.len().saturating_sub(1));
         self.queue = items;
-        self.nav.reset(self.index);
+        self.new_queue();
         self.load_current(cx);
     }
 
@@ -484,8 +533,12 @@ impl Playback {
         }
     }
 
-    fn load_request(&self, video_id: &str) -> LoadRequest {
+    /// Takes the pending start position.
+    fn load_request(&mut self, video_id: &str) -> LoadRequest {
         let mut request = LoadRequest::audio(video_id);
+        request.start_position_ms = std::mem::take(&mut self.start_position_ms);
+        request.speed = self.effects.speed;
+        request.pitch = self.effects.pitch;
         if self.video {
             request.quality = Some("auto".into());
             request.audio_only = false;
@@ -536,6 +589,10 @@ impl Playback {
                 self.local_generation += 1;
                 self.bind_presenter();
                 self.send_local(LocalCommand::Load { path, video: self.video });
+                let start = std::mem::take(&mut self.start_position_ms);
+                if start > 0 {
+                    self.send_local(LocalCommand::Seek(start));
+                }
                 self.poll_local(cx);
             }
         }
@@ -731,6 +788,7 @@ impl Playback {
                         .filter(|item| item.kind == "video" && Some(&item.id) != current.as_ref())
                         .map(QueueItem::from_feed);
                     playback.queue.extend(items);
+                    playback.queue_revision += 1;
                     playback.queue_continuation = page.continuation;
                     cx.notify();
                 }
@@ -761,6 +819,7 @@ impl Playback {
                         .filter(|item| item.kind == "video")
                         .map(QueueItem::from_feed);
                     playback.queue.extend(items);
+                    playback.queue_revision += 1;
                     playback.queue_continuation = page.continuation;
                     cx.notify();
                 }
