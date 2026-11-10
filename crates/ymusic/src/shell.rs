@@ -274,7 +274,7 @@ impl Shell {
         });
     }
 
-    /// Debug: `speed=2,pitch=1,preset=1,loop=One,shuffle=1,sleep=<seconds>` applied at start.
+    /// Debug: `speed=2,pitch=1,preset=1,loop=One,shuffle=1,sleep=<seconds>,video=0,boot=1` applied at start.
     fn dev_player(&mut self, spec: &str, cx: &mut Context<Self>) {
         let mut effects = self.playback.read(cx).effects;
         for (key, value) in spec.split(',').filter_map(|pair| pair.split_once('=')) {
@@ -294,6 +294,17 @@ impl Shell {
                     self.playback.update(cx, |playback, cx| playback.set_loop_mode(mode, cx));
                 }
                 "shuffle" => self.playback.update(cx, |playback, cx| playback.set_shuffle(value == "1", cx)),
+                "video" => self.playback.update(cx, |playback, cx| playback.set_video(value != "0", cx)),
+                "boot" => {
+                    let graph = cx.global::<AppGraph>();
+                    let (sessions, log) = (graph.youtube.clone(), graph.log.fork("dev-player"));
+                    graph.tokio.spawn(async move {
+                        match sessions.get().await {
+                            Ok(_) => log.info("youtube session booted"),
+                            Err(error) => log.warn("youtube session boot failed", Some(&error)),
+                        }
+                    });
+                }
                 "sleep" => {
                     let duration = value.parse().ok().map(std::time::Duration::from_secs);
                     self.playback.update(cx, |playback, cx| playback.set_sleep_timer(duration, cx));
