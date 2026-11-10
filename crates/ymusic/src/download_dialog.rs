@@ -357,7 +357,7 @@ impl Render for DownloadPicker {
                 .caption
                 .as_ref()
                 .and_then(|key| options.captions.iter().find(|caption| caption.key() == *key))
-                .map(|caption| caption_label(caption))
+                .map(caption_label)
                 .unwrap_or_else(|| t(Str::DownloadCaptionsOff).to_owned());
             let current = if self.format().captions_as_lyrics() && self.caption.is_some() {
                 tf(Str::DownloadCaptionsAsLyrics, &[&current])
