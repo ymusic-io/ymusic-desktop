@@ -1,0 +1,13 @@
+# Error-code ledger for the Rust desktop app. One row per code:  R##### <flag> <explanation>
+# The R prefix keeps this set disjoint from YMusicV4's E codes: a user report maps to one throw
+# site across both apps. E codes minted by engine-js still reach this app unchanged (a JS-minted
+# code is wrapped, never re-minted) — those rows live in YMusicV4's error-codes.txt.
+#   flag  D  = DEPLOYED (shipped in a release) — burned forever: never reuse, renumber, or remove.
+#   flag  -  = not deployed — free to remove, renumber, or reallocate elsewhere.
+# On release, flip every `-` row of the shipped crates to D.
+# Mint = grep this file for a free number, add a `-` row in the same commit as the throw site.
+# Ranges: R1xxxx ym-quickjs | R2xxxx ym-engine | R3xxxx ym-common (HTTP client, shared errors)
+#         R4xxxx ym-ffmpeg | R5xxxx ym-store / ym-scanner | R6xxxx ym-player | R7xxxx ym-download / ym-ytmedia
+#         R8xxxx ym-mse | R9xxxx ym-app / ym-ui / ym-shell / ym-update / ym-settings / ym-logstore / ym-telemetry
+
+R12345 - (example) doc placeholder in AGENTS.md minting rule

@@ -29,8 +29,11 @@ One sentence each; detail lives in the crate's own README.
   documented fire-and-forget cleanup may ignore one.
 - What the user sees is a well-known category (network, disk full, …) rendered localized at the UI,
   or "Something went wrong (E12345)". Technical detail stays in logs.
-- Error codes: `E` + 5 digits, a unique literal at one throw site, minted in YMusicV4's
-  `error-codes.txt` (one global namespace across both apps).
+- Error codes: `R` + 5 digits (e.g. R12345), a unique literal at exactly one throw site, minted in
+  [`error-codes.txt`](error-codes.txt) — grep for a free number in the crate's range, add a `-` row
+  in the same commit as the throw site; on release flip the shipped rows to `D` (burned forever).
+  The `R` set is disjoint from YMusicV4's `E` codes. E codes minted by engine-js pass through this
+  app unchanged — wrap them, never re-mint.
 - Log at the birth site with the caller's forked logger trail; `capture_error` once, where a job is
   declared dead.
 
