@@ -16,6 +16,7 @@ mod play_again;
 mod play_history;
 mod playback;
 mod queue_nav;
+mod search_view;
 mod settings_view;
 mod shell;
 mod signin;
@@ -69,7 +70,7 @@ fn main() {
         crate::settings_view::apply_theme(&theme, cx);
         cx.set_global(graph);
         let options = WindowOptions {
-            window_bounds: Some(WindowBounds::centered(size(px(1180.), px(780.)), cx)),
+            window_bounds: Some(WindowBounds::centered(dev_window_size().unwrap_or(size(px(1180.), px(780.))), cx)),
             titlebar: Some(TitlebarOptions { title: Some(t(Str::AppName).into()), ..Default::default() }),
             // Debug dev-route runs float, so a window launched from a terminal still draws frames
             // (a covered window gets none) for screenshots.
@@ -91,4 +92,14 @@ fn main() {
         cx.activate(true);
     });
     drop(tokio);
+}
+
+/// Debug: `YMUSIC_DEV_WINDOW=WxH` opens the window at that size, for checking breakpoints.
+fn dev_window_size() -> Option<Size<Pixels>> {
+    if !cfg!(debug_assertions) {
+        return None;
+    }
+    let spec = std::env::var("YMUSIC_DEV_WINDOW").ok()?;
+    let (width, height) = spec.split_once('x')?;
+    Some(size(px(width.parse().ok()?), px(height.parse().ok()?)))
 }

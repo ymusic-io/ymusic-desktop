@@ -1,15 +1,14 @@
-//! The app shell: the section sidebar, a header with back / forward and search, and one
-//! navigation stack per section over its root surface.
+//! The app shell, laid out like the JVM desktop app: a navigation rail (72 collapsed, 280
+//! expanded) from 750 wide, a modal drawer below that; a top bar per section (title, Discover's
+//! icon tabs, search); pushed layers (search, results, detail pages) that bring their own back bar;
+//! and the mini player along the bottom.
 
 use std::collections::HashMap;
-use std::time::Duration;
 
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::button::{Button, ButtonVariants};
-use gpui_kit::component::input::{Input, InputEvent, InputState};
-use gpui_kit::component::sidebar::{Sidebar, SidebarHeader, SidebarMenu, SidebarMenuItem};
-use gpui_kit::component::tab::{Tab, TabBar};
-use gpui_kit::component::{ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme, Icon, IconName, StyledExt, h_flex, v_flex};
+use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use ym_i18n::{Str, t};
 
@@ -25,10 +24,14 @@ use crate::now_playing::NowPlaying;
 use crate::play_again::{PlayAgainView, ResumeQueue};
 use crate::play_history::HistoryRecorder;
 use crate::playback::{Playback, QueueItem};
+use crate::search_view::{SearchEvent, SearchView};
 use crate::settings_view::SettingsView;
 use crate::sponsor_block::SponsorBlock;
 
-const SUGGEST_DEBOUNCE: Duration = Duration::from_millis(150);
+const RAIL_COLLAPSED: f32 = 72.;
+const RAIL_EXPANDED: f32 = 280.;
+const DRAWER_WIDTH: f32 = 300.;
+const WEBSITE: &str = "https://ymusic.io";
 
 /// Shared with the JVM app: the section and Discover tab a restart resumes, by their stable ids.
 const LAST_SECTION_KEY: &str = "app.lastSection";
@@ -109,10 +112,18 @@ enum DiscoverTab {
     Home,
     Trending,
     Recommended,
+    TopTracks,
+    Account,
 }
 
 impl DiscoverTab {
-    const ALL: [DiscoverTab; 3] = [DiscoverTab::Home, DiscoverTab::Trending, DiscoverTab::Recommended];
+    const ALL: [DiscoverTab; 5] = [
+        DiscoverTab::Home,
+        DiscoverTab::Trending,
+        DiscoverTab::Recommended,
+        DiscoverTab::TopTracks,
+        DiscoverTab::Account,
+    ];
 
     /// The persisted id (the Compose `DiscoverTab.id`).
     fn id(self) -> i32 {
@@ -120,6 +131,18 @@ impl DiscoverTab {
             DiscoverTab::Home => 1,
             DiscoverTab::Trending => 2,
             DiscoverTab::Recommended => 3,
+            DiscoverTab::TopTracks => 4,
+            DiscoverTab::Account => 5,
+        }
+    }
+
+    fn icon(self) -> Lucide {
+        match self {
+            DiscoverTab::Home => Lucide::House,
+            DiscoverTab::Trending => Lucide::Music,
+            DiscoverTab::Recommended => Lucide::Star,
+            DiscoverTab::TopTracks => Lucide::TrendingUp,
+            DiscoverTab::Account => Lucide::User,
         }
     }
 
@@ -132,6 +155,8 @@ impl DiscoverTab {
             DiscoverTab::Home => Str::TabHome,
             DiscoverTab::Trending => Str::TabMusic,
             DiscoverTab::Recommended => Str::TabRecommended,
+            DiscoverTab::TopTracks => Str::TabTopTracks,
+            DiscoverTab::Account => Str::TabAccountLibrary,
         })
     }
 
@@ -140,15 +165,22 @@ impl DiscoverTab {
             DiscoverTab::Home => FeedSource::Home,
             DiscoverTab::Trending => FeedSource::Trending,
             DiscoverTab::Recommended => FeedSource::Recommended,
+            DiscoverTab::TopTracks => FeedSource::TopTracks,
+            DiscoverTab::Account => FeedSource::Account,
         }
     }
 }
 
-/// Surfaces pushed over a section's root; `forward` holds what back popped.
+/// A surface pushed over a section's root; each draws its own back bar.
+enum Layer {
+    Feed { view: Entity<FeedView>, title: SharedString },
+    Search(Entity<SearchView>),
+    Results { view: Entity<FeedView>, query: String },
+}
+
 #[derive(Default)]
 struct Stack {
-    pushed: Vec<Entity<FeedView>>,
-    forward: Vec<Entity<FeedView>>,
+    pushed: Vec<Layer>,
 }
 
 pub struct Shell {
@@ -156,10 +188,11 @@ pub struct Shell {
     discover_tab: DiscoverTab,
     roots: HashMap<FeedSource, Entity<FeedView>>,
     stacks: HashMap<Section, Stack>,
-    search: Entity<InputState>,
-    suggestions: Vec<String>,
-    suggest_generation: u64,
-    suggestions_open: bool,
+    /// The rail's state the user chose; cleared when a width breakpoint flips.
+    rail_manual: Option<bool>,
+    /// The (rail mode, expanded-by-width) the window last had.
+    rail_auto: Option<(bool, bool)>,
+    drawer_open: bool,
     playback: Entity<Playback>,
     mini_player: Entity<MiniPlayer>,
     now_playing: Entity<NowPlaying>,
@@ -183,20 +216,6 @@ pub struct Shell {
 
 impl Shell {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let search = cx.new(|cx| InputState::new(window, cx).placeholder(t(Str::SearchYoutube)));
-        let subscription =
-            cx.subscribe_in(&search, window, |shell, input, event: &InputEvent, window, cx| match event {
-                InputEvent::Change => shell.query_changed(input.read(cx).value().to_string(), cx),
-                InputEvent::PressEnter { .. } => {
-                    let query = input.read(cx).value().to_string();
-                    shell.submit_search(query, window, cx);
-                }
-                InputEvent::Focus => {
-                    shell.suggestions_open = true;
-                    cx.notify();
-                }
-                InputEvent::Blur => {}
-            });
         let playback = cx.new(|cx| Playback::new(cx));
         let mini_player = cx.new(|cx| MiniPlayer::new(playback.clone(), window, cx));
         let now_playing = cx.new(|cx| NowPlaying::new(playback.clone(), cx));
@@ -231,11 +250,10 @@ impl Shell {
             discover_tab,
             roots: HashMap::new(),
             stacks: HashMap::new(),
-            search,
-            suggestions: Vec::new(),
-            suggest_generation: 0,
-            suggestions_open: false,
-            _subscriptions: vec![subscription, toggle],
+            rail_manual: None,
+            rail_auto: None,
+            drawer_open: false,
+            _subscriptions: vec![toggle],
         }
     }
 
@@ -260,7 +278,7 @@ impl Shell {
         }
         let Ok(route) = std::env::var("YMUSIC_DEV_ROUTE") else { return };
         match route.split_once(':') {
-            Some(("search", query)) => self.submit_search(query.to_owned(), window, cx),
+            Some(("search", query)) => self.show_results(query.to_owned(), cx),
             Some(("play", url)) => self.play_link(url.to_owned(), cx),
             Some((route @ ("library" | "localplay"), path)) => {
                 self.section = Section::Library;
@@ -294,6 +312,12 @@ impl Shell {
                 self.play_link(url.to_owned(), cx);
             }
             _ if route == "trending" => self.discover_tab = DiscoverTab::Trending,
+            Some(("discovertab", index)) => {
+                self.section = Section::Discover;
+                self.discover_tab = DiscoverTab::ALL[index.parse::<usize>().unwrap_or(0).min(4)];
+            }
+            _ if route == "searchinput" => self.open_search(String::new(), window, cx),
+            _ if route == "drawer" => self.drawer_open = true,
             _ if route == "music" => self.section = Section::YtMusic,
             _ if route == "playagain" => self.section = Section::PlayAgain,
             _ if route == "downloads" => self.section = Section::Downloads,
@@ -587,29 +611,45 @@ impl Shell {
         view
     }
 
-    fn push(&mut self, source: FeedSource, title: Option<SharedString>, cx: &mut Context<Self>) {
+    fn push_layer(&mut self, layer: Layer, cx: &mut Context<Self>) {
         self.now_playing_open = false;
-        let view = self.feed_view(source, title, cx);
-        let stack = self.stacks.entry(self.section).or_default();
-        stack.pushed.push(view);
-        stack.forward.clear();
+        self.stacks.entry(self.section).or_default().pushed.push(layer);
         cx.notify();
     }
 
+    fn push(&mut self, source: FeedSource, title: Option<SharedString>, cx: &mut Context<Self>) {
+        let title = title.unwrap_or_else(|| match source {
+            FeedSource::Playlist(_) | FeedSource::MusicBrowse(_) => t(Str::A11yKindPlaylist).into(),
+            _ => SharedString::default(),
+        });
+        let view = self.feed_view(source, None, cx);
+        self.push_layer(Layer::Feed { view, title }, cx);
+    }
+
     fn back(&mut self, cx: &mut Context<Self>) {
-        let stack = self.stacks.entry(self.section).or_default();
-        if let Some(view) = stack.pushed.pop() {
-            stack.forward.push(view);
+        if self.stacks.entry(self.section).or_default().pushed.pop().is_some() {
             cx.notify();
         }
     }
 
-    fn forward(&mut self, cx: &mut Context<Self>) {
+    fn open_search(&mut self, query: String, window: &mut Window, cx: &mut Context<Self>) {
+        let view = cx.new(|cx| SearchView::new(&query, window, cx));
+        let events = cx.subscribe(&view, |shell, _, event: &SearchEvent, cx| match event {
+            SearchEvent::Submit(query) => shell.show_results(query.clone(), cx),
+            SearchEvent::Back => shell.back(cx),
+        });
+        self._subscriptions.push(events);
+        self.push_layer(Layer::Search(view), cx);
+    }
+
+    /// Results replace the search input they came from.
+    fn show_results(&mut self, query: String, cx: &mut Context<Self>) {
         let stack = self.stacks.entry(self.section).or_default();
-        if let Some(view) = stack.forward.pop() {
-            stack.pushed.push(view);
-            cx.notify();
+        if matches!(stack.pushed.last(), Some(Layer::Search(_))) {
+            stack.pushed.pop();
         }
+        let view = self.feed_view(FeedSource::Search(query.clone()), None, cx);
+        self.push_layer(Layer::Results { view, query }, cx);
     }
 
     fn select_section(&mut self, section: Section, cx: &mut Context<Self>) {
@@ -620,11 +660,10 @@ impl Shell {
             return;
         }
         self.now_playing_open = false;
+        self.drawer_open = false;
         if self.section == section {
             // Re-selecting the current section returns to its root.
-            let stack = self.stacks.entry(section).or_default();
-            stack.forward.clear();
-            stack.pushed.clear();
+            self.stacks.entry(section).or_default().pushed.clear();
         }
         self.section = section;
         if section == Section::PlayAgain
@@ -636,86 +675,10 @@ impl Shell {
         cx.notify();
     }
 
-    fn query_changed(&mut self, query: String, cx: &mut Context<Self>) {
-        self.suggest_generation += 1;
-        let generation = self.suggest_generation;
-        self.suggestions_open = true;
-        if query.trim().is_empty() {
-            self.suggestions.clear();
-            cx.notify();
-            return;
-        }
-        let graph = cx.global::<AppGraph>();
-        let (engine, log) = (graph.engine(), graph.log.fork("search"));
-        let executor = cx.background_executor().clone();
-        cx.spawn(async move |this, cx| {
-            executor.timer(SUGGEST_DEBOUNCE).await;
-            if this.read_with(cx, |shell, _| shell.suggest_generation != generation).unwrap_or(true) {
-                return;
-            }
-            let fetch = cx.update(|cx| on_core(cx, async move { engine.search_suggestions(&query, &log).await }));
-            let result = fetch.await;
-            this.update(cx, |shell, cx| {
-                if shell.suggest_generation == generation
-                    && let Some(Ok(suggestions)) = result
-                {
-                    shell.suggestions = suggestions;
-                    cx.notify();
-                }
-            })
-            .ok();
-        })
-        .detach();
-    }
-
-    fn submit_search(&mut self, query: String, window: &mut Window, cx: &mut Context<Self>) {
-        let query = query.trim().to_owned();
-        if query.is_empty() {
-            return;
-        }
-        self.suggest_generation += 1;
-        self.suggestions_open = false;
-        self.search.update(cx, |input, cx| input.set_value(query.clone(), window, cx));
-        self.push(FeedSource::Search(query.clone()), Some(query.into()), cx);
-    }
-
-    fn content(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        if self.now_playing_open && self.playback.read(cx).current().is_some() {
-            return self.now_playing.clone().into_any_element();
-        }
-        self.now_playing.read(cx).hide_video();
-        if let Some(top) = self.stacks.get(&self.section).and_then(|stack| stack.pushed.last()) {
-            return top.clone().into_any_element();
-        }
+    /// The section's root surface (below its top bar).
+    fn root_content(&mut self, cx: &mut Context<Self>) -> AnyElement {
         match self.section {
-            Section::Discover => {
-                let view = self.root(self.discover_tab.source(), cx);
-                let selected = DiscoverTab::ALL.iter().position(|tab| *tab == self.discover_tab).unwrap_or(0);
-                let entity = cx.entity().downgrade();
-                v_flex()
-                    .size_full()
-                    .child(
-                        div().px_4().pt_2().child(
-                            TabBar::new("discover-tabs")
-                                .underline()
-                                .selected_index(selected)
-                                .children(DiscoverTab::ALL.iter().map(|tab| Tab::new().label(tab.label())))
-                                .on_click(move |index, _, cx| {
-                                    if let Some(tab) = DiscoverTab::ALL.get(*index).copied() {
-                                        entity
-                                            .update(cx, |shell, cx| {
-                                                shell.discover_tab = tab;
-                                                persist_setting(cx, LAST_DISCOVER_TAB_KEY, tab.id().to_string());
-                                                cx.notify();
-                                            })
-                                            .ok();
-                                    }
-                                }),
-                        ),
-                    )
-                    .child(div().flex_1().min_h_0().child(view))
-                    .into_any_element()
-            }
+            Section::Discover => self.root(self.discover_tab.source(), cx).into_any_element(),
             Section::YtMusic => self.root(FeedSource::MusicHome, cx).into_any_element(),
             Section::Library => self.library_view(cx).into_any_element(),
             Section::PlayAgain => self.play_again_view(cx).into_any_element(),
@@ -725,115 +688,354 @@ impl Shell {
             }
             Section::Settings => {
                 let playback = self.playback.clone();
-                let view = self.settings.get_or_insert_with(|| cx.new(|cx| SettingsView::new(playback, cx))).clone();
-                view.into_any_element()
-            }
-            other => {
-                let theme = cx.theme();
-                div()
-                    .size_full()
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .justify_center()
-                    .gap_2()
-                    .child(Icon::new(other.icon()).large().text_color(theme.muted_foreground))
-                    .child(div().text_lg().child(other.label()))
-                    .child(div().text_sm().text_color(theme.muted_foreground).child(t(Str::FeedEmpty)))
+                self.settings
+                    .get_or_insert_with(|| cx.new(|cx| SettingsView::new(playback, cx)))
+                    .clone()
                     .into_any_element()
             }
+            Section::Donate | Section::Telegram => div().into_any_element(),
         }
     }
 
-    fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let mut sidebar = Sidebar::new("sections")
-            .w(px(232.))
-            .header(SidebarHeader::new().child(div().text_lg().font_semibold().child(t(Str::AppName))));
-        for group in Section::GROUPS {
-            let mut menu = SidebarMenu::new();
-            for section in group.iter().copied() {
-                menu = menu.child(
-                    SidebarMenuItem::new(section.label())
-                        .icon(section.icon())
-                        .active(self.section == section)
-                        .on_click(cx.listener(move |shell, _, _, cx| shell.select_section(section, cx))),
-                );
+    /// The top layer with its own bar, or the section's bar over its root.
+    fn render_main(&mut self, rail_mode: bool, wide: bool, cx: &mut Context<Self>) -> AnyElement {
+        let top = self.stacks.get(&self.section).and_then(|stack| stack.pushed.last());
+        match top {
+            Some(Layer::Search(view)) => return view.clone().into_any_element(),
+            Some(Layer::Feed { view, title }) => {
+                let view = view.clone();
+                // A channel's name arrives with its page header.
+                let title = if title.is_empty() { view.read(cx).title().unwrap_or_default() } else { title.clone() };
+                return v_flex()
+                    .size_full()
+                    .child(self.detail_bar(title, None, cx))
+                    .child(div().flex_1().min_h_0().child(view))
+                    .into_any_element();
             }
-            sidebar = sidebar.child(menu);
+            Some(Layer::Results { view, query }) => {
+                let (view, query) = (view.clone(), query.clone());
+                return v_flex()
+                    .size_full()
+                    .child(self.detail_bar(query.clone().into(), Some(query), cx))
+                    .child(div().flex_1().min_h_0().child(view))
+                    .into_any_element();
+            }
+            None => {}
         }
-        sidebar
+        let content = self.root_content(cx);
+        let tab_row = (self.section == Section::Discover && !wide).then(|| self.discover_tabs(false, cx));
+        v_flex()
+            .size_full()
+            .child(self.root_bar(rail_mode, wide, cx))
+            .children(tab_row)
+            .child(div().flex_1().min_h_0().child(content))
+            .into_any_element()
     }
 
-    fn render_header(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let stack = self.stacks.get(&self.section);
-        let can_back = stack.is_some_and(|stack| !stack.pushed.is_empty());
-        let can_forward = stack.is_some_and(|stack| !stack.forward.is_empty());
-        let title = stack.and_then(|stack| stack.pushed.last()).and_then(|view| view.read(cx).title());
+    /// Back, title and search, for a pushed page. `search_query` reopens the input with it.
+    fn detail_bar(&self, title: SharedString, search_query: Option<String>, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme();
         h_flex()
             .gap_2()
-            .px_3()
-            .py_2()
+            .px_2()
+            .pt(px(6.))
+            .pb(px(7.))
             .border_b_1()
             .border_color(theme.border)
             .child(
-                Button::new("back")
+                Button::new("layer-back")
                     .ghost()
-                    .icon(IconName::ChevronLeft)
+                    .icon(Icon::new(IconName::ArrowLeft))
+                    .accessibility_label(t(Str::CdBack))
                     .tooltip(t(Str::CdBack))
-                    .disabled(!can_back)
                     .on_click(cx.listener(|shell, _, _, cx| shell.back(cx))),
             )
+            .child(div().flex_1().min_w_0().truncate().text_lg().font_semibold().child(title))
             .child(
-                Button::new("forward")
+                Button::new("layer-search")
                     .ghost()
-                    .icon(IconName::ChevronRight)
-                    .disabled(!can_forward)
-                    .on_click(cx.listener(|shell, _, _, cx| shell.forward(cx))),
+                    .icon(Icon::new(IconName::Search))
+                    .accessibility_label(t(Str::CdSearch))
+                    .tooltip(t(Str::CdSearch))
+                    .on_click(cx.listener(move |shell, _, window, cx| {
+                        shell.open_search(search_query.clone().unwrap_or_default(), window, cx)
+                    })),
             )
-            .child(div().flex_1().min_w_0().truncate().font_semibold().children(title))
-            .child(
-                div()
-                    .w(px(360.))
-                    .child(Input::new(&self.search).prefix(Icon::new(IconName::Search).small()).cleanable(true)),
-            )
+            .into_any_element()
     }
 
-    fn render_suggestions(&self, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
-        if !self.suggestions_open || self.suggestions.is_empty() {
-            return None;
-        }
+    /// Hamburger (drawer mode), the section title, Discover's inline tabs when wide, search.
+    fn root_bar(&self, rail_mode: bool, wide: bool, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme();
-        let mut list = v_flex()
-            .absolute()
-            .top(px(48.))
-            .right(px(12.))
-            .w(px(360.))
-            .py_1()
-            .rounded_md()
-            .border_1()
-            .border_color(theme.border)
-            .bg(theme.background)
-            .shadow_lg();
-        for (index, suggestion) in self.suggestions.iter().take(10).enumerate() {
-            let query = suggestion.clone();
-            list = list.child(
-                h_flex()
-                    .id(("suggestion", index))
-                    .gap_2()
-                    .px_3()
-                    .py_1p5()
-                    .cursor_pointer()
-                    .hover(|style| style.bg(theme.secondary))
-                    .child(Icon::new(IconName::Search).small().text_color(theme.muted_foreground))
-                    .child(div().text_sm().truncate().child(suggestion.clone()))
-                    .on_click(cx.listener(move |shell, _, window, cx| shell.submit_search(query.clone(), window, cx))),
-            );
+        let discover = self.section == Section::Discover;
+        let title = if discover { self.discover_tab.label() } else { self.section.label() };
+        let searchable = matches!(self.section, Section::Discover | Section::YtMusic | Section::Library);
+        // The title slot keeps the widest tab label's room, so the inline tabs never shift.
+        let reserve = DiscoverTab::ALL.iter().map(|tab| tab.label().chars().count()).max().unwrap_or(0) as f32 * 9.5;
+        h_flex()
+            .gap_2()
+            .px_2()
+            .pt(px(6.))
+            .pb(px(7.))
+            .items_center()
+            .when(!wide || !discover, |bar| bar.border_b_1().border_color(theme.border))
+            .when(!rail_mode, |bar| {
+                bar.child(
+                    Button::new("open-drawer")
+                        .ghost()
+                        .icon(Icon::new(Lucide::Menu))
+                        .accessibility_label(t(Str::CdMenu))
+                        .tooltip(t(Str::CdMenu))
+                        .on_click(cx.listener(|shell, _, _, cx| {
+                            shell.drawer_open = true;
+                            cx.notify();
+                        })),
+                )
+            })
+            .when(rail_mode, |bar| bar.child(div().w(px(8.))))
+            .child(
+                div()
+                    .text_lg()
+                    .font_semibold()
+                    .truncate()
+                    .when(discover && wide, |slot| slot.min_w(px(reserve)))
+                    .when(!(discover && wide), |slot| slot.flex_1().min_w_0())
+                    .child(title),
+            )
+            .when(discover && wide, |bar| bar.child(div().pl_4().flex_1().child(self.discover_tabs(true, cx))))
+            .when(searchable, |bar| {
+                bar.child(
+                    Button::new("open-search")
+                        .ghost()
+                        .icon(Icon::new(IconName::Search))
+                        .accessibility_label(t(Str::CdSearch))
+                        .tooltip(t(Str::CdSearch))
+                        .on_click(cx.listener(|shell, _, window, cx| shell.open_search(String::new(), window, cx))),
+                )
+            })
+            .into_any_element()
+    }
+
+    /// Discover's icon tabs: inline in the bar (88 each at most) or a full-width row under it.
+    fn discover_tabs(&self, inline: bool, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme();
+        let mut row = h_flex().id("discover-tabs").role(Role::TabList).aria_label(t(Str::SectionDiscover));
+        if !inline {
+            row = row.w_full().border_b_1().border_color(theme.border);
         }
-        Some(deferred(list.on_mouse_down_out(cx.listener(|shell, _, _, cx| {
-            shell.suggestions_open = false;
-            cx.notify();
-        }))))
+        for (index, tab) in DiscoverTab::ALL.iter().copied().enumerate() {
+            let selected = tab == self.discover_tab;
+            let cell = div()
+                .id(("discover-tab", index))
+                .role(Role::Tab)
+                .aria_label(tab.label())
+                .aria_selected(selected)
+                .tab_stop(true)
+                .h(px(44.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .relative()
+                .cursor_pointer()
+                .rounded(px(10.))
+                .hover(|style| style.bg(theme.secondary))
+                .child(Icon::new(tab.icon()).text_color(if selected { theme.primary } else { theme.muted_foreground }))
+                .when(selected, |cell| {
+                    cell.child(div().absolute().bottom_0().left_2().right_2().h(px(2.)).bg(theme.primary))
+                })
+                .on_click(cx.listener(move |shell, _, _, cx| {
+                    shell.discover_tab = tab;
+                    persist_setting(cx, LAST_DISCOVER_TAB_KEY, tab.id().to_string());
+                    cx.notify();
+                }));
+            row = row.child(if inline { cell.w(px(88.)) } else { cell.flex_1() });
+        }
+        row.into_any_element()
+    }
+
+    fn toggle_rail(&mut self, expanded: bool, cx: &mut Context<Self>) {
+        self.rail_manual = Some(!expanded);
+        cx.notify();
+    }
+
+    /// The app mark, name and version, beside the rail toggle or atop the drawer.
+    fn brand(&self, logo: f32, cx: &App) -> impl IntoElement + use<> {
+        let theme = cx.theme();
+        h_flex()
+            .gap_2()
+            .items_center()
+            .child(
+                div()
+                    .size(px(logo))
+                    .flex_shrink_0()
+                    .rounded_full()
+                    .bg(theme.primary)
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(Icon::new(Lucide::Music).size(px(logo * 0.6)).text_color(theme.primary_foreground)),
+            )
+            .child(v_flex().min_w_0().child(div().font_semibold().child(t(Str::AppName))).child(
+                div().text_xs().text_color(theme.muted_foreground).child(format!("v{}", env!("CARGO_PKG_VERSION"))),
+            ))
+    }
+
+    /// One section entry: an icon-only 48 square collapsed, an icon-and-label row otherwise.
+    fn section_entry(&self, section: Section, labelled: bool, square: bool, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme();
+        let selected = self.section == section;
+        let entry = div()
+            .id(("section", section.id() as usize))
+            .role(Role::Tab)
+            .aria_label(section.label())
+            .aria_selected(selected)
+            .tab_stop(true)
+            .cursor_pointer()
+            .relative()
+            .when(selected, |entry| entry.bg(theme.secondary))
+            .hover(|style| style.bg(theme.secondary))
+            .on_click(cx.listener(move |shell, _, _, cx| shell.select_section(section, cx)));
+        let tint = if selected { theme.primary } else { theme.foreground };
+        if !labelled {
+            return entry
+                .size(px(48.))
+                .rounded(px(8.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(Icon::new(section.icon()).text_color(tint))
+                .into_any_element();
+        }
+        entry
+            .w_full()
+            .when(!square, |entry| entry.rounded(px(8.)))
+            .child(
+                h_flex()
+                    .gap_4()
+                    .px(px(20.))
+                    .py(px(11.))
+                    .items_center()
+                    .child(Icon::new(section.icon()).text_color(tint))
+                    .child(
+                        div()
+                            .flex_1()
+                            .truncate()
+                            .text_color(tint)
+                            .when(selected, |label| label.font_bold())
+                            .child(section.label()),
+                    ),
+            )
+            .when(selected, |entry| {
+                entry.child(div().absolute().left_0().top(px(6.)).w(px(3.)).h(px(33.)).bg(theme.primary))
+            })
+            .into_any_element()
+    }
+
+    fn section_groups(&self, labelled: bool, square: bool, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme().clone();
+        let mut list = v_flex().gap_1().items_center().w_full();
+        for (index, group) in Section::GROUPS.iter().enumerate() {
+            if index > 0 {
+                list = list.child(div().w_full().py_1().child(div().h(px(1.)).w_full().bg(theme.border)));
+            }
+            for section in group.iter().copied() {
+                list = list.child(self.section_entry(section, labelled, square, cx));
+            }
+        }
+        list.into_any_element()
+    }
+
+    fn render_rail(&self, expanded: bool, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme().clone();
+        let toggle = Button::new("rail-toggle")
+            .ghost()
+            .icon(Icon::new(Lucide::Menu))
+            .accessibility_label(t(Str::CdMenu))
+            .tooltip(t(Str::CdMenu))
+            .on_click(cx.listener(move |shell, _, _, cx| shell.toggle_rail(expanded, cx)));
+        let header = if expanded {
+            h_flex()
+                .gap_2()
+                .min_h(px(48.))
+                .pr_4()
+                .items_center()
+                .child(toggle)
+                .child(self.brand(24., cx))
+                .into_any_element()
+        } else {
+            h_flex().justify_center().min_h(px(48.)).child(toggle).into_any_element()
+        };
+        let website = expanded.then(|| {
+            div()
+                .id("website")
+                .role(Role::Link)
+                .aria_label("ymusic.io")
+                .tab_stop(true)
+                .pl_2()
+                .p_1()
+                .text_xs()
+                .text_color(theme.muted_foreground)
+                .cursor_pointer()
+                .child("ymusic.io")
+                .on_click(|_, _, cx| cx.open_url(WEBSITE))
+        });
+        v_flex()
+            .id("rail")
+            .role(Role::Navigation)
+            .w(px(if expanded { RAIL_EXPANDED } else { RAIL_COLLAPSED }))
+            .h_full()
+            .flex_shrink_0()
+            .border_r_1()
+            .border_color(theme.border)
+            .child(div().px_2().pt_1().child(header))
+            .child(
+                div()
+                    .id("rail-scroll")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .px_2()
+                    .py_1()
+                    .child(self.section_groups(expanded, false, cx))
+                    .children(website),
+            )
+            .into_any_element()
+    }
+
+    fn render_drawer(&self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme().clone();
+        let panel = v_flex()
+            .id("drawer")
+            .role(Role::Navigation)
+            .w(px(DRAWER_WIDTH))
+            .h_full()
+            .bg(theme.background)
+            .border_r_1()
+            .border_color(theme.border)
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .child(div().pl(px(18.)).pr(px(18.)).pt_4().pb(px(13.)).child(self.brand(46., cx)))
+            .child(div().h(px(1.)).w_full().bg(theme.border))
+            .child(
+                div()
+                    .id("drawer-scroll")
+                    .flex_1()
+                    .overflow_y_scroll()
+                    .py_2()
+                    .child(self.section_groups(true, true, cx)),
+            );
+        div()
+            .absolute()
+            .inset_0()
+            .bg(black().opacity(0.4))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|shell, _, _, cx| {
+                    shell.drawer_open = false;
+                    cx.notify();
+                }),
+            )
+            .child(panel)
+            .into_any_element()
     }
 }
 
@@ -848,26 +1050,44 @@ impl Render for Shell {
         if std::mem::take(&mut self.pending_signin) {
             crate::signin_dialog::SignInDialog::open(window, cx, |_| {});
         }
-        let content = self.content(cx);
-        let header = self.render_header(cx);
-        let suggestions = self.render_suggestions(cx);
-        let sidebar = self.render_sidebar(cx);
+        let viewport = window.viewport_size();
+        let (width, height) = (f32::from(viewport.width), f32::from(viewport.height));
+        let rail_mode = width >= 750. && height >= 480.;
+        let auto_expanded = width >= 1200.;
+        if self.rail_auto != Some((rail_mode, auto_expanded)) {
+            self.rail_auto = Some((rail_mode, auto_expanded));
+            self.rail_manual = None;
+        }
+        if rail_mode {
+            self.drawer_open = false;
+        }
+        let expanded = self.rail_manual.unwrap_or(auto_expanded);
+        // Measured as if the rail were expanded, so toggling it never moves the tabs.
+        let shell_width = if rail_mode { width - RAIL_EXPANDED } else { width };
+        let wide = (shell_width > height && shell_width >= 600.) || shell_width >= 650.;
+
+        let now_playing = self.now_playing_open && self.playback.read(cx).current().is_some();
+        if !now_playing {
+            self.now_playing.read(cx).hide_video();
+        }
+        let body = if now_playing {
+            self.now_playing.clone().into_any_element()
+        } else {
+            let main = self.render_main(rail_mode, wide, cx);
+            h_flex()
+                .size_full()
+                .when(rail_mode, |row| row.child(self.render_rail(expanded, cx)))
+                .child(div().flex_1().min_w_0().h_full().child(main))
+                .into_any_element()
+        };
+        let drawer = (self.drawer_open && !now_playing).then(|| self.render_drawer(cx));
         v_flex()
+            .relative()
             .size_full()
             .bg(cx.theme().background)
-            .child(
-                h_flex().flex_1().min_h_0().w_full().child(sidebar).child(
-                    v_flex()
-                        .relative()
-                        .flex_1()
-                        .min_w_0()
-                        .h_full()
-                        .child(header)
-                        .child(div().flex_1().min_h_0().child(content))
-                        .children(suggestions),
-                ),
-            )
+            .child(div().flex_1().min_h_0().w_full().child(body))
             .child(self.mini_player.clone())
+            .children(drawer)
     }
 }
 

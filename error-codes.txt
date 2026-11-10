@@ -93,3 +93,4 @@ R90016 - app boot: play_history.db could not be opened
 R90017 - play again: the saved queues could not be read or decoded
 R90018 - app boot: sponsor_block.db could not be opened
 R90019 - sign-in: the cookies could not be stored or the link failed for a reason other than rejection
+R90020 - top tracks: play history could not be read

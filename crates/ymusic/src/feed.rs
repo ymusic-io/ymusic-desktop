@@ -22,6 +22,10 @@ pub enum FeedSource {
     Trending,
     Recommended,
     MusicHome,
+    /// The most-watched YouTube videos from play history.
+    TopTracks,
+    /// The signed-in account's library.
+    Account,
     Playlist(String),
     Channel(String),
     MusicBrowse(String),
@@ -48,11 +52,14 @@ impl FeedSource {
     async fn load(
         self,
         engine: Arc<DynamicEngine>,
+        history: Arc<ym_history::PlayHistory>,
         continuation: Option<String>,
         log: Logger,
     ) -> Result<YtFeedPage, EngineError> {
         let continuation = continuation.as_deref();
         match &self {
+            Self::TopTracks => top_tracks(history).await,
+            Self::Account => engine.account_library(continuation, &log).await,
             Self::Home => engine.home_feed(continuation, false, &log).await,
             Self::Trending => engine.trending_music_feed(&log).await,
             Self::Recommended => engine.recommended_feed(&log).await,
@@ -66,6 +73,45 @@ impl FeedSource {
             }
         }
     }
+}
+
+/// Play history's most-watched videos as one section that plays in order.
+async fn top_tracks(history: Arc<ym_history::PlayHistory>) -> Result<YtFeedPage, EngineError> {
+    let videos = tokio::task::spawn_blocking(move || history.youtube_top(ym_history::RETAIN))
+        .await
+        .map_err(|error| EngineError::site("R90020", format!("top tracks: {error}")))?
+        .map_err(|error| EngineError::site("R90020", format!("top tracks: {error}")))?;
+    let items = videos
+        .into_iter()
+        .map(|video| YtFeedItem {
+            kind: "video".into(),
+            thumbs: vec![ym_engine::yt::YtThumb {
+                url: video
+                    .thumbnail_url
+                    .unwrap_or_else(|| format!("https://i.ytimg.com/vi/{}/mqdefault.jpg", video.video_id)),
+                w: Some(320),
+                h: Some(180),
+            }],
+            id: video.video_id,
+            title: video.title,
+            subtitle_line1: video.artist.clone(),
+            channel_title: video.artist,
+            duration: video.duration,
+            duration_ms: video.duration_ms,
+            ..YtFeedItem::default()
+        })
+        .collect::<Vec<_>>();
+    let sections = if items.is_empty() {
+        Vec::new()
+    } else {
+        vec![ym_engine::yt::YtSection {
+            layout: "grid".into(),
+            items,
+            play_mode: Some("queue".into()),
+            ..Default::default()
+        }]
+    };
+    Ok(YtFeedPage { sections, ..YtFeedPage::default() })
 }
 
 /// A request to play a video; `queue` is set when its section plays in order.
@@ -159,8 +205,8 @@ impl FeedView {
         self.generation += 1;
         let generation = self.generation;
         let graph = cx.global::<AppGraph>();
-        let (engine, log) = (graph.engine(), graph.log.fork("feed"));
-        let load = on_core(cx, self.source.clone().load(engine, continuation, log));
+        let (engine, history, log) = (graph.engine(), graph.history.clone(), graph.log.fork("feed"));
+        let load = on_core(cx, self.source.clone().load(engine, history, continuation, log));
         cx.spawn(async move |this, cx| {
             let result = load.await;
             this.update(cx, |view, cx| {

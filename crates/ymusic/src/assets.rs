@@ -33,7 +33,14 @@ gpui_kit::assets::icon_assets!(
         Disc,
         Music,
         Film,
-        Folder
+        Folder,
+        House,
+        TrendingUp,
+        Star,
+        Menu,
+        ArrowUpLeft,
+        ArrowLeft,
+        Search
     ]
 );
 
