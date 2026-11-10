@@ -4,15 +4,24 @@ use serde::Deserialize;
 use ym_common::http::HttpClients;
 use ym_common::log::{Level, Logger};
 use ym_quickjs::{LogHandler, LogLevel, PipeError, QuickJsRuntime};
+use ym_settings::SettingsStore;
 
+use crate::cache::DiskCacheStore;
+use crate::cookie::CookieJar;
 use crate::error::EngineError;
 use crate::logs::ParkedLoggers;
+use crate::settings::FeatureLookup;
 
+/// A capability left `None` is not served: the bundle's open of it is refused.
 pub struct EngineConfig {
     /// The `versions.app` the bundle gates compatibility on: the desktop versionCode sequence.
     pub app_version: i32,
     pub http: HttpClients,
     pub logger: Logger,
+    pub cookies: Option<Arc<dyn CookieJar>>,
+    pub settings: Option<Arc<dyn SettingsStore>>,
+    pub remote_features: Option<FeatureLookup>,
+    pub cache: Option<Arc<DiskCacheStore>>,
 }
 
 /// One booted `engine.js` and the host protocols it is served.
@@ -45,6 +54,19 @@ impl DynamicEngine {
         let runtime = QuickJsRuntime::new(config.app_version, None, Some(on_log)).map_err(load_failure)?;
         let parked = Arc::new(ParkedLoggers::new(config.logger));
         crate::http::install(&runtime, config.http, parked.clone());
+        if let Some(jar) = config.cookies {
+            crate::cookie::install(&runtime, jar, parked.clone());
+        }
+        if let Some(store) = config.settings {
+            crate::settings::install(&runtime, store, parked.clone());
+        }
+        if let Some(lookup) = config.remote_features {
+            crate::settings::install_remote_config(&runtime, lookup, parked.clone());
+        }
+        if let Some(store) = config.cache {
+            crate::cache_protocol::install(&runtime, store, parked.clone());
+        }
+        crate::cache_protocol::install_capture(&runtime, parked.clone());
         if let Err(error) = runtime.eval_engine(script).await {
             runtime.close().await;
             return Err(load_failure(error));

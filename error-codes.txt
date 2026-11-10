@@ -16,3 +16,14 @@ R20002 - http protocol: unexpected data on the control pipe after the head — p
 R20003 - engine bundle failed to load (runtime create or eval)
 R20004 - engine "init" health check failed (refused, not synchronous, malformed head)
 R20005 - unstructured pipe RESET without an embedded site code (decoder fallback)
+R20006 - cookie protocol: missing/invalid url, missing setCookie, or malformed head — caller bug
+R20007 - cookie protocol: the cookie jar failed
+R20008 - cache protocol: missing scope/key or malformed head — caller bug
+R20009 - cache protocol: the cache store failed (disk I/O, index)
+R20010 - cache protocol: a cache/put body sent nothing for idleTimeoutMs; staged value dropped
+R20011 - cache protocol: put overtaken by a newer put/delete of the same scope+key; staged value dropped
+R20012 - settings protocol: missing/invalid key, type, default or value — caller bug
+R20013 - settings protocol: the settings store failed
+R20014 - remote-config/get failed (missing key or malformed head)
+R20015 - log/capture: the bundle reported a failure without a code of its own
+R20016 - log/capture: malformed head

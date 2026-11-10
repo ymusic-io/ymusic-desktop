@@ -111,7 +111,7 @@ fn is_site_code(code: &str) -> bool {
     bytes.len() == 6 && matches!(bytes[0], b'E' | b'R') && bytes[1..].iter().all(u8::is_ascii_digit)
 }
 
-fn find_site_code(text: &str) -> Option<&str> {
+pub(crate) fn find_site_code(text: &str) -> Option<&str> {
     let bytes = text.as_bytes();
     (0..bytes.len().saturating_sub(5)).find_map(|start| {
         let candidate = text.get(start..start + 6)?;

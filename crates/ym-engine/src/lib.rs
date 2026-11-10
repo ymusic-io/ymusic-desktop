@@ -1,12 +1,20 @@
 //! The engine host: boots the remotely-updatable `engine.js` on QuickJS and serves its host
 //! protocols (quickjs/HOST_PROTOCOLS.md in YMusicV4), wire-identical to the Kotlin host.
 
+mod cache;
+mod cache_protocol;
+mod cookie;
 mod engine;
 mod error;
 mod head;
 mod http;
 mod logs;
+mod protocol;
+mod settings;
 
+pub use cache::{CacheEntry, CacheError, CacheMeta, Clock, DiskCacheStore, PutError};
+pub use cookie::{CookieJar, MemoryCookieJar};
 pub use engine::{DynamicEngine, EngineConfig};
 pub use error::{EngineError, ErrorDetails, ErrorKind, WireError};
 pub use logs::ParkedLoggers;
+pub use settings::FeatureLookup;
