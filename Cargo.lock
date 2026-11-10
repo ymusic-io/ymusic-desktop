@@ -9034,6 +9034,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "ym-download"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "futures",
+ "reqwest",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+ "url",
+ "ym-common",
+ "ym-engine",
+ "ym-ytmedia",
+]
+
+[[package]]
 name = "ym-engine"
 version = "0.1.0"
 dependencies = [
@@ -9147,6 +9165,23 @@ dependencies = [
  "sentry",
  "ym-common",
  "ym-logstore",
+]
+
+[[package]]
+name = "ym-ytmedia"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "bytes",
+ "futures",
+ "rand 0.9.5",
+ "reqwest",
+ "rusqlite",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+ "url",
+ "ym-common",
 ]
 
 [[package]]
