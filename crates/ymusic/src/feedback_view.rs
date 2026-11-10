@@ -3,6 +3,7 @@
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::{ActiveTheme, Icon, Sizable, StyledExt, h_flex, v_flex};
+use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use ym_i18n::{Str, t, tf};
 
@@ -73,7 +74,7 @@ impl Default for FeedbackView {
 }
 
 impl Render for FeedbackView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
         let info = Self::info(cx);
         let graph = cx.global::<AppGraph>();
@@ -90,81 +91,115 @@ impl Render for FeedbackView {
             percent_encode(t(Str::FeedbackEmailSubject)),
             percent_encode(&prefill)
         );
+        let viewport = window.viewport_size();
+        let width = crate::feed::feed_width(window);
+        let margin = if width >= 840. { 24. } else { 16. };
+        let center_vertically = width >= 840. && f32::from(viewport.height) >= 600.;
+
         let info_row = |label: &'static str, value: String| {
             h_flex()
-                .gap_3()
-                .child(div().w(px(96.)).text_sm().text_color(theme.muted_foreground).child(label))
-                .child(div().text_sm().child(value))
+                .gap_4()
+                .pr_3()
+                .child(div().w(px(96.)).flex_shrink_0().text_sm().text_color(theme.muted_foreground).child(label))
+                .child(div().flex_1().min_w_0().text_sm().child(value))
         };
-        let action = |id: &'static str, icon: Lucide, title: String, hint: &'static str, url: String| {
+        let contact = |id: &'static str, icon: Lucide, title: String, hint: &'static str, url: String| {
             h_flex()
                 .id(id)
-                .gap_3()
-                .p_3()
-                .rounded_md()
+                .role(Role::Link)
+                .aria_label(title.clone())
+                .tab_stop(true)
+                .gap_4()
+                .px_4()
+                .py_3()
+                .items_center()
+                .rounded(px(12.))
                 .border_1()
                 .border_color(theme.border)
                 .cursor_pointer()
                 .hover(|style| style.bg(theme.secondary))
-                .child(Icon::new(icon))
+                .child(
+                    div()
+                        .size(px(40.))
+                        .flex_shrink_0()
+                        .rounded_full()
+                        .bg(theme.secondary)
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(Icon::new(icon).size(px(22.))),
+                )
                 .child(
                     v_flex()
+                        .flex_1()
+                        .min_w_0()
                         .child(div().text_sm().font_medium().child(title))
-                        .child(div().text_xs().text_color(theme.muted_foreground).child(hint)),
+                        .child(div().pt(px(2.)).text_xs().text_color(theme.muted_foreground).child(hint)),
                 )
+                .child(Icon::new(Lucide::ExternalLink).size(px(18.)).text_color(theme.muted_foreground))
                 .on_click(move |_, _, cx| cx.open_url(&url))
         };
         let lines = info.lines();
-        v_flex()
-            .size_full()
-            .p_4()
+        let info_card = v_flex()
+            .gap_2()
+            .pl_4()
+            .pr_1()
+            .pt_1()
+            .pb_4()
+            .rounded(px(12.))
+            .bg(theme.secondary)
+            .child(
+                h_flex()
+                    .items_center()
+                    .child(div().flex_1().text_sm().font_semibold().child(t(Str::FeedbackInfoTitle)))
+                    .child(
+                        Button::new("copy")
+                            .small()
+                            .ghost()
+                            .label(t(if self.copied { Str::FeedbackCopied } else { Str::FeedbackCopy }))
+                            .on_click(cx.listener(move |view, _, _, cx| {
+                                cx.write_to_clipboard(ClipboardItem::new_string(lines.clone()));
+                                view.copied = true;
+                                cx.notify();
+                            })),
+                    ),
+            )
+            .child(info_row(t(Str::FeedbackDeviceId), info.device_id.clone()))
+            .child(info_row(t(Str::FeedbackApp), info.app.clone()))
+            .child(info_row(t(Str::FeedbackEngine), info.engine.clone()))
+            .child(info_row(t(Str::FeedbackLanguage), info.language.clone()))
+            .child(div().pr_3().text_xs().text_color(theme.muted_foreground).child(t(Str::FeedbackInfoNote)));
+        let column = v_flex()
+            .w_full()
+            .max_w(px(560.))
+            .px(px(margin))
+            .py_4()
             .gap_4()
-            .max_w(px(720.))
-            .child(div().text_xl().font_semibold().child(t(Str::SectionFeedback)))
             .child(div().text_sm().child(t(Str::FeedbackIntro)))
-            .child(action(
+            .child(info_card)
+            .child(contact(
                 "github",
                 Lucide::MessageCircle,
                 t(Str::FeedbackGithubTitle).to_owned(),
                 t(Str::FeedbackGithubHint),
                 github_url,
             ))
-            .child(action(
+            .child(contact(
                 "email",
                 Lucide::Send,
                 tf(Str::FeedbackEmailTitle, &[&email]),
                 t(Str::FeedbackEmailHint),
                 mailto,
             ))
-            .child(div().text_xs().text_color(theme.muted_foreground).child(t(Str::FeedbackPrefilledNote)))
-            .child(
-                v_flex()
-                    .gap_2()
-                    .p_3()
-                    .rounded_md()
-                    .bg(theme.secondary)
-                    .child(
-                        h_flex()
-                            .justify_between()
-                            .items_center()
-                            .child(div().text_sm().font_semibold().child(t(Str::FeedbackInfoTitle)))
-                            .child(
-                                Button::new("copy")
-                                    .small()
-                                    .ghost()
-                                    .label(t(if self.copied { Str::FeedbackCopied } else { Str::FeedbackCopy }))
-                                    .on_click(cx.listener(move |view, _, _, cx| {
-                                        cx.write_to_clipboard(ClipboardItem::new_string(lines.clone()));
-                                        view.copied = true;
-                                        cx.notify();
-                                    })),
-                            ),
-                    )
-                    .child(info_row(t(Str::FeedbackDeviceId), info.device_id.clone()))
-                    .child(info_row(t(Str::FeedbackApp), info.app.clone()))
-                    .child(info_row(t(Str::FeedbackEngine), info.engine.clone()))
-                    .child(info_row(t(Str::FeedbackLanguage), info.language.clone()))
-                    .child(div().text_xs().text_color(theme.muted_foreground).child(t(Str::FeedbackInfoNote))),
-            )
+            .child(div().text_xs().text_color(theme.muted_foreground).child(t(Str::FeedbackPrefilledNote)));
+        div().id("feedback-scroll").size_full().overflow_y_scroll().child(
+            h_flex()
+                .w_full()
+                .min_h_full()
+                .justify_center()
+                .when(center_vertically, |row| row.items_center())
+                .when(!center_vertically, |row| row.items_start())
+                .child(column),
+        )
     }
 }

@@ -52,7 +52,8 @@ gpui_kit::assets::icon_assets!(
         Share2,
         RefreshCw,
         ArrowUpDown,
-        Tag
+        Tag,
+        ExternalLink
     ]
 );
 
