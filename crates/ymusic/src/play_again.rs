@@ -2,7 +2,10 @@
 
 use std::sync::Arc;
 
-use gpui_kit::component::{ActiveTheme, StyledExt, h_flex, v_flex};
+use gpui_kit::assets::IconName as Lucide;
+use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
+use gpui_kit::component::{ActiveTheme, Icon, IconName, Sizable, StyledExt, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use ym_history::{PlayAgainSession, PlayHistory};
@@ -106,31 +109,114 @@ impl PlayAgainView {
     }
 }
 
-impl Render for PlayAgainView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+const CARD_MIN: f32 = 340.;
+const GAP: f32 = 16.;
+const TILE: f32 = 30.;
+const TILE_GAP: f32 = 4.;
+/// Room the Resume pill takes beside the strip.
+const RESUME_PILL: f32 = 112.;
+const MORE_LABEL: f32 = 32.;
+
+impl PlayAgainView {
+    fn play_from_beginning(&mut self, session: PlayAgainSession, cx: &mut Context<Self>) {
+        self.resume(PlayAgainSession { queue_index: 0, position_ms: 0, ..session }, cx);
+    }
+
+    fn remove(&mut self, queue_id: String, cx: &mut Context<Self>) {
+        let history = self.history.clone();
+        let delete =
+            on_core(cx, async move { tokio::task::spawn_blocking(move || history.delete_session(&queue_id)).await });
+        cx.spawn(async move |this, cx| {
+            let result = delete.await;
+            this.update(cx, |view, cx| {
+                match result {
+                    Some(Ok(Err(error))) => view.failed(&error.to_string(), cx),
+                    Some(Err(error)) => view.failed(&error.to_string(), cx),
+                    _ => {}
+                }
+                view.refresh(cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// The queue strip: as many whole 30 tiles as fit `width`, the current one ringed, then "+N".
+    fn strip(session: &PlayAgainSession, width: f32, cx: &App) -> Div {
+        let theme = cx.theme();
+        let fits = ((width - MORE_LABEL + TILE_GAP) / (TILE + TILE_GAP)).floor().max(0.) as usize;
+        let shown = session.strip_thumbs.len().min(fits);
+        let current = session.queue_index.checked_sub(session.strip_start);
+        let rest = session.queue_size.saturating_sub(session.strip_start + shown);
+        let mut row = h_flex().flex_1().min_w_0().gap(px(TILE_GAP)).items_center().overflow_hidden();
+        for (offset, thumb) in session.strip_thumbs.iter().take(shown).enumerate() {
+            row = row.child(
+                div()
+                    .size(px(TILE))
+                    .flex_shrink_0()
+                    .rounded(px(6.))
+                    .overflow_hidden()
+                    .bg(theme.secondary)
+                    .when(current == Some(offset), |tile| tile.border_1().border_color(theme.primary))
+                    .when_some(thumb.clone(), |tile, url| {
+                        tile.child(img(SharedString::from(url)).size_full().object_fit(ObjectFit::Cover))
+                    }),
+            );
+        }
+        row.when(rest > 0, |row| {
+            row.child(div().w(px(MORE_LABEL)).text_xs().text_color(theme.muted_foreground).child(format!("+{rest}")))
+        })
+    }
+
+    fn card(&self, position: usize, session: &PlayAgainSession, card_width: f32, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme().clone();
-        let mut list = v_flex().gap_1();
-        for (position, session) in self.sessions.iter().enumerate() {
-            let resume_label =
-                session.resumes_mid_item().then(|| tf(Str::PlayAgainResumeAt, &[&clock(session.position_ms)]));
-            let track = tf(Str::PlayAgainTrackOf, &[&(session.queue_index + 1), &session.queue_size]);
-            let detail =
-                [session.subtitle.clone(), Some(track), resume_label].into_iter().flatten().collect::<Vec<_>>();
-            let target = session.clone();
-            list = list.child(
+        let resume_label =
+            session.resumes_mid_item().then(|| tf(Str::PlayAgainResumeAt, &[&clock(session.position_ms)]));
+        let track = tf(Str::PlayAgainTrackOf, &[&(session.queue_index + 1), &session.queue_size]);
+        let detail = [session.subtitle.clone(), Some(track), resume_label].into_iter().flatten().collect::<Vec<_>>();
+        let detail = detail.join(" · ");
+        let view = cx.entity().downgrade();
+        let (from_start, removed) = (session.clone(), session.queue_id.clone());
+        let more = Button::new(("play-again-more", position))
+            .ghost()
+            .small()
+            .icon(IconName::EllipsisVertical)
+            .accessibility_label(t(Str::CdMore))
+            .tooltip(t(Str::CdMore))
+            .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, _| {
+                let (restart, remove) = (view.clone(), view.clone());
+                let (from_start, removed) = (from_start.clone(), removed.clone());
+                menu.item(PopupMenuItem::new(t(Str::MenuPlayFromBeginning)).on_click(move |_, _, cx| {
+                    restart.update(cx, |view, cx| view.play_from_beginning(from_start.clone(), cx)).ok();
+                }))
+                .item(PopupMenuItem::new(t(Str::MenuRemove)).on_click(move |_, _, cx| {
+                    remove.update(cx, |view, cx| view.remove(removed.clone(), cx)).ok();
+                }))
+            });
+        let target = session.clone();
+        let strip_width = card_width - 16. - 4. - 8. - 8. - RESUME_PILL;
+        v_flex()
+            .id(("play-again", position))
+            .role(Role::ListItem)
+            .aria_label(format!("{}, {detail}", session.title))
+            .rounded(px(6.))
+            .border_1()
+            .border_color(theme.border)
+            .pl_4()
+            .pr_1()
+            .pt_2()
+            .pb_4()
+            .gap_2()
+            .child(
                 h_flex()
-                    .id(("play-again", position))
-                    .gap_3()
-                    .p_2()
-                    .rounded_md()
-                    .cursor_pointer()
-                    .hover(|style| style.bg(theme.secondary))
+                    .pt_2()
+                    .gap_4()
+                    .items_center()
                     .child(
                         div()
-                            .w(px(96.))
-                            .h(px(54.))
+                            .size(px(56.))
                             .flex_shrink_0()
-                            .rounded_md()
+                            .rounded(px(10.))
                             .overflow_hidden()
                             .bg(theme.secondary)
                             .when_some(session.thumbnail_url.clone(), |frame, url| {
@@ -143,31 +229,83 @@ impl Render for PlayAgainView {
                             .min_w_0()
                             .child(div().text_sm().font_medium().truncate().child(session.title.clone()))
                             .child(
-                                div().text_xs().text_color(theme.muted_foreground).truncate().child(detail.join(" · ")),
+                                div().pt_1().text_xs().text_color(theme.muted_foreground).line_clamp(2).child(detail),
                             ),
                     )
-                    .on_click(cx.listener(move |view, _, _, cx| view.resume(target.clone(), cx))),
-            );
-        }
-        v_flex()
-            .size_full()
-            .p_4()
-            .gap_3()
-            .child(div().text_xl().font_semibold().child(t(Str::SectionPlayAgain)))
-            .when_some(self.error.clone(), |column, error| {
-                column.child(div().text_sm().text_color(theme.danger).child(error))
-            })
-            .when(self.sessions.is_empty() && self.error.is_none(), |column| {
-                column.child(div().text_sm().text_color(theme.muted_foreground).child(t(Str::PlayAgainEmpty)))
-            })
-            .child(
-                div()
-                    .id("play-again-scroll")
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .track_scroll(&self.scroll)
-                    .child(list),
+                    .child(more),
             )
+            .child(
+                h_flex().pr_2().gap_2().items_center().child(Self::strip(session, strip_width, cx)).child(
+                    Button::new(("resume", position))
+                        .outline()
+                        .rounded_full()
+                        .icon(Lucide::Play)
+                        .label(t(Str::PlayAgainResume))
+                        .on_click(cx.listener(move |view, _, _, cx| view.resume(target.clone(), cx))),
+                ),
+            )
+            .into_any_element()
+    }
+}
+
+impl Render for PlayAgainView {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme().clone();
+        if let Some(error) = self.error.clone() {
+            return v_flex()
+                .size_full()
+                .items_center()
+                .justify_center()
+                .gap_3()
+                .child(div().text_color(theme.danger).child(error))
+                .child(
+                    Button::new("reload").label(t(Str::Retry)).on_click(cx.listener(|view, _, _, cx| view.refresh(cx))),
+                )
+                .into_any_element();
+        }
+        if self.sessions.is_empty() {
+            return v_flex()
+                .size_full()
+                .items_center()
+                .justify_center()
+                .gap_2()
+                .p_6()
+                .child(Icon::new(Lucide::RotateCcwClock).size(px(56.)).text_color(theme.muted_foreground))
+                .child(
+                    div()
+                        .max_w(px(420.))
+                        .text_center()
+                        .text_color(theme.muted_foreground)
+                        .child(t(Str::PlayAgainEmpty)),
+                )
+                .into_any_element();
+        }
+        let width = crate::feed::feed_width(window);
+        let columns = ((width - 2. * GAP + GAP) / (CARD_MIN + GAP)).floor().max(1.) as usize;
+        let card_width = (width - 2. * GAP - GAP * (columns - 1) as f32) / columns as f32;
+        let mut grid = v_flex().w_full().p_4().gap_4();
+        let sessions = self.sessions.clone();
+        for (row_index, row) in sessions.chunks(columns).enumerate() {
+            let mut cells = h_flex().w_full().gap_4().items_start();
+            for (offset, session) in row.iter().enumerate() {
+                cells = cells.child(div().flex_1().min_w_0().child(self.card(
+                    row_index * columns + offset,
+                    session,
+                    card_width,
+                    cx,
+                )));
+            }
+            for _ in row.len()..columns {
+                cells = cells.child(div().flex_1());
+            }
+            grid = grid.child(cells);
+        }
+        div()
+            .id("play-again-scroll")
+            .size_full()
+            .overflow_y_scroll()
+            .track_scroll(&self.scroll)
+            .child(grid)
+            .into_any_element()
     }
 }
