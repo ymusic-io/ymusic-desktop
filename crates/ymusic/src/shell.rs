@@ -7,6 +7,7 @@ use std::collections::HashMap;
 
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::{ActiveTheme, Icon, IconName, StyledExt, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
@@ -107,6 +108,41 @@ impl Section {
     }
 }
 
+/// YT Music's text tabs.
+#[derive(Clone, Copy, PartialEq)]
+enum MusicTab {
+    Home,
+    Explore,
+    NewReleases,
+    Charts,
+    Library,
+}
+
+impl MusicTab {
+    const ALL: [MusicTab; 5] =
+        [MusicTab::Home, MusicTab::Explore, MusicTab::NewReleases, MusicTab::Charts, MusicTab::Library];
+
+    fn label(self) -> &'static str {
+        t(match self {
+            MusicTab::Home => Str::YtmusicTabHome,
+            MusicTab::Explore => Str::YtmusicTabExplore,
+            MusicTab::NewReleases => Str::YtmusicTabNewReleases,
+            MusicTab::Charts => Str::YtmusicTabCharts,
+            MusicTab::Library => Str::YtmusicTabLibrary,
+        })
+    }
+
+    fn source(self) -> FeedSource {
+        match self {
+            MusicTab::Home => FeedSource::MusicHome,
+            MusicTab::Explore => FeedSource::MusicExplore,
+            MusicTab::NewReleases => FeedSource::MusicNewReleases,
+            MusicTab::Charts => FeedSource::MusicCharts,
+            MusicTab::Library => FeedSource::MusicLibrary,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum DiscoverTab {
     Home,
@@ -186,6 +222,7 @@ struct Stack {
 pub struct Shell {
     section: Section,
     discover_tab: DiscoverTab,
+    music_tab: MusicTab,
     roots: HashMap<FeedSource, Entity<FeedView>>,
     stacks: HashMap<Section, Stack>,
     /// The rail's state the user chose; cleared when a width breakpoint flips.
@@ -256,6 +293,7 @@ impl Shell {
             _sponsor_block: sponsor_block,
             section,
             discover_tab,
+            music_tab: MusicTab::Home,
             roots: HashMap::new(),
             stacks: HashMap::new(),
             rail_manual: None,
@@ -266,7 +304,7 @@ impl Shell {
     }
 
     /// Debug builds only: `YMUSIC_DEV_ROUTE` opens a surface at start (`trending`, `music`,
-    /// `search:<query>`, `open:<app link>`, `play:<youtube url>`, `nowplaying:<url>`, `library:<dir>`, `localplay:<dir>`, `signin-paste:<file>`, `devicelink`, `signout`,
+    /// `search:<query>`, `open:<app link>`, `musictab:<n>`, `play:<youtube url>`, `nowplaying:<url>`, `library:<dir>`, `localplay:<dir>`, `signin-paste:<file>`, `devicelink`, `signout`,
     /// `download:<FORMAT>:<videoId>` into `YMUSIC_DEV_DOWNLOAD_DIR` or the chosen folder), for
     /// screenshots and checks without driving the UI.
     pub fn apply_dev_route(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -287,6 +325,10 @@ impl Shell {
         let Ok(route) = std::env::var("YMUSIC_DEV_ROUTE") else { return };
         match route.split_once(':') {
             Some(("search", query)) => self.show_results(query.to_owned(), cx),
+            Some(("musictab", index)) => {
+                self.section = Section::YtMusic;
+                self.music_tab = MusicTab::ALL[index.parse::<usize>().unwrap_or(0).min(4)];
+            }
             Some(("open", link)) => {
                 if let Some(source) = FeedSource::from_link(link) {
                     self.push(source, None, cx);
@@ -697,7 +739,7 @@ impl Shell {
     fn root_content(&mut self, cx: &mut Context<Self>) -> AnyElement {
         match self.section {
             Section::Discover => self.root(self.discover_tab.source(), cx).into_any_element(),
-            Section::YtMusic => self.root(FeedSource::MusicHome, cx).into_any_element(),
+            Section::YtMusic => self.root(self.music_tab.source(), cx).into_any_element(),
             Section::Library => self.library_view(cx).into_any_element(),
             Section::PlayAgain => self.play_again_view(cx).into_any_element(),
             Section::Downloads => self.downloads_view(cx).into_any_element(),
@@ -747,7 +789,11 @@ impl Shell {
             None => {}
         }
         let content = self.root_content(cx);
-        let tab_row = (self.section == Section::Discover && !wide).then(|| self.discover_tabs(false, cx));
+        let tab_row = match self.section {
+            Section::Discover if !wide => Some(self.discover_tabs(false, cx)),
+            Section::YtMusic => Some(self.music_tabs(cx)),
+            _ => None,
+        };
         v_flex()
             .size_full()
             .child(self.root_bar(rail_mode, wide, cx))
@@ -875,6 +921,35 @@ impl Shell {
             row = row.child(if inline { cell.w(px(88.)) } else { cell.flex_1() });
         }
         row.into_any_element()
+    }
+
+    /// YT Music's text tabs with a sliding underline, pinned under the section bar.
+    fn music_tabs(&self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme();
+        let selected = MusicTab::ALL.iter().position(|tab| *tab == self.music_tab).unwrap_or(0);
+        let shell = cx.entity().downgrade();
+        div()
+            .w_full()
+            .px_3()
+            .border_b_1()
+            .border_color(theme.border)
+            .child(
+                TabBar::new("music-tabs")
+                    .underline()
+                    .selected_index(selected)
+                    .children(MusicTab::ALL.iter().map(|tab| Tab::new().label(tab.label())))
+                    .on_click(move |index, _, cx| {
+                        if let Some(tab) = MusicTab::ALL.get(*index).copied() {
+                            shell
+                                .update(cx, |shell, cx| {
+                                    shell.music_tab = tab;
+                                    cx.notify();
+                                })
+                                .ok();
+                        }
+                    }),
+            )
+            .into_any_element()
     }
 
     fn toggle_rail(&mut self, expanded: bool, cx: &mut Context<Self>) {

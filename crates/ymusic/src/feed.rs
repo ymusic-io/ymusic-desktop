@@ -25,6 +25,11 @@ pub enum FeedSource {
     Trending,
     Recommended,
     MusicHome,
+    MusicExplore,
+    MusicNewReleases,
+    MusicCharts,
+    /// The signed-in account's YT Music library.
+    MusicLibrary,
     /// The most-watched YouTube videos from play history.
     TopTracks,
     /// The signed-in account's library.
@@ -67,6 +72,10 @@ impl FeedSource {
             Self::Trending => engine.trending_music_feed(&log).await,
             Self::Recommended => engine.recommended_feed(&log).await,
             Self::MusicHome => engine.music_home(continuation, false, &log).await,
+            Self::MusicExplore => engine.music_explore(continuation, &log).await,
+            Self::MusicNewReleases => engine.music_new_releases(continuation, &log).await,
+            Self::MusicCharts => engine.music_charts(continuation, &log).await,
+            Self::MusicLibrary => engine.music_library(continuation, &log).await,
             Self::Playlist(url) => engine.playlist_detail(url, continuation, &log).await,
             Self::Channel(url) => engine.channel_detail(url, continuation, &log).await,
             Self::MusicBrowse(url) => engine.music_browse(url, continuation, &log).await,
