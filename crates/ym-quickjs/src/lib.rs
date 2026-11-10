@@ -6,5 +6,6 @@ mod runtime;
 mod timers;
 
 pub use runtime::{
-    AcceptRegistration, BoxError, Handler, LogHandler, LogLevel, PIPE_CAP, Pipe, PipeError, QuickJsRuntime, compile,
+    AcceptRegistration, BoxError, Handler, LogHandler, LogLevel, PIPE_CAP, Pipe, PipeError, QuickJsRuntime,
+    WeakRuntime, compile,
 };

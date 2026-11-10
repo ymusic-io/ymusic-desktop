@@ -142,6 +142,19 @@ pub struct QuickJsRuntime {
     shared: Arc<Shared>,
 }
 
+/// A handle that does not keep the runtime alive — what accept handlers capture, since the
+/// runtime owns its handlers.
+#[derive(Clone)]
+pub struct WeakRuntime {
+    shared: Weak<Shared>,
+}
+
+impl WeakRuntime {
+    pub fn upgrade(&self) -> Option<QuickJsRuntime> {
+        self.shared.upgrade().map(|shared| QuickJsRuntime { shared })
+    }
+}
+
 impl QuickJsRuntime {
     /// Starts the engine thread and creates a bare engine (no script yet). Register handlers with
     /// [`Self::on_accept`], then boot the bundle with [`Self::eval_engine`]: the bundle's
@@ -159,6 +172,10 @@ impl QuickJsRuntime {
         let runtime = Self { shared };
         crate::timers::install(&runtime);
         Ok(runtime)
+    }
+
+    pub fn downgrade(&self) -> WeakRuntime {
+        WeakRuntime { shared: Arc::downgrade(&self.shared) }
     }
 
     /// Serves pipes JS opens with exactly `command`, replacing any previous handler.
