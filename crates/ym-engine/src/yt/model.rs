@@ -239,3 +239,125 @@ impl WireLinkTarget {
         }
     }
 }
+
+wire! {
+    /// The signed-in account card; `signed_in` is the cookie-gate truth, the rest display metadata.
+    pub struct YtAccountInfo {
+        pub signed_in: bool,
+        pub name: Option<String>,
+        pub email: Option<String>,
+        pub handle: Option<String>,
+        pub channel_id: Option<String>,
+        pub thumbs: Vec<YtThumb>,
+    }
+}
+
+wire! {
+    pub(crate) struct SignedIn {
+        pub signed_in: bool,
+    }
+}
+
+wire! {
+    pub(crate) struct UrlResult {
+        pub url: String,
+    }
+}
+
+wire! {
+    /// Where a bot challenge is cleared: a browser on `url` presenting `user_agent`.
+    pub struct YtVerifyTarget {
+        pub url: String,
+        pub user_agent: String,
+    }
+}
+
+wire! {
+    pub struct YtFactoid {
+        pub value: String,
+        pub label: String,
+    }
+}
+
+wire! {
+    pub struct YtVideoDetails {
+        pub title: Option<String>,
+        pub channel_title: Option<String>,
+        pub channel_url: Option<String>,
+        pub channel_thumbs: Vec<YtThumb>,
+        pub subscribers: Option<String>,
+        pub factoids: Vec<YtFactoid>,
+        pub like_count: Option<String>,
+        pub like_count_liked: Option<String>,
+        /// `LIKE`, `DISLIKE` or `INDIFFERENT` (empty reads as indifferent).
+        pub like_status: String,
+        /// The rating token per target status.
+        pub rate_tokens: std::collections::BTreeMap<String, String>,
+        pub description: Option<String>,
+        pub comments_count: Option<String>,
+        pub comments_continuation: Option<String>,
+    }
+}
+
+wire! {
+    pub struct YtComment {
+        pub id: String,
+        pub text: String,
+        pub author: Option<String>,
+        pub author_thumbs: Vec<YtThumb>,
+        pub author_channel_url: Option<String>,
+        pub published: Option<String>,
+        pub likes: Option<String>,
+        pub likes_liked: Option<String>,
+        pub liked: bool,
+        pub disliked: bool,
+        pub like_token: Option<String>,
+        pub unlike_token: Option<String>,
+        pub dislike_token: Option<String>,
+        pub undislike_token: Option<String>,
+        pub delete_token: Option<String>,
+        pub edit_token: Option<String>,
+        pub reply_token: Option<String>,
+        pub reply_placeholder: Option<String>,
+        pub reply_count: Option<String>,
+        pub replies_continuation: Option<String>,
+        pub pinned: Option<String>,
+        pub hearted: bool,
+        pub by_creator: bool,
+        pub verified: bool,
+    }
+}
+
+wire! {
+    pub struct YtCommentPage {
+        pub count_text: Option<String>,
+        pub sort: Vec<YtChip>,
+        pub composer_placeholder: Option<String>,
+        pub create_token: Option<String>,
+        pub comments: Vec<YtComment>,
+        pub continuation: Option<String>,
+    }
+}
+
+wire! {
+    /// One of the viewer's playlists a video can be saved to.
+    pub struct YtPlaylistTarget {
+        pub playlist_id: String,
+        pub title: String,
+        /// `PUBLIC`, `UNLISTED` or `PRIVATE`.
+        pub privacy: Option<String>,
+        pub contains_video: bool,
+    }
+}
+
+wire! {
+    pub(crate) struct PlaylistTargets {
+        pub playlists: Vec<YtPlaylistTarget>,
+    }
+}
+
+wire! {
+    pub(crate) struct CreatedPlaylist {
+        pub playlist_id: String,
+    }
+}

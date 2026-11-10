@@ -2,6 +2,7 @@
 //! commands. The app states what it wants; app links, continuations and params are opaque tokens
 //! the engine composed, passed back verbatim.
 
+mod account;
 mod model;
 
 pub use model::*;
