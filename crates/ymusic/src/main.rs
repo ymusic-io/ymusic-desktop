@@ -15,8 +15,10 @@ mod play_again;
 mod play_history;
 mod playback;
 mod queue_nav;
+mod settings_view;
 mod shell;
 mod signin;
+mod signin_dialog;
 mod sponsor_block;
 mod telemetry;
 mod video_layer;
@@ -50,6 +52,7 @@ fn main() {
             std::process::exit(1);
         }
     };
+    crate::settings_view::apply_language(graph.settings.as_ref());
     let _reporting = crate::telemetry::start_reporting(&log_setup, &graph);
     if graph.cookies_locked {
         log.warn("cookie jar is password-sealed: running signed out until it is unlocked", None);
@@ -58,6 +61,8 @@ fn main() {
 
     application().with_assets(crate::assets::AppAssets).with_http_client(images).run(move |cx| {
         init(cx);
+        let theme = graph.settings.get_raw(crate::settings_view::THEME_KEY).ok().flatten().unwrap_or_default();
+        crate::settings_view::apply_theme(&theme, cx);
         cx.set_global(graph);
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::centered(size(px(1180.), px(780.)), cx)),

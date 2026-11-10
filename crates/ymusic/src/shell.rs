@@ -24,6 +24,7 @@ use crate::now_playing::NowPlaying;
 use crate::play_again::{PlayAgainView, ResumeQueue};
 use crate::play_history::HistoryRecorder;
 use crate::playback::{Playback, QueueItem};
+use crate::settings_view::SettingsView;
 use crate::sponsor_block::SponsorBlock;
 
 const SUGGEST_DEBOUNCE: Duration = Duration::from_millis(150);
@@ -165,6 +166,9 @@ pub struct Shell {
     library: Option<Entity<LibraryView>>,
     play_again: Option<Entity<PlayAgainView>>,
     downloads: Option<Entity<DownloadsView>>,
+    settings: Option<Entity<SettingsView>>,
+    /// Debug: open the sign-in dialog on the next frame.
+    pending_signin: bool,
     /// A download dialog to open on the next frame (opening needs the window).
     pending_download: Option<DownloadTarget>,
     _media_session: Entity<MediaSession>,
@@ -211,6 +215,8 @@ impl Shell {
             library: None,
             play_again: None,
             downloads: None,
+            settings: None,
+            pending_signin: false,
             pending_download: None,
             _media_session: media_session,
             _history: history,
@@ -279,6 +285,11 @@ impl Shell {
             _ if route == "music" => self.section = Section::YtMusic,
             _ if route == "playagain" => self.section = Section::PlayAgain,
             _ if route == "downloads" => self.section = Section::Downloads,
+            _ if route == "settings" => self.section = Section::Settings,
+            _ if route == "signin" => {
+                self.section = Section::Settings;
+                self.pending_signin = true;
+            }
             Some(("playagain", "resume")) => {
                 self.section = Section::PlayAgain;
                 let view = self.play_again_view(cx);
@@ -675,6 +686,10 @@ impl Shell {
             Section::Library => self.library_view(cx).into_any_element(),
             Section::PlayAgain => self.play_again_view(cx).into_any_element(),
             Section::Downloads => self.downloads_view(cx).into_any_element(),
+            Section::Settings => {
+                let view = self.settings.get_or_insert_with(|| cx.new(SettingsView::new)).clone();
+                view.into_any_element()
+            }
             other => {
                 let theme = cx.theme();
                 div()
@@ -788,6 +803,9 @@ impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if let Some(target) = self.pending_download.take() {
             DownloadPicker::open(target, window, cx);
+        }
+        if std::mem::take(&mut self.pending_signin) {
+            crate::signin_dialog::SignInDialog::open(window, cx, |_| {});
         }
         let content = self.content(cx);
         let header = self.render_header(cx);
