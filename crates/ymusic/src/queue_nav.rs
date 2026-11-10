@@ -61,6 +61,15 @@ impl QueueNav {
         self.played.push(index);
     }
 
+    /// An item was inserted at `index`: history entries at or after it move up one.
+    pub fn inserted_at(&mut self, index: usize) {
+        for played in &mut self.played {
+            if *played >= index {
+                *played += 1;
+            }
+        }
+    }
+
     /// Toggling shuffle restarts the history from the current item.
     pub fn set_shuffle(&mut self, shuffle: bool, current: usize) {
         self.shuffle = shuffle;

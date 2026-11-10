@@ -268,6 +268,29 @@ impl Playback {
         self.load_current(cx);
     }
 
+    /// Plays `item` right after the current one; starts it when nothing is queued.
+    pub fn queue_next(&mut self, item: QueueItem, cx: &mut Context<Self>) {
+        if self.queue.is_empty() {
+            self.play_queue(vec![item], 0, cx);
+            return;
+        }
+        self.queue.insert(self.index + 1, item);
+        self.nav.inserted_at(self.index + 1);
+        self.queue_revision += 1;
+        cx.notify();
+    }
+
+    /// Adds `item` at the end of the queue; starts it when nothing is queued.
+    pub fn queue_last(&mut self, item: QueueItem, cx: &mut Context<Self>) {
+        if self.queue.is_empty() {
+            self.play_queue(vec![item], 0, cx);
+            return;
+        }
+        self.queue.push(item);
+        self.queue_revision += 1;
+        cx.notify();
+    }
+
     /// Plays `items` in order from `index`.
     pub fn play_queue(&mut self, items: Vec<QueueItem>, index: usize, cx: &mut Context<Self>) {
         self.queue_continuation = None;

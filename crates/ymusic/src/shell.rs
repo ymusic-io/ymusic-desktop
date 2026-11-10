@@ -13,7 +13,9 @@ use gpui_kit::component::{ActiveTheme, Disableable, Icon, IconName, Sizable, Sty
 use gpui_kit::*;
 use ym_i18n::{Str, t};
 
-use crate::feed::{FeedSource, FeedView, Navigate, Play};
+use crate::download_dialog::{DownloadPicker, DownloadTarget};
+use crate::downloads_view::DownloadsView;
+use crate::feed::{FeedAction, FeedSource, FeedView, ItemAction, Navigate, Play};
 use crate::graph::{AppGraph, on_core};
 use crate::library::{LibraryView, PlayLocal};
 use crate::media_session::MediaSession;
@@ -21,7 +23,7 @@ use crate::mini_player::{MiniPlayer, ToggleNowPlaying};
 use crate::now_playing::NowPlaying;
 use crate::play_again::{PlayAgainView, ResumeQueue};
 use crate::play_history::HistoryRecorder;
-use crate::playback::Playback;
+use crate::playback::{Playback, QueueItem};
 use crate::sponsor_block::SponsorBlock;
 
 const SUGGEST_DEBOUNCE: Duration = Duration::from_millis(150);
@@ -162,6 +164,9 @@ pub struct Shell {
     now_playing_open: bool,
     library: Option<Entity<LibraryView>>,
     play_again: Option<Entity<PlayAgainView>>,
+    downloads: Option<Entity<DownloadsView>>,
+    /// A download dialog to open on the next frame (opening needs the window).
+    pending_download: Option<DownloadTarget>,
     _media_session: Entity<MediaSession>,
     _history: Entity<HistoryRecorder>,
     _sponsor_block: Entity<SponsorBlock>,
@@ -205,6 +210,8 @@ impl Shell {
             now_playing_open: false,
             library: None,
             play_again: None,
+            downloads: None,
+            pending_download: None,
             _media_session: media_session,
             _history: history,
             _sponsor_block: sponsor_block,
@@ -250,7 +257,18 @@ impl Shell {
                 view.update(cx, |library, cx| library.scan_path(path.into(), play_first, cx));
             }
             Some(("signin-paste", path)) => self.dev_sign_in_paste(path.into(), cx),
-            Some(("download", spec)) => self.dev_download(spec, cx),
+            Some(("downloaddialog", video_id)) => {
+                self.pending_download = Some(DownloadTarget {
+                    video_id: video_id.to_owned(),
+                    title: video_id.to_owned(),
+                    artist: None,
+                    thumbnail_url: None,
+                });
+            }
+            Some(("download", spec)) => {
+                self.section = Section::Downloads;
+                self.dev_download(spec, cx);
+            }
             _ if route == "devicelink" => self.dev_device_link(cx),
             _ if route == "signout" => self.dev_sign_out(cx),
             Some(("nowplaying", url)) => {
@@ -260,6 +278,7 @@ impl Shell {
             _ if route == "trending" => self.discover_tab = DiscoverTab::Trending,
             _ if route == "music" => self.section = Section::YtMusic,
             _ if route == "playagain" => self.section = Section::PlayAgain,
+            _ if route == "downloads" => self.section = Section::Downloads,
             Some(("playagain", "resume")) => {
                 self.section = Section::PlayAgain;
                 let view = self.play_again_view(cx);
@@ -267,6 +286,21 @@ impl Shell {
             }
             _ => {}
         }
+    }
+
+    fn downloads_view(&mut self, cx: &mut Context<Self>) -> Entity<DownloadsView> {
+        if let Some(view) = &self.downloads {
+            return view.clone();
+        }
+        let service = cx.global::<AppGraph>().downloads.clone();
+        let view = cx.new(|cx| DownloadsView::new(service, cx));
+        let play = cx.subscribe(&view, |shell, _, event: &PlayLocal, cx| {
+            let (items, index) = (event.items.clone(), event.index);
+            shell.playback.update(cx, |playback, cx| playback.play_queue(items, index, cx));
+        });
+        self._subscriptions.push(play);
+        self.downloads = Some(view.clone());
+        view
     }
 
     fn play_again_view(&mut self, cx: &mut Context<Self>) -> Entity<PlayAgainView> {
@@ -478,7 +512,30 @@ impl Shell {
             let (item, queue) = (event.item.clone(), event.queue.clone());
             shell.playback.update(cx, |playback, cx| playback.play_feed(item, queue, cx));
         });
-        self._subscriptions.extend([navigate, play]);
+        let action = cx.subscribe(&view, |shell, _, event: &ItemAction, cx| {
+            let item = event.item.clone();
+            match event.action {
+                FeedAction::QueueNext => {
+                    shell.playback.update(cx, |playback, cx| playback.queue_next(QueueItem::from_feed(&item), cx))
+                }
+                FeedAction::QueueLast => {
+                    shell.playback.update(cx, |playback, cx| playback.queue_last(QueueItem::from_feed(&item), cx))
+                }
+                FeedAction::Radio => shell.playback.update(cx, |playback, cx| playback.play_feed(item, None, cx)),
+                FeedAction::Download => {
+                    shell.pending_download = Some(DownloadTarget {
+                        video_id: item.id.clone(),
+                        title: item.title.clone(),
+                        artist: item.channel_title.clone().or_else(|| item.subtitle_line1.clone()),
+                        thumbnail_url: item.thumbs.last().map(|thumb| {
+                            if thumb.url.starts_with("//") { format!("https:{}", thumb.url) } else { thumb.url.clone() }
+                        }),
+                    });
+                    cx.notify();
+                }
+            }
+        });
+        self._subscriptions.extend([navigate, play, action]);
         view
     }
 
@@ -617,6 +674,7 @@ impl Shell {
             Section::YtMusic => self.root(FeedSource::MusicHome, cx).into_any_element(),
             Section::Library => self.library_view(cx).into_any_element(),
             Section::PlayAgain => self.play_again_view(cx).into_any_element(),
+            Section::Downloads => self.downloads_view(cx).into_any_element(),
             other => {
                 let theme = cx.theme();
                 div()
@@ -727,7 +785,10 @@ impl Shell {
 }
 
 impl Render for Shell {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if let Some(target) = self.pending_download.take() {
+            DownloadPicker::open(target, window, cx);
+        }
         let content = self.content(cx);
         let header = self.render_header(cx);
         let suggestions = self.render_suggestions(cx);

@@ -24,7 +24,10 @@ gpui_kit::assets::icon_assets!(
         Repeat,
         Repeat1,
         Shuffle,
-        Timer
+        Timer,
+        RotateCcw,
+        FolderOpen,
+        X
     ]
 );
 

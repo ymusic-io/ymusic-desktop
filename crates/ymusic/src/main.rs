@@ -1,6 +1,8 @@
 mod assets;
 mod audio_effects;
+mod download_dialog;
 mod downloads;
+mod downloads_view;
 mod feed;
 mod graph;
 mod http_client;

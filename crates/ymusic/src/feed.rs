@@ -4,6 +4,7 @@
 use std::sync::Arc;
 
 use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::menu::{ContextMenuExt, PopupMenuItem};
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::{ActiveTheme, Sizable, StyledExt, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder;
@@ -73,6 +74,20 @@ pub struct Play {
     pub queue: Option<Vec<YtFeedItem>>,
 }
 
+/// Something to do with a video besides opening it.
+pub struct ItemAction {
+    pub item: YtFeedItem,
+    pub action: FeedAction,
+}
+
+#[derive(Clone, Copy)]
+pub enum FeedAction {
+    QueueNext,
+    QueueLast,
+    Radio,
+    Download,
+}
+
 /// A request to open a new surface on the current section's stack.
 pub struct Navigate {
     pub source: FeedSource,
@@ -98,6 +113,7 @@ pub struct FeedView {
 
 impl EventEmitter<Navigate> for FeedView {}
 impl EventEmitter<Play> for FeedView {}
+impl EventEmitter<ItemAction> for FeedView {}
 
 impl FeedView {
     pub fn new(source: FeedSource, title: Option<SharedString>, cx: &mut Context<Self>) -> Self {
@@ -301,7 +317,7 @@ impl FeedView {
         index: usize,
         queue: Option<std::rc::Rc<Vec<YtFeedItem>>>,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement + use<> {
+    ) -> AnyElement {
         let theme = cx.theme();
         let (width, height, round) = match item.kind.as_str() {
             "channel" => (68., 68., true),
@@ -310,7 +326,7 @@ impl FeedView {
         let thumb = thumb_for(&item.thumbs, (width * 2.) as i32);
         let badge = if item.live { None } else { item.duration.clone() };
         let clicked = item.clone();
-        h_flex()
+        let row = h_flex()
             .id(("feed-item", index))
             .gap_3()
             .p_1()
@@ -360,7 +376,34 @@ impl FeedView {
                 let queue =
                     queue.as_ref().map(|items| items.iter().filter(|item| item.kind == "video").cloned().collect());
                 view.open_item(&clicked, queue, cx)
-            }))
+            }));
+        if item.kind != "video" {
+            return row.into_any_element();
+        }
+        let view = cx.entity().downgrade();
+        let target = item.clone();
+        row.context_menu(move |mut menu, _, _| {
+            let actions = [
+                (Str::MenuPlay, None),
+                (Str::QueueNext, Some(FeedAction::QueueNext)),
+                (Str::QueueLast, Some(FeedAction::QueueLast)),
+                (Str::MenuStartRadio, Some(FeedAction::Radio)),
+                (Str::DownloadTitle, Some(FeedAction::Download)),
+            ];
+            for (label, action) in actions {
+                let (view, item) = (view.clone(), target.clone());
+                menu = menu.item(PopupMenuItem::new(t(label)).on_click(move |_, _, cx| {
+                    let item = item.clone();
+                    view.update(cx, |_, cx| match action {
+                        Some(action) => cx.emit(ItemAction { item, action }),
+                        None => cx.emit(Play { item, queue: None }),
+                    })
+                    .ok();
+                }));
+            }
+            menu
+        })
+        .into_any_element()
     }
 }
 
