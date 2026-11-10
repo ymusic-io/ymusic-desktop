@@ -3,7 +3,7 @@
 use std::ffi::{CStr, CString, c_char, c_int, c_void};
 use std::path::Path;
 
-use crate::Presenter;
+use crate::{Presenter, Tone};
 
 unsafe extern "C" {
     fn file_av_create() -> *mut c_void;
@@ -16,6 +16,13 @@ unsafe extern "C" {
     fn file_av_step(player: *mut c_void) -> c_int;
     fn file_av_set_volume(player: *mut c_void, volume: f64);
     fn file_av_set_video_enabled(player: *mut c_void, on: c_int);
+    fn file_av_set_speed(player: *mut c_void, speed: f64);
+    fn file_av_set_pitch(player: *mut c_void, pitch: f64);
+    fn file_av_set_eq(player: *mut c_void, bands_db: *const f32);
+    fn file_av_set_bass(player: *mut c_void, db: f32);
+    fn file_av_set_virtualizer(player: *mut c_void, width: f32);
+    fn file_av_set_preamp(player: *mut c_void, db: f32);
+    fn file_av_pcm_levels(player: *mut c_void, out: *mut f32, count: c_int) -> c_int;
     fn file_av_bind_presenter(player: *mut c_void, presenter: *mut c_void);
     fn file_av_duration(player: *mut c_void) -> f64;
     fn file_av_position(player: *mut c_void) -> f64;
@@ -71,6 +78,30 @@ impl LocalAv {
 
     pub fn set_video_enabled(&mut self, on: bool) {
         unsafe { file_av_set_video_enabled(self.raw, c_int::from(on)) }
+    }
+
+    pub fn set_speed_pitch(&mut self, speed: f64, pitch: f64) {
+        unsafe {
+            file_av_set_speed(self.raw, speed);
+            file_av_set_pitch(self.raw, pitch);
+        }
+    }
+
+    pub fn set_tone(&mut self, tone: &Tone) {
+        unsafe {
+            file_av_set_eq(self.raw, tone.eq_db.as_ptr());
+            file_av_set_bass(self.raw, tone.bass_db);
+            file_av_set_virtualizer(self.raw, tone.virtualizer);
+            file_av_set_preamp(self.raw, tone.preamp_db);
+        }
+    }
+
+    /// Spectrum bars in 0..=1, bass first, for what is playing now.
+    pub fn levels(&self, count: usize) -> Vec<f32> {
+        let mut out = vec![0.0; count];
+        let filled = unsafe { file_av_pcm_levels(self.raw, out.as_mut_ptr(), count as c_int) };
+        out.truncate(filled.max(0) as usize);
+        out
     }
 
     pub fn bind_presenter(&mut self, presenter: Option<&Presenter>) {

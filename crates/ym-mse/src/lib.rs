@@ -5,6 +5,27 @@ mod local;
 
 pub use local::{LocalAv, Probe, probe};
 
+/// EQ bands' centre frequencies, Hz.
+pub const EQ_BANDS_HZ: [u32; 10] = [31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000];
+
+/// The in-app tone shaping both engines apply (`audio_fx.c`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Tone {
+    /// Per band, dB.
+    pub eq_db: [f32; 10],
+    pub bass_db: f32,
+    /// Stereo width; 1 is unchanged.
+    pub virtualizer: f32,
+    /// Level trim on top of the automatic loudness pre-gain, -12..=12 dB.
+    pub preamp_db: f32,
+}
+
+impl Default for Tone {
+    fn default() -> Self {
+        Self { eq_db: [0.0; 10], bass_db: 0.0, virtualizer: 1.0, preamp_db: 0.0 }
+    }
+}
+
 use std::ffi::{CStr, c_char, c_int, c_void};
 use std::sync::{Mutex, OnceLock};
 
@@ -16,6 +37,11 @@ unsafe extern "C" {
     fn mse_set_log_callback(callback: Option<unsafe extern "C" fn(level: c_int, message: *const c_char)>);
     fn mse_host_set_volume(host: *mut c_void, volume: f32);
     fn mse_host_set_speed(host: *mut c_void, speed: f32, tempo: f32);
+    fn mse_host_set_eq(host: *mut c_void, bands_db: *const f32);
+    fn mse_host_set_bass(host: *mut c_void, db: f32);
+    fn mse_host_set_virtualizer(host: *mut c_void, width: f32);
+    fn mse_host_set_preamp(host: *mut c_void, db: f32);
+    fn mse_host_pcm_levels(host: *mut c_void, out: *mut f32, count: c_int) -> c_int;
     fn mse_host_samples_played(host: *mut c_void) -> i64;
     fn mse_host_bind_presenter(host: *mut c_void, presenter: *mut c_void);
     fn vpresent_create_vt_layer(layer: *mut c_void, sink: *const VpSink) -> *mut c_void;
@@ -92,6 +118,23 @@ impl MseHost {
 
     pub fn set_speed(&self, speed: f32, tempo: f32) {
         unsafe { mse_host_set_speed(self.raw, speed, tempo) }
+    }
+
+    pub fn set_tone(&self, tone: &Tone) {
+        unsafe {
+            mse_host_set_eq(self.raw, tone.eq_db.as_ptr());
+            mse_host_set_bass(self.raw, tone.bass_db);
+            mse_host_set_virtualizer(self.raw, tone.virtualizer);
+            mse_host_set_preamp(self.raw, tone.preamp_db);
+        }
+    }
+
+    /// Spectrum bars in 0..=1, bass first, for what is playing now.
+    pub fn levels(&self, count: usize) -> Vec<f32> {
+        let mut out = vec![0.0; count];
+        let filled = unsafe { mse_host_pcm_levels(self.raw, out.as_mut_ptr(), count as c_int) };
+        out.truncate(filled.max(0) as usize);
+        out
     }
 
     /// Sends this host's pictures to `presenter` (`None` unbinds). The host keeps its own reference.
