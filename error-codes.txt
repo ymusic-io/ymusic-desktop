@@ -6,7 +6,7 @@
 #   flag  -  = not deployed — free to remove, renumber, or reallocate elsewhere.
 # On release, flip every `-` row of the shipped crates to D.
 # Mint = grep this file for a free number, add a `-` row in the same commit as the throw site.
-# Ranges: R1xxxx ym-quickjs | R2xxxx ym-engine | R3xxxx ym-common (HTTP client, shared errors)
+# Ranges: R1xxxx ym-quickjs | R2xxxx ym-engine | R3xxxx ym-common / ym-remote-config (HTTP, config service)
 #         R4xxxx ym-ffmpeg | R5xxxx ym-store / ym-scanner | R6xxxx ym-player | R7xxxx ym-download / ym-ytmedia
 #         R8xxxx ym-mse | R9xxxx ym-app / ym-ui / ym-shell / ym-update / ym-settings / ym-logstore / ym-telemetry
 
@@ -32,6 +32,10 @@ R20018 - an engine command could not be reached (no handler for it in the bundle
 R20019 - player main-proxy: host/main/ opened without a command
 R20020 - player main-proxy: no main engine, or the main engine refused the command
 R20021 - player/mintPo answered without a content PO token
+R30001 - remote config: the cached config was unreadable and was dropped (logged; defaults used)
+R30002 - remote config: the fetched config could not be written to the cache (logged)
+R30003 - remote config: fetching /v1/config failed (logged; the held config stays)
+R30004 - js bundle: the cached remote bundle failed its signature and was deleted (logged; embedded used)
 R90001 - app boot: the engine cache store could not be opened (data dir I/O, index)
 R90002 - playback: the native MSE host could not be created
 R90003 - playback: the player reported an error state without a code of its own
