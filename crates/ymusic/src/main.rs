@@ -7,6 +7,7 @@ mod mini_player;
 mod now_playing;
 mod playback;
 mod shell;
+mod video_layer;
 
 use std::sync::Arc;
 

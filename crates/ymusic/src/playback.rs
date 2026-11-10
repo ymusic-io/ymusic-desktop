@@ -10,7 +10,7 @@ use serde_json::Value;
 use ym_engine::player::LoadRequest;
 use ym_engine::yt::YtFeedItem;
 use ym_engine::{DynamicEngine, EngineError};
-use ym_mse::MseHost;
+use ym_mse::{MseHost, Presenter};
 
 use crate::feed::error_text;
 use crate::graph::{AppGraph, PLAYER_JS, on_core};
@@ -48,6 +48,10 @@ pub struct Playback {
     loading_video: Option<String>,
     gain: f32,
     pub volume: f32,
+    /// Video on: loads request pictures and the presenter shows them; off: audio only.
+    pub video: bool,
+    /// Presents into the Now Playing video layer, which outlives it.
+    presenter: Option<Arc<Presenter>>,
     _status: Option<Task<()>>,
 }
 
@@ -71,6 +75,8 @@ impl Playback {
             loading_video: None,
             gain: 1.0,
             volume: if muted { 0.0 } else { saved_volume.unwrap_or(1.0).clamp(0.0, 1.0) },
+            video: true,
+            presenter: None,
             _status: None,
         }
     }
@@ -123,6 +129,48 @@ impl Playback {
         self.extend_queue_if_near_end(cx);
     }
 
+    /// Hands over the video layer once a window has one.
+    ///
+    /// # Safety
+    /// `layer` must be a live `AVSampleBufferDisplayLayer` that outlives this `Playback`.
+    pub unsafe fn attach_video_layer(&mut self, layer: *mut std::ffi::c_void) {
+        if self.presenter.is_some() {
+            return;
+        }
+        self.presenter = unsafe { Presenter::on_layer(layer) }.map(Arc::new);
+        self.bind_presenter();
+    }
+
+    fn bind_presenter(&self) {
+        if let (Some(session), Some(presenter)) = (&self.session, &self.presenter) {
+            session.host.bind_presenter(Some(presenter));
+        }
+    }
+
+    pub fn set_video(&mut self, video: bool, cx: &mut Context<Self>) {
+        if self.video == video {
+            return;
+        }
+        self.video = video;
+        let (quality, audio_only) = if video { ("auto", false) } else { ("zero", true) };
+        self.command(cx, move |engine, log| async move { engine.player_set_quality(quality, audio_only, &log).await });
+        cx.notify();
+    }
+
+    /// The video box in CSS pixels; YouTube's ABR picks the quality for it.
+    pub fn set_viewport(&mut self, width: i32, height: i32, cx: &mut Context<Self>) {
+        self.command(cx, move |engine, log| async move { engine.player_set_viewport(width, height, &log).await });
+    }
+
+    fn load_request(&self, video_id: &str) -> LoadRequest {
+        let mut request = LoadRequest::audio(video_id);
+        if self.video {
+            request.quality = Some("auto".into());
+            request.audio_only = false;
+        }
+        request
+    }
+
     pub fn jump_to(&mut self, index: usize, cx: &mut Context<Self>) {
         if index < self.queue.len() && index != self.index {
             self.index = index;
@@ -169,9 +217,8 @@ impl Playback {
             self.boot(cx);
             return;
         }
-        self.command(cx, move |engine, log| async move {
-            engine.player_load(&LoadRequest::audio(&video_id), &log).await.map(|_| ())
-        });
+        let request = self.load_request(&video_id);
+        self.command(cx, move |engine, log| async move { engine.player_load(&request, &log).await.map(|_| ()) });
     }
 
     fn command<F, Fut>(&mut self, cx: &mut Context<Self>, run: F)
@@ -231,11 +278,13 @@ impl Playback {
                     Some(Ok(session)) => {
                         playback.session = Some(Arc::new(session));
                         playback.apply_volume();
+                        playback.bind_presenter();
                         playback.listen(cx);
                         if let Some(video_id) = playback.pending.take() {
                             playback.loading_video = Some(video_id.clone());
+                            let request = playback.load_request(&video_id);
                             playback.command(cx, move |engine, log| async move {
-                                engine.player_load(&LoadRequest::audio(&video_id), &log).await.map(|_| ())
+                                engine.player_load(&request, &log).await.map(|_| ())
                             });
                         }
                     }

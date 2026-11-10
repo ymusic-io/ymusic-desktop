@@ -352,6 +352,7 @@ impl Shell {
         if self.now_playing_open && self.playback.read(cx).current().is_some() {
             return self.now_playing.clone().into_any_element();
         }
+        self.now_playing.read(cx).hide_video();
         if let Some(top) = self.stacks.get(&self.section).and_then(|stack| stack.pushed.last()) {
             return top.clone().into_any_element();
         }

@@ -1,23 +1,57 @@
 //! Now Playing: the current track large, and the queue ("Up next") to jump around in.
 
-use gpui_kit::component::{ActiveTheme, StyledExt, h_flex, v_flex};
+use std::cell::Cell;
+use std::rc::Rc;
+
+use gpui_kit::component::switch::Switch;
+use gpui_kit::component::{ActiveTheme, Sizable, StyledExt, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use ym_engine::yt::YtThumb;
 use ym_i18n::{Str, t};
 
 use crate::playback::Playback;
+use crate::video_layer::VideoLayer;
 
 pub struct NowPlaying {
     playback: Entity<Playback>,
     scroll: ScrollHandle,
+    video_layer: Option<Rc<VideoLayer>>,
+    /// The video box as last painted, to report viewport changes to the player.
+    video_box: Rc<Cell<(i32, i32)>>,
+    reported_box: (i32, i32),
     _observe: Subscription,
 }
 
 impl NowPlaying {
     pub fn new(playback: Entity<Playback>, cx: &mut Context<Self>) -> Self {
         let observe = cx.observe(&playback, |_, _, cx| cx.notify());
-        Self { playback, scroll: ScrollHandle::new(), _observe: observe }
+        Self {
+            playback,
+            scroll: ScrollHandle::new(),
+            video_layer: None,
+            video_box: Rc::new(Cell::new((0, 0))),
+            reported_box: (0, 0),
+            _observe: observe,
+        }
+    }
+
+    pub fn hide_video(&self) {
+        if let Some(layer) = &self.video_layer {
+            layer.hide();
+        }
+    }
+
+    fn ensure_video_layer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.video_layer.is_some() {
+            return;
+        }
+        let Some(layer) = VideoLayer::attach(window) else { return };
+        let layer = Rc::new(layer);
+        let pointer = layer.as_ptr();
+        // SAFETY: the layer lives in this view for the app's lifetime, past Playback's use of it.
+        self.playback.update(cx, |playback, _| unsafe { playback.attach_video_layer(pointer) });
+        self.video_layer = Some(layer);
     }
 }
 
@@ -34,8 +68,15 @@ fn small(thumbs: &[YtThumb]) -> Option<SharedString> {
 }
 
 impl Render for NowPlaying {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.ensure_video_layer(window, cx);
+        let painted = self.video_box.get();
+        if painted.0 > 0 && painted != self.reported_box {
+            self.reported_box = painted;
+            self.playback.update(cx, |playback, cx| playback.set_viewport(painted.0, painted.1, cx));
+        }
         let playback = self.playback.read(cx);
+        let video_on = playback.video;
         let theme = cx.theme().clone();
         let Some(current) = playback.current().cloned() else { return div().into_any_element() };
         let queue = playback.queue.clone();
@@ -101,18 +142,45 @@ impl Render for NowPlaying {
                     .gap_4()
                     .items_center()
                     .justify_center()
-                    .child(
+                    .child({
+                        let layer = self.video_layer.clone();
+                        let video_box = self.video_box.clone();
+                        let show_video = video_on && layer.is_some();
                         div()
+                            .relative()
                             .w_full()
-                            .max_w(px(560.))
+                            .max_w(px(720.))
                             .aspect_ratio(16. / 9.)
                             .rounded_lg()
                             .overflow_hidden()
-                            .bg(theme.secondary)
-                            .when_some(largest(&current.thumbs), |frame, url| {
-                                frame.child(img(url).size_full().object_fit(ObjectFit::Cover))
-                            }),
-                    )
+                            .bg(if show_video { black() } else { theme.secondary })
+                            .when(!show_video, |frame| {
+                                frame.when_some(largest(&current.thumbs), |frame, url| {
+                                    frame.child(img(url).size_full().object_fit(ObjectFit::Cover))
+                                })
+                            })
+                            .child(
+                                canvas(
+                                    |_, _, _| {},
+                                    move |bounds, _, _, _| {
+                                        if let Some(layer) = &layer {
+                                            layer.place(bounds, show_video);
+                                        }
+                                        let width = f32::from(bounds.size.width) as i32;
+                                        let height = f32::from(bounds.size.height) as i32;
+                                        video_box.set((width, height));
+                                    },
+                                )
+                                .absolute()
+                                .size_full(),
+                            )
+                    })
+                    .child(Switch::new("audio-only").small().checked(!video_on).label(t(Str::AudioOnly)).on_click(
+                        cx.listener(|view, checked: &bool, _, cx| {
+                            let video = !*checked;
+                            view.playback.update(cx, |playback, cx| playback.set_video(video, cx));
+                        }),
+                    ))
                     .child(div().text_xl().font_semibold().text_center().child(current.title.clone()))
                     .when_some(artist, |column, artist| {
                         column.child(div().text_color(theme.muted_foreground).child(artist))

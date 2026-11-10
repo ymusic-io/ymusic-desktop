@@ -20,6 +20,11 @@ futures.workspace = true
 anyhow = "1"
 dirs = "6"
 souvlaki = { version = "0.9", default-features = false }
+raw-window-handle = "0.6"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFCGTypes"] }
 
 [lints]
 workspace = true
