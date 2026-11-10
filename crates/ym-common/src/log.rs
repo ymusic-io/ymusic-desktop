@@ -138,3 +138,49 @@ impl LogSink for StderrSink {
         }
     }
 }
+
+/// Fans every line out to several sinks.
+pub struct TeeSink {
+    pub sinks: Vec<Arc<dyn LogSink>>,
+}
+
+impl LogSink for TeeSink {
+    fn log(&self, level: Level, trail: &[Crumb], message: &str, error: Option<&(dyn Error + 'static)>) {
+        for sink in &self.sinks {
+            sink.log(level, trail, message, error);
+        }
+    }
+
+    fn capture_error(&self, trail: &[Crumb], message: &str, error: &(dyn Error + 'static)) {
+        for sink in &self.sinks {
+            sink.capture_error(trail, message, error);
+        }
+    }
+}
+
+/// A sink that joins later (once what it needs has booted); lines before then skip it.
+#[derive(Default)]
+pub struct DeferredSink {
+    inner: std::sync::OnceLock<Arc<dyn LogSink>>,
+}
+
+impl DeferredSink {
+    /// The first set wins.
+    pub fn set(&self, sink: Arc<dyn LogSink>) {
+        let _ = self.inner.set(sink);
+    }
+}
+
+impl LogSink for DeferredSink {
+    fn log(&self, level: Level, trail: &[Crumb], message: &str, error: Option<&(dyn Error + 'static)>) {
+        if let Some(sink) = self.inner.get() {
+            sink.log(level, trail, message, error);
+        }
+    }
+
+    fn capture_error(&self, trail: &[Crumb], message: &str, error: &(dyn Error + 'static)) {
+        if let Some(sink) = self.inner.get() {
+            sink.capture_error(trail, message, error);
+        }
+    }
+}
