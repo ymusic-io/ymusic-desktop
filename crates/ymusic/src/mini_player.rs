@@ -82,6 +82,7 @@ impl MiniPlayer {
             .small()
             .icon(Icon::new(Lucide::Timer))
             .selected(armed)
+            .accessibility_label(t(Str::CdSleepTimer))
             .tooltip(tooltip)
             .dropdown_menu_with_anchor(Anchor::BottomRight, move |mut menu, _, _| {
                 for minutes in SLEEP_PRESET_MINUTES {
@@ -127,6 +128,13 @@ impl Render for MiniPlayer {
         let sleep_remaining = playback.sleep_remaining();
         let sleep_after_current = playback.sleep_after_current;
         let thumb = item.thumb(120);
+        let volume = playback.volume;
+        let now_playing_label =
+            [Some(t(Str::A11yNowPlaying).to_owned()), Some(item.title.clone()), item.artist.clone()]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+                .join(", ");
         let artist = item.artist.clone();
         let failure = match &state {
             PlayState::Failed(message) => Some(message.clone()),
@@ -140,6 +148,7 @@ impl Render for MiniPlayer {
                 .icon(Icon::new(Lucide::Pause))
                 .rounded_full()
                 .tooltip(t(Str::CdPause))
+                .accessibility_label(t(Str::CdPause))
                 .on_click(
                     cx.listener(|player, _, _, cx| player.playback.update(cx, |playback, cx| playback.toggle(cx))),
                 )
@@ -148,6 +157,7 @@ impl Render for MiniPlayer {
                 .icon(Icon::new(Lucide::Play))
                 .rounded_full()
                 .tooltip(t(Str::CdPlay))
+                .accessibility_label(t(Str::CdPlay))
                 .on_click(
                     cx.listener(|player, _, _, cx| player.playback.update(cx, |playback, cx| playback.toggle(cx))),
                 )
@@ -163,6 +173,9 @@ impl Render for MiniPlayer {
             .child(
                 h_flex()
                     .id("now-playing-toggle")
+                    .role(Role::Button)
+                    .tab_stop(true)
+                    .aria_label(now_playing_label)
                     .w(px(300.))
                     .gap_3()
                     .min_w_0()
@@ -205,6 +218,7 @@ impl Render for MiniPlayer {
                                     .icon(Icon::new(Lucide::Shuffle))
                                     .selected(shuffle)
                                     .tooltip(t(Str::CdShuffle))
+                                    .accessibility_label(t(Str::CdShuffle))
                                     .on_click(cx.listener(move |player, _, _, cx| {
                                         player.playback.update(cx, |playback, cx| playback.set_shuffle(!shuffle, cx))
                                     })),
@@ -214,6 +228,7 @@ impl Render for MiniPlayer {
                                     .ghost()
                                     .icon(Icon::new(Lucide::SkipBack))
                                     .tooltip(t(Str::CdPrevious))
+                                    .accessibility_label(t(Str::CdPrevious))
                                     .on_click(cx.listener(|player, _, _, cx| {
                                         player.playback.update(cx, |playback, cx| playback.previous(cx))
                                     })),
@@ -224,6 +239,7 @@ impl Render for MiniPlayer {
                                     .ghost()
                                     .icon(Icon::new(Lucide::SkipForward))
                                     .tooltip(t(Str::CdNext))
+                                    .accessibility_label(t(Str::CdNext))
                                     .disabled(!has_next)
                                     .on_click(cx.listener(|player, _, _, cx| {
                                         player.playback.update(cx, |playback, cx| playback.next(cx))
@@ -239,6 +255,11 @@ impl Render for MiniPlayer {
                                         Lucide::Repeat
                                     }))
                                     .selected(loop_mode != LoopMode::None)
+                                    .accessibility_label(t(match loop_mode {
+                                        LoopMode::None => Str::CdRepeatOff,
+                                        LoopMode::All => Str::CdRepeatAll,
+                                        LoopMode::One => Str::CdRepeatOne,
+                                    }))
                                     .tooltip(t(match loop_mode {
                                         LoopMode::None => Str::CdRepeatOff,
                                         LoopMode::All => Str::CdRepeatAll,
@@ -258,7 +279,11 @@ impl Render for MiniPlayer {
                             .gap_2()
                             .items_center()
                             .child(div().text_xs().text_color(theme.muted_foreground).child(clock(position)))
-                            .child(div().flex_1().child(Slider::new(&self.seek)))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .child(Slider::new(&self.seek).accessibility_label(t(Str::A11yPlaybackPosition))),
+                            )
                             .child(div().text_xs().text_color(theme.muted_foreground).child(clock(duration))),
                     ),
             )
@@ -273,13 +298,19 @@ impl Render for MiniPlayer {
                             .small()
                             .icon(Icon::new(Lucide::SlidersHorizontal))
                             .tooltip(t(Str::SoundTitle))
+                            .accessibility_label(t(Str::SoundTitle))
                             .on_click(cx.listener(|player, _, window, cx| {
                                 crate::sound_panel::SoundPanel::open(player.playback.clone(), window, cx)
                             })),
                     )
                     .child(self.sleep_button(sleep_remaining, sleep_after_current))
                     .child(Icon::new(Lucide::Volume2).small().text_color(theme.muted_foreground))
-                    .child(div().flex_1().child(Slider::new(&self.volume))),
+                    .child(
+                        div().flex_1().child(
+                            Slider::new(&self.volume)
+                                .accessibility_label(tf(Str::SoundVolume, &[&((volume * 100.0) as i32)])),
+                        ),
+                    ),
             )
             .into_any_element()
     }

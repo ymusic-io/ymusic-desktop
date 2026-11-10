@@ -41,6 +41,15 @@ One sentence each; detail lives in the crate's own README.
   in one line. The story of a change goes in the commit message, never the code ("used to",
   "instead of", "previously" are banned). Doc comments state contracts, not the name restated.
 
+### Accessibility (from day one)
+Every UI change ships accessible; it is not a later pass.
+- **Every control has a spoken name.** An icon-only `Button` needs `.accessibility_label(..)`: its tooltip is only the description, so without a label VoiceOver reads nothing. Sliders and switches take `.accessibility_label(..)` too. Names come from YMusicV4's `cd_*` / `a11y_*` strings, never hardcoded.
+- **Clickable rows and cards are controls.** A clickable `div` gets `.role(Role::Button)` (or `ListItem` inside a list), one `.aria_label(..)` that says what it is (title · artist · duration · kind, the `a11y_kind_*` / `a11y_x_of_y` strings), and is keyboard reachable (`.tab_stop(true)` / focusable). Its children are not read one by one.
+- **State is exposed, not just drawn.** Selected rail item / tab, toggled shuffle / repeat / sleep, checked menu items: set the component's selected/toggled/checked state, not only a color.
+- **Images are decorative unless they carry information.** Thumbnails beside a title stay unlabeled; an image that is the only content (QR code, album art alone) gets a label (`cd_device_link_qr`).
+- **Keyboard first.** Everything reachable by mouse is reachable by Tab / arrows / Enter / Space / Esc, in visual order; dialogs trap focus and close on Esc; focus returns to the opener.
+- **No meaning by color alone** (errors also say so in text); no motion (the app runs with reduce-motion on).
+
 ### Errors
 - Never swallow an error. Propagate it (`?`), return it, or collect it into a result. Only
   documented fire-and-forget cleanup may ignore one.
