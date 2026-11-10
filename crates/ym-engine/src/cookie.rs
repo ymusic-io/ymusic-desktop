@@ -18,6 +18,8 @@ pub trait CookieJar: Send + Sync {
     fn load_for_request(&self, url: &Url) -> Result<Vec<(String, String)>, BoxError>;
     /// Parses and stores `Set-Cookie` values received from `url`; unparseable ones are dropped.
     fn save_from_response(&self, url: &Url, set_cookies: &[String]) -> Result<(), BoxError>;
+    /// Forgets every cookie (sign-out).
+    fn clear(&self) -> Result<(), BoxError>;
 }
 
 /// RFC 6265 domain / path / expiry / secure matching, in memory.
@@ -37,6 +39,11 @@ impl CookieJar for MemoryCookieJar {
         for set_cookie in set_cookies {
             let _ = store.parse(set_cookie, url);
         }
+        Ok(())
+    }
+
+    fn clear(&self) -> Result<(), BoxError> {
+        self.store.lock().unwrap().clear();
         Ok(())
     }
 }
@@ -72,6 +79,16 @@ impl CookieJar for PersistentCookieJar {
             for set_cookie in set_cookies {
                 let _ = store.parse(set_cookie, url);
             }
+            cookie_store::serde::json::save(&store, &mut bytes)?;
+        }
+        (self.persist)(&bytes)
+    }
+
+    fn clear(&self) -> Result<(), BoxError> {
+        let mut bytes = Vec::new();
+        {
+            let mut store = self.store.lock().unwrap();
+            store.clear();
             cookie_store::serde::json::save(&store, &mut bytes)?;
         }
         (self.persist)(&bytes)

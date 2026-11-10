@@ -60,6 +60,14 @@ impl AppDb {
     }
 }
 
+impl AppDb {
+    /// Blocking.
+    pub fn delete_secret(&self, name: &str) -> rusqlite::Result<()> {
+        self.db.lock().unwrap().execute("DELETE FROM secret WHERE name = ?1", params![name])?;
+        Ok(())
+    }
+}
+
 impl SettingsStore for AppDb {
     fn get_raw(&self, key: &str) -> Result<Option<String>, SettingsError> {
         Ok(self.settings.lock().unwrap().get(key).cloned())
