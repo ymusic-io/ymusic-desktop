@@ -29,4 +29,7 @@ R20015 - log/capture: the bundle reported a failure without a code of its own
 R20016 - log/capture: malformed head
 R20017 - an engine command returned a result that does not decode into its wire shape
 R20018 - an engine command could not be reached (no handler for it in the bundle, runtime closed, pipe broke)
+R20019 - player main-proxy: host/main/ opened without a command
+R20020 - player main-proxy: no main engine, or the main engine refused the command
+R20021 - player/mintPo answered without a content PO token
 R90001 - app boot: the engine cache store could not be opened (data dir I/O, index)

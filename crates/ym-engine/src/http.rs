@@ -25,6 +25,8 @@ pub(crate) fn install(runtime: &QuickJsRuntime, clients: HttpClients, parked: Ar
     runtime.on_accept("http", move |pipe| serve(weak.clone(), pipe, clients.clone(), parked.clone()));
 }
 
+const SABR_FORMATS_HEADER: &str = "X-Ym-Af";
+
 struct Prepared {
     client: reqwest::Client,
     request: reqwest::Request,
@@ -120,6 +122,10 @@ fn prepare(head: &Value, clients: &HttpClients, runtime: WeakRuntime) -> Result<
         for pair in pairs {
             let name = pair.get(0).and_then(Value::as_str).ok_or("header entry without a name")?;
             let value = pair.get(1).and_then(Value::as_str).ok_or("header entry without a value")?;
+            // The bundle tags cacheable SABR requests for the host's media proxy; never on the wire.
+            if name.eq_ignore_ascii_case(SABR_FORMATS_HEADER) {
+                continue;
+            }
             headers.append(HeaderName::from_bytes(name.as_bytes())?, HeaderValue::from_str(value)?);
         }
     }

@@ -43,6 +43,8 @@ impl AppGraph {
                 settings: Some(Arc::new(MemorySettings::default())),
                 remote_features: Some(Arc::new(|_| None)),
                 cache: Some(cache),
+                mse: None,
+                main: None,
             },
         )
         .await?;

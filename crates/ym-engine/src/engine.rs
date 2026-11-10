@@ -22,6 +22,11 @@ pub struct EngineConfig {
     pub settings: Option<Arc<dyn SettingsStore>>,
     pub remote_features: Option<FeatureLookup>,
     pub cache: Option<Arc<DiskCacheStore>>,
+    /// The player bundle's native MSE host and `__mse*` vtable, attached before the eval. The
+    /// host must outlive the engine.
+    pub mse: Option<(usize, usize)>,
+    /// The main engine, for the player bundle's `host/main/*` proxy.
+    pub main: Option<ym_quickjs::WeakRuntime>,
 }
 
 /// One booted `engine.js` and the host protocols it is served.
@@ -67,6 +72,13 @@ impl DynamicEngine {
             crate::cache_protocol::install(&runtime, store, parked.clone());
         }
         crate::cache_protocol::install_capture(&runtime, parked.clone());
+        if let Some(main) = config.main {
+            crate::main_proxy::install(&runtime, main, parked.clone());
+        }
+        if let Some((host, vtable)) = config.mse {
+            // SAFETY: the caller keeps the host alive past this engine (EngineConfig::mse).
+            unsafe { runtime.attach_mse_host(host, vtable) }.await.map_err(load_failure)?;
+        }
         if let Err(error) = runtime.eval_engine(script).await {
             runtime.close().await;
             return Err(load_failure(error));

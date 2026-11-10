@@ -10,6 +10,8 @@ mod error;
 mod head;
 mod http;
 mod logs;
+mod main_proxy;
+pub mod player;
 mod protocol;
 mod settings;
 pub mod yt;
