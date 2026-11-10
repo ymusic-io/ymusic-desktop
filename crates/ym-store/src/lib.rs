@@ -252,7 +252,7 @@ impl MediaStore {
             "UPDATE mediaItem SET bucketId = ?1, title = ?2, mimeType = ?3, artist = ?4, album = ?5, genre = ?6, \
              trackNumber = ?7, year = ?8, durationMs = ?9, audioCodec = ?10, videoCodec = ?11, subtitleCodec = ?12, \
              bitrate = ?13, width = ?14, height = ?15, thumbnailStreamIndex = ?16, fileSize = ?17, \
-             lastModified = ?18, deleted = 0, updatedAt = ?19 WHERE uri = ?20",
+             lastModified = ?18, youtubeVid = ?21, loudnessGainDb = ?22, deleted = 0, updatedAt = ?19 WHERE uri = ?20",
             params![
                 item.bucket_id,
                 item.title,
@@ -273,7 +273,9 @@ impl MediaStore {
                 item.file_size,
                 item.last_modified,
                 now,
-                item.uri
+                item.uri,
+                item.youtube_vid,
+                item.loudness_gain_db
             ],
         )?;
         if changed > 0 {
@@ -282,8 +284,8 @@ impl MediaStore {
         db.execute(
             "INSERT INTO mediaItem(bucketId, uri, title, mimeType, artist, album, genre, trackNumber, year, \
              durationMs, audioCodec, videoCodec, subtitleCodec, bitrate, width, height, thumbnailStreamIndex, \
-             fileSize, lastModified, createdAt, updatedAt) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?20)",
+             fileSize, lastModified, createdAt, updatedAt, youtubeVid, loudnessGainDb) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?20, ?21, ?22)",
             params![
                 item.bucket_id,
                 item.uri,
@@ -304,7 +306,9 @@ impl MediaStore {
                 item.thumbnail_stream_index,
                 item.file_size,
                 item.last_modified,
-                now
+                now,
+                item.youtube_vid,
+                item.loudness_gain_db
             ],
         )?;
         Ok(db.last_insert_rowid())

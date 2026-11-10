@@ -150,6 +150,8 @@ struct RawProbe {
     height: c_int,
     thumbnail_stream: c_int,
     has_audio: c_int,
+    composer: [c_char; 256],
+    stream_composer: [c_char; 256],
 }
 
 /// A media file's tags and stream facts.
@@ -171,6 +173,8 @@ pub struct Probe {
     pub height: Option<i32>,
     pub thumbnail_stream: Option<i32>,
     pub has_audio: bool,
+    /// The container's `composer` tag, then the first audio stream's.
+    pub composers: Vec<String>,
 }
 
 fn text(field: &[c_char]) -> Option<String> {
@@ -208,5 +212,6 @@ pub fn probe(path: &Path) -> Result<Probe, i32> {
         height: (raw.height > 0).then_some(raw.height),
         thumbnail_stream: (raw.thumbnail_stream >= 0).then_some(raw.thumbnail_stream),
         has_audio: raw.has_audio != 0,
+        composers: [text(&raw.composer), text(&raw.stream_composer)].into_iter().flatten().collect(),
     })
 }

@@ -20,6 +20,8 @@ typedef struct {
     int width, height;     /* 0 without video */
     int thumbnail_stream;  /* attached picture stream index, -1 none */
     int has_audio;
+    char composer[256];        /* the container's; downloads write `videoId|gain=dB` here */
+    char stream_composer[256]; /* the first audio stream's (Ogg/Opus keep tags per stream) */
 } YmProbe;
 
 static void copy_tag(AVDictionary *dict, const char *key, char *out, size_t cap)
@@ -65,6 +67,7 @@ int ym_probe(const char *path, YmProbe *out)
     copy_tag(ctx->metadata, "date", out->date, sizeof(out->date));
     copy_tag(ctx->metadata, "year", out->date, sizeof(out->date));
     copy_tag(ctx->metadata, "track", out->track, sizeof(out->track));
+    copy_tag(ctx->metadata, "composer", out->composer, sizeof(out->composer));
     if (ctx->duration > 0)
         out->duration_ms = ctx->duration / 1000;
     if (ctx->bit_rate > 0)
@@ -86,6 +89,7 @@ int ym_probe(const char *path, YmProbe *out)
             copy_tag(stream->metadata, "title", out->title, sizeof(out->title));
             copy_tag(stream->metadata, "artist", out->artist, sizeof(out->artist));
             copy_tag(stream->metadata, "album", out->album, sizeof(out->album));
+            copy_tag(stream->metadata, "composer", out->stream_composer, sizeof(out->stream_composer));
             break;
         case AVMEDIA_TYPE_VIDEO:
             copy_name(name, out->video_codec, sizeof(out->video_codec));

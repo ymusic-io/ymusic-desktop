@@ -121,8 +121,10 @@ pub fn scan_folder(store: &MediaStore, root: &Path, cancel: &AtomicBool) -> Resu
             }
             match ym_mse::probe(&path) {
                 Ok(probe) if probe.has_audio || probe.video_codec.is_some() => {
-                    let fallback_title =
-                        path.file_stem().map(|stem| stem.to_string_lossy().into_owned()).unwrap_or(name);
+                    let fallback_title = path
+                        .file_stem()
+                        .map(|stem| stem.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| name.clone());
                     store.save_item(&MediaItem {
                         bucket_id: Some(bucket_id),
                         title: probe.title.clone().unwrap_or(fallback_title),
@@ -140,6 +142,12 @@ pub fn scan_folder(store: &MediaStore, root: &Path, cancel: &AtomicBool) -> Resu
                         width: probe.width,
                         height: probe.height,
                         thumbnail_stream_index: probe.thumbnail_stream,
+                        youtube_vid: probe
+                            .composers
+                            .iter()
+                            .find_map(|composer| video_id_from_composer(composer))
+                            .or_else(|| video_id_from_file_name(&name)),
+                        loudness_gain_db: probe.composers.iter().find_map(|composer| gain_from_composer(composer)),
                         file_size: size,
                         last_modified: modified,
                         uri,
@@ -158,4 +166,37 @@ pub fn scan_folder(store: &MediaStore, root: &Path, cancel: &AtomicBool) -> Resu
         report.removed += store.delete_missing_items(bucket_id, &present)?;
     }
     Ok(report)
+}
+
+fn is_video_id(text: &str) -> bool {
+    text.len() == 11 && text.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+}
+
+/// Downloads tag `composer` as `videoId` or `videoId|gain=-6.69`.
+fn video_id_from_composer(composer: &str) -> Option<String> {
+    let id = composer.split('|').next()?;
+    is_video_id(id).then(|| id.to_owned())
+}
+
+fn gain_from_composer(composer: &str) -> Option<f64> {
+    let (id, gain) = composer.split_once("|gain=")?;
+    if !is_video_id(id) {
+        return None;
+    }
+    let digits = gain.strip_prefix('-').unwrap_or(gain);
+    let valid = !digits.is_empty()
+        && digits.split('.').count() <= 2
+        && digits.split('.').all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()));
+    if valid { gain.parse().ok() } else { None }
+}
+
+/// Files named like `Title [videoId].ext`, optionally with a `(1)`-style suffix.
+fn video_id_from_file_name(name: &str) -> Option<String> {
+    let close = name.rfind(']')?;
+    let open = name[..close].rfind('[')?;
+    let id = &name[open + 1..close];
+    let rest = &name[close + 1..];
+    let stem_rest = rest.rsplit_once('.').map_or(rest, |(before, _)| before);
+    let suffix_ok = stem_rest.trim().chars().all(|c| c.is_ascii_digit() || "-_()[]".contains(c));
+    (is_video_id(id) && suffix_ok).then(|| id.to_owned())
 }
