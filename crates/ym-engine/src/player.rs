@@ -10,6 +10,25 @@ use crate::engine::DynamicEngine;
 use crate::error::EngineError;
 use crate::head::{HeadError, read_json_value};
 
+/// A caption track the current video offers.
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CaptionTrack {
+    pub vss_id: String,
+    #[serde(default)]
+    pub language_code: String,
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub display_name: String,
+}
+
+#[derive(serde::Deserialize, Default)]
+struct CaptionTracks {
+    #[serde(default)]
+    tracks: Vec<CaptionTrack>,
+}
+
 /// One `player/load`. `quality: None` with `audio_only` plays audio only (the bundle's `"zero"`).
 #[derive(Debug, Clone)]
 pub struct LoadRequest {
@@ -131,6 +150,38 @@ impl DynamicEngine {
         self.player_ack("player/setLoop", json!({ "enable": enable }), log).await
     }
 
+    /// Cues the next video without interrupting the current one.
+    pub async fn player_preload(&self, video_id: &str, log: &Logger) -> Result<Value, EngineError> {
+        let log = log.fork_with("preload", object(json!({ "videoId": video_id })));
+        self.json_command("player/preload", object(json!({ "videoId": video_id })), &log).await
+    }
+
+    /// One of the catalog's audio tracks (a dub or the original language), by id.
+    pub async fn player_set_audio_track(&self, id: &str, log: &Logger) -> Result<(), EngineError> {
+        self.player_ack("player/setAudioTrack", json!({ "id": id }), log).await
+    }
+
+    pub async fn player_caption_tracks(&self, log: &Logger) -> Result<Vec<CaptionTrack>, EngineError> {
+        let mut tracks: CaptionTracks = self.json_command("player/captions", Map::new(), log).await?;
+        for track in &mut tracks.tracks {
+            if track.display_name.is_empty() {
+                track.display_name = track.vss_id.clone();
+            }
+        }
+        Ok(tracks.tracks)
+    }
+
+    /// Captions on or off with the preferred track; `vss_id` may also be a language code. The
+    /// bundle keeps the preference across videos and reports its pick on the catalog stream.
+    pub async fn player_set_caption(
+        &self,
+        vss_id: Option<&str>,
+        visible: bool,
+        log: &Logger,
+    ) -> Result<(), EngineError> {
+        self.player_ack("player/setCaption", json!({ "vssId": vss_id, "visible": visible }), log).await
+    }
+
     pub async fn player_status(&self, log: &Logger) -> Result<Value, EngineError> {
         self.json_command("player/status", Map::new(), log).await
     }
@@ -150,9 +201,9 @@ impl DynamicEngine {
             .ok_or_else(|| EngineError::site("R20021", "player/mintPo answered without a contentPoToken"))
     }
 
-    /// Subscribes to a push stream (`listen/player/status` event groups, `listen/player/catalog`)
-    /// and hands each object to `on_value` until the bundle ends it; dropping the future
-    /// unsubscribes.
+    /// Subscribes to a push stream (`listen/player/status` event groups, `listen/player/catalog`,
+    /// `player/caption` paint-on lines `{"lines":[{"id","text"}]}`)
+    /// and hands each object to `on_value` until the bundle ends it; dropping the future unsubscribes.
     pub async fn listen_player(&self, command: &str, mut on_value: impl FnMut(Value)) -> Result<(), EngineError> {
         let pipe = self
             .runtime()
