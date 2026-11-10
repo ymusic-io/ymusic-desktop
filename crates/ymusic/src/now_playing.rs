@@ -7,7 +7,6 @@ use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{ActiveTheme, Sizable, StyledExt, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
-use ym_engine::yt::YtThumb;
 use ym_i18n::{Str, t};
 
 use crate::playback::Playback;
@@ -55,18 +54,6 @@ impl NowPlaying {
     }
 }
 
-fn largest(thumbs: &[YtThumb]) -> Option<SharedString> {
-    thumbs.last().map(|thumb| {
-        if thumb.url.starts_with("//") { format!("https:{}", thumb.url) } else { thumb.url.clone() }.into()
-    })
-}
-
-fn small(thumbs: &[YtThumb]) -> Option<SharedString> {
-    thumbs.iter().find(|thumb| thumb.w.is_some_and(|w| w >= 120)).or(thumbs.last()).map(|thumb| {
-        if thumb.url.starts_with("//") { format!("https:{}", thumb.url) } else { thumb.url.clone() }.into()
-    })
-}
-
 impl Render for NowPlaying {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.ensure_video_layer(window, cx);
@@ -81,7 +68,7 @@ impl Render for NowPlaying {
         let Some(current) = playback.current().cloned() else { return div().into_any_element() };
         let queue = playback.queue.clone();
         let index = playback.index;
-        let artist = current.channel_title.clone().or(current.subtitle_line1.clone());
+        let artist = current.artist.clone();
 
         let mut list = v_flex().gap_1();
         for (position, item) in queue.iter().enumerate() {
@@ -103,7 +90,7 @@ impl Render for NowPlaying {
                             .rounded_md()
                             .overflow_hidden()
                             .bg(theme.secondary)
-                            .when_some(small(&item.thumbs), |frame, url| {
+                            .when_some(item.thumb(120), |frame, url| {
                                 frame.child(img(url).size_full().object_fit(ObjectFit::Cover))
                             }),
                     )
@@ -118,11 +105,11 @@ impl Render for NowPlaying {
                                     .when(active, |text| text.font_semibold())
                                     .child(item.title.clone()),
                             )
-                            .when_some(item.channel_title.clone().or(item.subtitle_line1.clone()), |column, line| {
+                            .when_some(item.artist.clone(), |column, line| {
                                 column.child(div().text_xs().text_color(theme.muted_foreground).truncate().child(line))
                             }),
                     )
-                    .when_some(item.duration.clone(), |row, duration| {
+                    .when_some(item.duration_label.clone(), |row, duration| {
                         row.child(div().text_xs().text_color(theme.muted_foreground).child(duration))
                     })
                     .on_click(cx.listener(move |view, _, _, cx| {
@@ -155,7 +142,7 @@ impl Render for NowPlaying {
                             .overflow_hidden()
                             .bg(if show_video { black() } else { theme.secondary })
                             .when(!show_video, |frame| {
-                                frame.when_some(largest(&current.thumbs), |frame, url| {
+                                frame.when_some(current.thumb(i32::MAX), |frame, url| {
                                     frame.child(img(url).size_full().object_fit(ObjectFit::Cover))
                                 })
                             })

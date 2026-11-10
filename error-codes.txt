@@ -38,3 +38,7 @@ R90003 - playback: the player reported an error state without a code of its own
 R90004 - media session: the OS media controls could not be created or attached (logged; the app runs without them)
 R90005 - app boot: app.db could not be opened
 R90006 - a setting could not be saved to app.db (logged; the UI state stands)
+R90007 - playback: a local file could not be played (local player unavailable, or the file failed to open)
+R90008 - library: reading folders or items from the media store failed
+R90009 - library: the folder scan failed (store error)
+R90010 - app boot: the media store could not be opened

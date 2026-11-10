@@ -9,6 +9,7 @@ use ym_common::http::HttpClients;
 use ym_common::log::Logger;
 use ym_engine::{CookieJar, DiskCacheStore, DynamicEngine, EngineConfig, EngineError, PersistentCookieJar};
 use ym_settings::{AppDb, SettingsStore};
+use ym_store::MediaStore;
 
 const COOKIES_SECRET: &str = "cookies";
 
@@ -27,6 +28,7 @@ pub struct AppGraph {
     pub cookies: Arc<dyn CookieJar>,
     pub settings: Arc<dyn SettingsStore>,
     pub cache: Arc<DiskCacheStore>,
+    pub media: Arc<MediaStore>,
 }
 
 impl Global for AppGraph {}
@@ -55,6 +57,11 @@ impl AppGraph {
             Box::new(move |bytes| Ok(cookie_db.put_secret(COOKIES_SECRET, bytes)?)),
         ));
         let settings: Arc<dyn SettingsStore> = app_db;
+        let media_path = data_dir.join("media_store.db");
+        let media = tokio::task::spawn_blocking(move || MediaStore::open(&media_path))
+            .await
+            .map_err(|error| EngineError::site("R90010", format!("media store: {error}")))?
+            .map_err(|error| EngineError::site("R90010", format!("media store: {error}")))?;
         let graph = Self {
             engine: Arc::new(
                 DynamicEngine::create(
@@ -69,6 +76,7 @@ impl AppGraph {
             cookies,
             settings,
             cache,
+            media: Arc::new(media),
         };
         graph.engine.health_check().await?;
         Ok(graph)

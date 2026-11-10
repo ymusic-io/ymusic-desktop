@@ -99,11 +99,10 @@ impl MediaSession {
             return;
         };
         let duration_learned = playback.duration_ms > 0 && playback.duration_ms != self.announced_duration;
-        if self.announced_video.as_deref() != Some(item.id.as_str()) || duration_learned {
-            let cover = item.thumbs.last().map(|thumb| {
-                if thumb.url.starts_with("//") { format!("https:{}", thumb.url) } else { thumb.url.clone() }
-            });
-            let artist = item.channel_title.clone().or(item.subtitle_line1.clone());
+        let key = item.key();
+        if self.announced_video.as_deref() != Some(key.as_str()) || duration_learned {
+            let cover = item.thumb(i32::MAX).map(|url| url.to_string());
+            let artist = item.artist.clone();
             let duration = (playback.duration_ms > 0).then(|| Duration::from_millis(playback.duration_ms as u64));
             let _ = controls.set_metadata(MediaMetadata {
                 title: Some(&item.title),
@@ -112,7 +111,7 @@ impl MediaSession {
                 cover_url: cover.as_deref(),
                 duration,
             });
-            self.announced_video = Some(item.id.clone());
+            self.announced_video = Some(key);
             self.announced_duration = playback.duration_ms;
             self.announced_state = None;
         }

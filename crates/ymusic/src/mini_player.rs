@@ -64,7 +64,7 @@ impl MiniPlayer {
     }
 }
 
-fn clock(ms: i64) -> String {
+pub fn clock(ms: i64) -> String {
     let seconds = ms.max(0) / 1000;
     let (hours, minutes, seconds) = (seconds / 3600, seconds / 60 % 60, seconds % 60);
     if hours > 0 { format!("{hours}:{minutes:02}:{seconds:02}") } else { format!("{minutes}:{seconds:02}") }
@@ -78,12 +78,8 @@ impl Render for MiniPlayer {
         let state = playback.state.clone();
         let (position, duration) = (playback.position_ms, playback.duration_ms);
         let has_next = playback.index + 1 < playback.queue.len();
-        let thumb =
-            item.thumbs.iter().find(|thumb| thumb.w.is_some_and(|w| w >= 120)).or(item.thumbs.last()).map(|thumb| {
-                let url = if thumb.url.starts_with("//") { format!("https:{}", thumb.url) } else { thumb.url.clone() };
-                SharedString::from(url)
-            });
-        let artist = item.channel_title.clone().or(item.subtitle_line1.clone());
+        let thumb = item.thumb(120);
+        let artist = item.artist.clone();
         let failure = match &state {
             PlayState::Failed(message) => Some(message.clone()),
             _ => None,

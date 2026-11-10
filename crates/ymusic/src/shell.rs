@@ -15,6 +15,7 @@ use ym_i18n::{Str, t};
 
 use crate::feed::{FeedSource, FeedView, Navigate, Play};
 use crate::graph::{AppGraph, on_core};
+use crate::library::{LibraryView, PlayLocal};
 use crate::media_session::MediaSession;
 use crate::mini_player::{MiniPlayer, ToggleNowPlaying};
 use crate::now_playing::NowPlaying;
@@ -156,6 +157,7 @@ pub struct Shell {
     mini_player: Entity<MiniPlayer>,
     now_playing: Entity<NowPlaying>,
     now_playing_open: bool,
+    library: Option<Entity<LibraryView>>,
     _media_session: Entity<MediaSession>,
     _subscriptions: Vec<Subscription>,
 }
@@ -193,6 +195,7 @@ impl Shell {
             mini_player,
             now_playing,
             now_playing_open: false,
+            library: None,
             _media_session: media_session,
             section,
             discover_tab,
@@ -207,7 +210,7 @@ impl Shell {
     }
 
     /// Debug builds only: `YMUSIC_DEV_ROUTE` opens a surface at start (`trending`, `music`,
-    /// `search:<query>`, `play:<youtube url>`), for screenshots without driving the UI.
+    /// `search:<query>`, `play:<youtube url>`, `nowplaying:<url>`, `library:<dir>`, `localplay:<dir>`), for screenshots without driving the UI.
     pub fn apply_dev_route(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !cfg!(debug_assertions) {
             return;
@@ -216,6 +219,12 @@ impl Shell {
         match route.split_once(':') {
             Some(("search", query)) => self.submit_search(query.to_owned(), window, cx),
             Some(("play", url)) => self.play_link(url.to_owned(), cx),
+            Some((route @ ("library" | "localplay"), path)) => {
+                self.section = Section::Library;
+                let view = self.library_view(cx);
+                let play_first = route == "localplay";
+                view.update(cx, |library, cx| library.scan_path(path.into(), play_first, cx));
+            }
             Some(("nowplaying", url)) => {
                 self.now_playing_open = true;
                 self.play_link(url.to_owned(), cx);
@@ -226,6 +235,21 @@ impl Shell {
         }
     }
 
+    fn library_view(&mut self, cx: &mut Context<Self>) -> Entity<LibraryView> {
+        if let Some(view) = &self.library {
+            return view.clone();
+        }
+        let store = cx.global::<AppGraph>().media.clone();
+        let view = cx.new(|cx| LibraryView::new(store, cx));
+        let play = cx.subscribe(&view, |shell, _, event: &PlayLocal, cx| {
+            let (items, index) = (event.items.clone(), event.index);
+            shell.playback.update(cx, |playback, cx| playback.play_queue(items, index, cx));
+        });
+        self._subscriptions.push(play);
+        self.library = Some(view.clone());
+        view
+    }
+
     /// Resolves a shared YouTube link and plays it when it names a video.
     fn play_link(&mut self, url: String, cx: &mut Context<Self>) {
         let graph = cx.global::<AppGraph>();
@@ -233,8 +257,10 @@ impl Shell {
         let resolve = on_core(cx, async move { engine.resolve_link(&url, &log).await });
         cx.spawn(async move |this, cx| {
             if let Some(Ok(Some(ym_engine::yt::YtLinkTarget::Video { item, .. }))) = resolve.await {
-                this.update(cx, |shell, cx| shell.playback.update(cx, |playback, cx| playback.play(*item, None, cx)))
-                    .ok();
+                this.update(cx, |shell, cx| {
+                    shell.playback.update(cx, |playback, cx| playback.play_feed(*item, None, cx))
+                })
+                .ok();
             }
         })
         .detach();
@@ -252,7 +278,7 @@ impl Shell {
         });
         let play = cx.subscribe(&view, |shell, _, event: &Play, cx| {
             let (item, queue) = (event.item.clone(), event.queue.clone());
-            shell.playback.update(cx, |playback, cx| playback.play(item, queue, cx));
+            shell.playback.update(cx, |playback, cx| playback.play_feed(item, queue, cx));
         });
         self._subscriptions.extend([navigate, play]);
         view
@@ -386,6 +412,7 @@ impl Shell {
                     .into_any_element()
             }
             Section::YtMusic => self.root(FeedSource::MusicHome, cx).into_any_element(),
+            Section::Library => self.library_view(cx).into_any_element(),
             other => {
                 let theme = cx.theme();
                 div()
