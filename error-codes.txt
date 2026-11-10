@@ -27,3 +27,5 @@ R20013 - settings protocol: the settings store failed
 R20014 - remote-config/get failed (missing key or malformed head)
 R20015 - log/capture: the bundle reported a failure without a code of its own
 R20016 - log/capture: malformed head
+R20017 - an engine command returned a result that does not decode into its wire shape
+R20018 - an engine command could not be reached (no handler for it in the bundle, runtime closed, pipe broke)

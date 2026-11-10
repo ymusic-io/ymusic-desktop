@@ -14,7 +14,7 @@ One sentence each; detail lives in the crate's own README.
 
 - **`ym-quickjs`** — QuickJS binding: the YMusicV4 C (vendored engine + pipe transport) built with `cc`, the async `Pipe` layer on a dedicated engine thread, host timers.
 - **`ym-common`** — shared primitives: the `Logger` crumb trail and the app's reqwest clients (no cookie store; following / non-following).
-- **`ym-engine`** — the engine host: boots `engine.js` (`DynamicEngine`), wire errors, logger grafting, host protocols (http, cookie, cache + `DiskCacheStore`, settings, remote-config, log/capture).
+- **`ym-engine`** — the engine host: boots `engine.js` (`DynamicEngine`), wire errors, logger grafting, host protocols (http, cookie, cache + `DiskCacheStore`, settings, remote-config, log/capture), and the typed `yt/*` / `ytmusic/*` command calls (`ym_engine::yt`).
 - **`ym-settings`** — the typed `SettingsStore` trait shared by UI and engine, with an in-memory store.
 - **`ymusic`** — the executable (gpui-kit window).
 

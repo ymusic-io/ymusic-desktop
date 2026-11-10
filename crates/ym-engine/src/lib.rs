@@ -3,6 +3,7 @@
 
 mod cache;
 mod cache_protocol;
+mod command;
 mod cookie;
 mod engine;
 mod error;
@@ -11,6 +12,7 @@ mod http;
 mod logs;
 mod protocol;
 mod settings;
+pub mod yt;
 
 pub use cache::{CacheEntry, CacheError, CacheMeta, Clock, DiskCacheStore, PutError};
 pub use cookie::{CookieJar, MemoryCookieJar};
