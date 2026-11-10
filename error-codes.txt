@@ -51,3 +51,40 @@ R90011 - app boot: the remote config could not be opened
 R90012 - a published bundle was not taken (download, signature or boot failed; logged, the running one stays)
 R90013 - cookies: the OS cookie key is unavailable; the launch runs as a guest (cookies in memory only)
 R90014 - cookies: the sealed cookie jar does not open with this key; the launch starts signed out
+R70001 - download: writing a SABR segment to the scratch file failed (not disk full)
+R70002 - download: googlevideo rejected the PO token (StreamProtectionStatus=3), after the one re-attest
+R70003 - download: googlevideo withheld media while attestation stayed pending (StreamProtectionStatus=2)
+R70004 - download: googlevideo sent a SABR_ERROR part
+R70005 - download: the segment index (SQLite) failed
+R70006 - download: SABR protocol failure (HTTP status, malformed parts, or the session stalled)
+R70007 - download: the player response has no streamingData
+R70008 - download: no serverAbrStreamingUrl (progressive-only stream, not supported)
+R70009 - download: no videoPlaybackUstreamerConfig in the player response
+R70010 - download: the content PO token is not base64
+R70011 - download options: the player response has no streamingData
+R70012 - download options: no audio format this platform can save
+R70013 - download: the ffmpeg binary could not be started
+R70014 - download: waiting for ffmpeg failed
+R70015 - download: ffmpeg exited non-zero (stderr logged)
+R70016 - download: the scratch folder could not be created (not disk full)
+R70017 - download: syncing the finished file before publish failed
+R70018 - download: publishing into the download folder failed (rename and copy)
+R70019 - download: the copied scratch could not be removed after publish
+R70020 - download: the published path has no file URI
+R70021 - download: a scratch of a stream YouTube no longer offers could not be dropped
+R70022 - download: the audio scratch file could not be opened
+R70023 - download: a caption track answered a non-success HTTP status (caption skipped)
+R70024 - download: a caption track has no cues (caption skipped)
+R70025 - download: a caption could not be written to scratch (caption skipped)
+R70026 - download: no audio format for the requested output
+R70027 - download: no video format for the requested output
+R70028 - download: ffmpeg unavailable for an output that needs a mux
+R70029 - download: a video output without a downloaded video stream
+R70030 - download: cover art could not be written to scratch
+R70031 - download: the ready marker could not be written
+R70032 - download: the ready marker could not be read
+R70033 - download: the finished scratch could not be stat'ed for publish
+R70034 - download: a scratch file could not be removed
+R70035 - download: the download run panicked
+R70036 - download: the download store (SQLite) failed (not disk full)
+R70037 - download: the video scratch file could not be opened
