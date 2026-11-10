@@ -9,6 +9,7 @@ mod mini_player;
 mod now_playing;
 mod playback;
 mod shell;
+mod signin;
 mod telemetry;
 mod video_layer;
 
@@ -37,6 +38,9 @@ fn main() {
         }
     };
     let _reporting = crate::telemetry::start_reporting(&log_setup, &graph);
+    if graph.cookies_locked {
+        log.warn("cookie jar is password-sealed: running signed out until it is unlocked", None);
+    }
     let images = ReqwestHttpClient::new(http.following.clone(), tokio.handle().clone());
 
     application().with_assets(crate::assets::AppAssets).with_http_client(images).run(move |cx| {

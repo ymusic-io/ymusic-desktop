@@ -9,11 +9,12 @@ use tokio::runtime::Handle;
 use ym_common::http::HttpClients;
 use ym_common::log::Logger;
 use ym_engine::{
-    CookieJar, DiskCacheStore, DynamicEngine, EngineConfig, EngineError, EngineManager, MainResolver,
+    CookieJar, DiskCacheStore, DynamicEngine, EngineConfig, EngineError, EngineManager, MainResolver, MemoryCookieJar,
     PersistentCookieJar,
 };
 use ym_remote_config::{ApiIdentity, BundleSource, RemoteConfig, VerifiedBundle};
 use ym_settings::{AppDb, SettingsStore};
+use ym_signin::CookieVault;
 use ym_store::MediaStore;
 
 const ENGINE_JS: &str = include_str!(concat!(env!("YMUSIC_V4_DIR"), "/engine-js/build/dist/engine.js"));
@@ -23,7 +24,15 @@ const PLAYER_JS_VERSION: &str = env!("YM_PLAYER_JS_VERSION");
 /// The desktop versionCode sequence the bundles gate compatibility on.
 pub const APP_VERSION: i32 = 96;
 const APP_VERSION_NAME: &str = env!("CARGO_PKG_VERSION");
-const COOKIES_SECRET: &str = "cookies";
+/// The sealed jar's row: the JVM app's name for it.
+const COOKIE_JAR_SECRET: &str = "api-cookies.json";
+/// Where builds before the vault kept the jar in the clear; removed at boot.
+const PLAIN_COOKIES_SECRET: &str = "cookies";
+/// This app's own Keychain item for the cookie key.
+const KEYCHAIN_SERVICE: &str = "io.ymusic.desktop.rust";
+const KEYCHAIN_ACCOUNT: &str = "cookie-key";
+/// Debug builds keep the cookie key here instead (the JVM app's Linux fallback name).
+const FALLBACK_KEY_SECRET: &str = "cookie-key.bin";
 /// Shared with the JVM app: the anonymous id the config service counts devices by.
 const DEVICE_ID_KEY: &str = "telemetry.deviceId";
 /// A bundle in use refreshes a config older than this.
@@ -43,6 +52,8 @@ pub struct AppGraph {
     pub player_source: Arc<BundleSource>,
     /// A newer published player bundle, verified, for the next playback session; cached once it boots.
     pub pending_player: Arc<Mutex<Option<VerifiedBundle>>>,
+    /// The jar is password-sealed and this launch runs on in-memory cookies until it is unlocked.
+    pub cookies_locked: bool,
 }
 
 impl Global for AppGraph {}
@@ -68,12 +79,7 @@ impl AppGraph {
                 .map_err(|error| boot_error("R90005", "app.db")(error.to_string()))?
                 .map_err(|error| boot_error("R90005", "app.db")(error.to_string()))?,
         );
-        let saved_cookies = app_db.secret(COOKIES_SECRET).ok().flatten();
-        let cookie_db = app_db.clone();
-        let cookies: Arc<dyn CookieJar> = Arc::new(PersistentCookieJar::new(
-            saved_cookies.as_deref(),
-            Box::new(move |bytes| Ok(cookie_db.put_secret(COOKIES_SECRET, bytes)?)),
-        ));
+        let (cookies, cookies_locked) = open_cookie_jar(app_db.clone(), &log).await;
         let device_id = match app_db.string(DEVICE_ID_KEY, "").ok().filter(|id| !id.is_empty()) {
             Some(id) => id,
             None => {
@@ -154,6 +160,7 @@ impl AppGraph {
             remote,
             player_source,
             pending_player: Arc::new(Mutex::new(None)),
+            cookies_locked,
         };
         graph.follow_published_bundles(engine_source);
         Ok(graph)
@@ -243,6 +250,64 @@ impl AppGraph {
         candidates.push((PLAYER_JS.to_owned(), None));
         candidates
     }
+}
+
+/// The OS user's key in release builds. Debug builds are re-signed by every build, which macOS
+/// treats as another app: a Keychain read would stop each launch on an access prompt, so they keep
+/// the key in app.db, which only keeps other OS users out.
+fn cookie_key(app_db: &AppDb) -> Result<[u8; 32], ym_signin::VaultError> {
+    if !cfg!(debug_assertions) {
+        return ym_signin::os_cookie_key(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT);
+    }
+    if let Some(key) =
+        app_db.secret(FALLBACK_KEY_SECRET).ok().flatten().and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
+    {
+        return Ok(key);
+    }
+    let key = ym_signin::random_key();
+    app_db.put_secret(FALLBACK_KEY_SECRET, &key).map_err(|error| ym_signin::VaultError::KeyStore(error.to_string()))?;
+    Ok(key)
+}
+
+/// The persistent cookie jar sealed in app.db under the OS user's key. Without that key, or with a
+/// password-sealed jar, the launch runs as a guest: cookies in memory, nothing written in the clear.
+async fn open_cookie_jar(app_db: Arc<AppDb>, log: &Logger) -> (Arc<dyn CookieJar>, bool) {
+    let log = log.fork("cookies");
+    let opened = tokio::task::spawn_blocking(move || {
+        let _ = app_db.delete_secret(PLAIN_COOKIES_SECRET);
+        let key = cookie_key(&app_db)?;
+        let sealed = app_db.secret(COOKIE_JAR_SECRET).ok().flatten();
+        Ok::<_, ym_signin::VaultError>((app_db, CookieVault::new(key), sealed))
+    })
+    .await;
+    let (app_db, vault, sealed) = match opened {
+        Ok(Ok(parts)) => parts,
+        Ok(Err(error)) => {
+            log.warn("R90013 OS cookie key unavailable, this launch runs as a guest", Some(&error));
+            return (Arc::new(MemoryCookieJar::default()), false);
+        }
+        Err(error) => {
+            log.warn("R90013 OS cookie key unavailable, this launch runs as a guest", Some(&error));
+            return (Arc::new(MemoryCookieJar::default()), false);
+        }
+    };
+    if sealed.as_deref().is_some_and(CookieVault::is_password_sealed) {
+        return (Arc::new(MemoryCookieJar::default()), true);
+    }
+    let document = match sealed.as_deref().map(|sealed| vault.open(sealed)) {
+        Some(Ok(document)) => Some(document),
+        Some(Err(error)) => {
+            log.warn("R90014 sealed cookie jar unreadable, starting signed out", Some(&error));
+            None
+        }
+        None => None,
+    };
+    let vault = Arc::new(vault);
+    let jar = PersistentCookieJar::new(
+        document.as_deref(),
+        Box::new(move |bytes| Ok(app_db.put_secret(COOKIE_JAR_SECRET, &vault.seal(bytes))?)),
+    );
+    (Arc::new(jar), false)
 }
 
 /// Runs a core future on the tokio runtime and resolves on any executor (gpui's included).

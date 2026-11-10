@@ -210,7 +210,7 @@ impl Shell {
     }
 
     /// Debug builds only: `YMUSIC_DEV_ROUTE` opens a surface at start (`trending`, `music`,
-    /// `search:<query>`, `play:<youtube url>`, `nowplaying:<url>`, `library:<dir>`, `localplay:<dir>`), for screenshots without driving the UI.
+    /// `search:<query>`, `play:<youtube url>`, `nowplaying:<url>`, `library:<dir>`, `localplay:<dir>`, `signin-paste:<file>`, `devicelink`, `signout`), for screenshots without driving the UI.
     pub fn apply_dev_route(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !cfg!(debug_assertions) {
             return;
@@ -225,6 +225,9 @@ impl Shell {
                 let play_first = route == "localplay";
                 view.update(cx, |library, cx| library.scan_path(path.into(), play_first, cx));
             }
+            Some(("signin-paste", path)) => self.dev_sign_in_paste(path.into(), cx),
+            _ if route == "devicelink" => self.dev_device_link(cx),
+            _ if route == "signout" => self.dev_sign_out(cx),
             Some(("nowplaying", url)) => {
                 self.now_playing_open = true;
                 self.play_link(url.to_owned(), cx);
@@ -248,6 +251,51 @@ impl Shell {
         self._subscriptions.push(play);
         self.library = Some(view.clone());
         view
+    }
+
+    /// Debug route: signs in with a cookie paste read from a file; the outcome goes to the log.
+    fn dev_sign_in_paste(&mut self, path: std::path::PathBuf, cx: &mut Context<Self>) {
+        let graph = cx.global::<AppGraph>();
+        let (jar, engines, log) = (graph.cookies.clone(), graph.engines.clone(), graph.log.fork("signin"));
+        graph.tokio.spawn(async move {
+            let text = std::fs::read_to_string(&path).unwrap_or_default();
+            let cookies = ym_signin::parse_cookie_paste(&text);
+            log.info(&format!("paste parsed {} cookies", cookies.len()));
+            match crate::signin::sign_in_with_cookies(cookies, jar, engines, &log).await {
+                Ok(account) => log.info(&format!("signed in as {}", account.name.unwrap_or_default())),
+                Err(error) => log.warn("sign-in failed", Some(&error)),
+            }
+        });
+    }
+
+    /// Debug route: opens a device link and logs the QR payload and code, then waits for the phone.
+    fn dev_device_link(&mut self, cx: &mut Context<Self>) {
+        let graph = cx.global::<AppGraph>();
+        let (service, jar, engines, log) =
+            (graph.remote.clone(), graph.cookies.clone(), graph.engines.clone(), graph.log.fork("devicelink"));
+        graph.tokio.spawn(async move {
+            match crate::signin::start_device_link(&service).await {
+                Ok(offer) => {
+                    log.info(&format!("scan {} and confirm {}", offer.qr_payload(), offer.confirmation_code()));
+                    match crate::signin::await_device_link(service, offer, jar, engines, &log).await {
+                        Ok(account) => log.info(&format!("signed in as {}", account.name.unwrap_or_default())),
+                        Err(error) => log.warn("device link failed", Some(&error)),
+                    }
+                }
+                Err(error) => log.warn("device link unavailable", Some(&error)),
+            }
+        });
+    }
+
+    fn dev_sign_out(&mut self, cx: &mut Context<Self>) {
+        let graph = cx.global::<AppGraph>();
+        let (jar, engines, log) = (graph.cookies.clone(), graph.engines.clone(), graph.log.fork("signout"));
+        graph.tokio.spawn(async move {
+            match crate::signin::sign_out(jar, engines, &log).await {
+                Ok(()) => log.info("signed out"),
+                Err(error) => log.warn("sign-out failed", Some(&error)),
+            }
+        });
     }
 
     /// Resolves a shared YouTube link and plays it when it names a video.

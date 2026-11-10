@@ -49,3 +49,5 @@ R90009 - library: the folder scan failed (store error)
 R90010 - app boot: the media store could not be opened
 R90011 - app boot: the remote config could not be opened
 R90012 - a published bundle was not taken (download, signature or boot failed; logged, the running one stays)
+R90013 - cookies: the OS cookie key is unavailable; the launch runs as a guest (cookies in memory only)
+R90014 - cookies: the sealed cookie jar does not open with this key; the launch starts signed out
