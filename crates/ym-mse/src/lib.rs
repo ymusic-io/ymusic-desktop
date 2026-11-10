@@ -1,6 +1,10 @@
 //! YMusicV4's C Media Source host for the player bundle's `__mse*` natives: demux, decode, the
 //! A/V clock and audio output all live in C; this crate owns one host and its process hooks.
 
+mod local;
+
+pub use local::{LocalAv, Probe, probe};
+
 use std::ffi::{CStr, c_char, c_int, c_void};
 use std::sync::{Mutex, OnceLock};
 
@@ -42,6 +46,10 @@ impl Presenter {
         let sink = VpSink { on_frame: None, on_mode: None, release: None, user: std::ptr::null_mut() };
         let raw = unsafe { vpresent_create_vt_layer(layer, &sink) };
         (!raw.is_null()).then_some(Self { raw })
+    }
+
+    fn as_raw(&self) -> *mut c_void {
+        self.raw
     }
 
     /// 1 = GPU (the layer shows frames), 2 = CPU, 0 = detached.

@@ -16,6 +16,7 @@ const APPLE_C: &[&str] = &[
     "vpresent_vt.c",
     "vpipe.c",
     "vpipe_hw_vt.c",
+    "file_av.c",
 ];
 const APPLE_OBJC: &[&str] = &["mse_vt_layer.m", "mse_vt_dec.m"];
 const APPLE_FRAMEWORKS: &[&str] = &[
@@ -56,8 +57,10 @@ fn main() {
     for source in APPLE_C {
         c.file(native.join(source));
     }
-    c.file("native/vt_overlay_stub.c");
-    println!("cargo:rerun-if-changed=native/vt_overlay_stub.c");
+    for glue in ["native/vt_overlay_stub.c", "native/ym_probe.c"] {
+        c.file(glue);
+        println!("cargo:rerun-if-changed={glue}");
+    }
     c.compile("msehost_c");
     let mut objc = cc::Build::new();
     objc.include(&native)
