@@ -7,6 +7,16 @@ publish.workspace = true
 
 [dependencies]
 gpui-kit.workspace = true
+ym-common = { path = "../ym-common" }
+ym-engine = { path = "../ym-engine" }
+ym-i18n = { path = "../ym-i18n" }
+ym-settings = { path = "../ym-settings" }
+tokio.workspace = true
+reqwest.workspace = true
+bytes.workspace = true
+futures.workspace = true
+anyhow = "1"
+dirs = "6"
 
 [lints]
 workspace = true

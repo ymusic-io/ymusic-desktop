@@ -8504,7 +8504,17 @@ version = "0.1.0"
 name = "ymusic"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "bytes",
+ "dirs 6.0.0",
+ "futures",
  "gpui-kit",
+ "reqwest",
+ "tokio",
+ "ym-common",
+ "ym-engine",
+ "ym-i18n",
+ "ym-settings",
 ]
 
 [[package]]

@@ -17,7 +17,7 @@ One sentence each; detail lives in the crate's own README.
 - **`ym-engine`** — the engine host: boots `engine.js` (`DynamicEngine`), wire errors, logger grafting, host protocols (http, cookie, cache + `DiskCacheStore`, settings, remote-config, log/capture), and the typed `yt/*` / `ytmusic/*` command calls (`ym_engine::yt`).
 - **`ym-settings`** — the typed `SettingsStore` trait shared by UI and engine, with an in-memory store.
 - **`ym-i18n`** — UI strings generated at build time from YMusicV4's compose-resources (`Str` / `Plural` keys, `t` / `tf` / `plural`, CLDR plurals, English fallback). Never hardcode UI text; add strings to every locale in YMusicV4.
-- **`ymusic`** — the executable (gpui-kit window).
+- **`ymusic`** — the executable: boot (tokio + engine), gpui image client on reqwest, the shell (section sidebar, per-section back/forward stacks, search with suggestions) and feed surfaces. Debug builds take `YMUSIC_DEV_ROUTE` (`trending`, `music`, `search:<q>`) to open a surface at start, floating, for screenshots.
 
 ## Rules
 
@@ -63,7 +63,7 @@ One sentence each; detail lives in the crate's own README.
 
 ### Tests
 - Don't add tests unless asked. Throwaway verification lives outside the tree and is deleted.
-- Mute audio in any playback test. Never mouse-control the running desktop app.
+- Mute audio in any playback test. Never mouse-control the running desktop app; screenshot it via `YMUSIC_DEV_ROUTE` and `screencapture -l <window id>`.
 
 ### Git
 - Commit each finished change, one logical change per commit, path-scoped `git add <paths>`.
