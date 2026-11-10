@@ -4,7 +4,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use gpui_kit::component::switch::Switch;
-use gpui_kit::component::{ActiveTheme, Sizable, StyledExt, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme, Sizable, StyledExt, WindowExt, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use ym_i18n::{Str, t};
@@ -62,6 +62,8 @@ impl Render for NowPlaying {
             self.reported_box = painted;
             self.playback.update(cx, |playback, cx| playback.set_viewport(painted.0, painted.1, cx));
         }
+        // The video layer draws above every gpui layer, so it gives way to dialogs and sheets.
+        let covered = window.has_active_dialog(cx) || window.has_active_sheet(cx);
         let playback = self.playback.read(cx);
         let video_on = playback.video;
         let theme = cx.theme().clone();
@@ -132,7 +134,7 @@ impl Render for NowPlaying {
                     .child({
                         let layer = self.video_layer.clone();
                         let video_box = self.video_box.clone();
-                        let show_video = video_on && layer.is_some();
+                        let show_video = video_on && !covered && layer.is_some();
                         div()
                             .relative()
                             .w_full()
@@ -149,9 +151,10 @@ impl Render for NowPlaying {
                             .child(
                                 canvas(
                                     |_, _, _| {},
-                                    move |bounds, _, _, _| {
+                                    move |bounds, _, window, cx| {
+                                        let covered = window.has_active_dialog(cx) || window.has_active_sheet(cx);
                                         if let Some(layer) = &layer {
-                                            layer.place(bounds, show_video);
+                                            layer.place(bounds, show_video && !covered);
                                         }
                                         let width = f32::from(bounds.size.width) as i32;
                                         let height = f32::from(bounds.size.height) as i32;

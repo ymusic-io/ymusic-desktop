@@ -395,6 +395,20 @@ impl Shell {
                 }
                 "shuffle" => self.playback.update(cx, |playback, cx| playback.set_shuffle(value == "1", cx)),
                 "video" => self.playback.update(cx, |playback, cx| playback.set_video(value != "0", cx)),
+                "sound" => {
+                    let seconds = value.parse().unwrap_or(0);
+                    let executor = cx.background_executor().clone();
+                    cx.spawn(async move |shell, cx| {
+                        executor.timer(std::time::Duration::from_secs(seconds)).await;
+                        shell
+                            .update(cx, |shell, cx| {
+                                shell.pending_sound = true;
+                                cx.notify();
+                            })
+                            .ok();
+                    })
+                    .detach();
+                }
                 "boot" => {
                     let graph = cx.global::<AppGraph>();
                     let (sessions, log) = (graph.youtube.clone(), graph.log.fork("dev-player"));
