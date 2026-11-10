@@ -63,6 +63,8 @@ fn main() {
 
     application().with_assets(crate::assets::AppAssets).with_http_client(images).run(move |cx| {
         init(cx);
+        // No enter/exit animations anywhere: dialogs, popovers, menus and tabs change in one frame.
+        cx.set_reduce_motion(true);
         let theme = graph.settings.get_raw(crate::settings_view::THEME_KEY).ok().flatten().unwrap_or_default();
         crate::settings_view::apply_theme(&theme, cx);
         cx.set_global(graph);
