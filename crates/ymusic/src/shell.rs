@@ -15,6 +15,7 @@ use ym_i18n::{Str, t};
 
 use crate::feed::{FeedSource, FeedView, Navigate, Play};
 use crate::graph::{AppGraph, on_core};
+use crate::media_session::MediaSession;
 use crate::mini_player::{MiniPlayer, ToggleNowPlaying};
 use crate::now_playing::NowPlaying;
 use crate::playback::Playback;
@@ -117,6 +118,7 @@ pub struct Shell {
     mini_player: Entity<MiniPlayer>,
     now_playing: Entity<NowPlaying>,
     now_playing_open: bool,
+    _media_session: Entity<MediaSession>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -139,6 +141,7 @@ impl Shell {
         let playback = cx.new(|_| Playback::new());
         let mini_player = cx.new(|cx| MiniPlayer::new(playback.clone(), window, cx));
         let now_playing = cx.new(|cx| NowPlaying::new(playback.clone(), cx));
+        let media_session = cx.new(|cx| MediaSession::new(playback.clone(), cx));
         let toggle = cx.subscribe(&mini_player, |shell, _, _: &ToggleNowPlaying, cx| {
             shell.now_playing_open = !shell.now_playing_open;
             cx.notify();
@@ -148,6 +151,7 @@ impl Shell {
             mini_player,
             now_playing,
             now_playing_open: false,
+            _media_session: media_session,
             section: Section::Discover,
             discover_tab: DiscoverTab::Home,
             roots: HashMap::new(),

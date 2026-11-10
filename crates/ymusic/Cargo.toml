@@ -19,6 +19,7 @@ bytes.workspace = true
 futures.workspace = true
 anyhow = "1"
 dirs = "6"
+souvlaki = { version = "0.9", default-features = false }
 
 [lints]
 workspace = true

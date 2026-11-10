@@ -2,6 +2,7 @@ mod assets;
 mod feed;
 mod graph;
 mod http_client;
+mod media_session;
 mod mini_player;
 mod now_playing;
 mod playback;

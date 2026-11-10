@@ -35,3 +35,4 @@ R20021 - player/mintPo answered without a content PO token
 R90001 - app boot: the engine cache store could not be opened (data dir I/O, index)
 R90002 - playback: the native MSE host could not be created
 R90003 - playback: the player reported an error state without a code of its own
+R90004 - media session: the OS media controls could not be created or attached (logged; the app runs without them)
