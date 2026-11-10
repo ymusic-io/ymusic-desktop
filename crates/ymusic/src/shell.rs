@@ -268,6 +268,12 @@ impl Shell {
                 let play_first = route == "localplay";
                 view.update(cx, |library, cx| library.scan_path(path.into(), play_first, cx));
             }
+            Some(("librarytab", index)) => {
+                self.section = Section::Library;
+                let view = self.library_view(cx);
+                let index = index.parse().unwrap_or(0);
+                view.update(cx, |library, cx| library.dev_select_tab(index, cx));
+            }
             Some(("signin-paste", path)) => self.dev_sign_in_paste(path.into(), cx),
             Some(("downloaddialog", video_id)) => {
                 self.pending_download = Some(DownloadTarget {

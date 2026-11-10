@@ -28,7 +28,12 @@ gpui_kit::assets::icon_assets!(
         RotateCcw,
         FolderOpen,
         X,
-        SlidersHorizontal
+        SlidersHorizontal,
+        User,
+        Disc,
+        Music,
+        Film,
+        Folder
     ]
 );
 

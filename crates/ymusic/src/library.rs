@@ -6,6 +6,7 @@ use std::sync::atomic::AtomicBool;
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::spinner::Spinner;
+use gpui_kit::component::tab::{Tab as Tab_, TabBar};
 use gpui_kit::component::{ActiveTheme, Icon, Sizable, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
@@ -22,8 +23,43 @@ pub struct PlayLocal {
     pub index: usize,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Tab {
+    Folders,
+    Songs,
+    Artists,
+    Albums,
+    Recent,
+}
+
+impl Tab {
+    const ALL: [Tab; 5] = [Tab::Folders, Tab::Songs, Tab::Artists, Tab::Albums, Tab::Recent];
+
+    fn label(self) -> &'static str {
+        t(match self {
+            Tab::Folders => Str::LibraryTabFolders,
+            Tab::Songs => Str::LibraryTabSongs,
+            Tab::Artists => Str::LibraryTabArtists,
+            Tab::Albums => Str::LibraryTabAlbums,
+            Tab::Recent => Str::PlaylistRecentPlay,
+        })
+    }
+}
+
+/// The play-history key of a local file: its YouTube id when tagged, else size and length.
+fn history_code(item: &MediaItem) -> String {
+    item.youtube_vid.clone().unwrap_or_else(|| format!("@{}:{}", item.file_size, item.duration_ms.unwrap_or(0) / 1000))
+}
+
 pub struct LibraryView {
     store: Arc<MediaStore>,
+    history: Arc<ym_history::PlayHistory>,
+    tab: Tab,
+    /// Every file, for the Songs / Artists / Albums tabs.
+    all_items: Vec<MediaItem>,
+    recent: Vec<MediaItem>,
+    /// The artist or album opened from its tab.
+    group: Option<String>,
     /// The open folder chain; empty is the root.
     path: Vec<Bucket>,
     folders: Vec<Bucket>,
@@ -37,8 +73,14 @@ impl EventEmitter<PlayLocal> for LibraryView {}
 
 impl LibraryView {
     pub fn new(store: Arc<MediaStore>, cx: &mut Context<Self>) -> Self {
+        let history = cx.global::<AppGraph>().history.clone();
         let mut view = Self {
             store,
+            history,
+            tab: Tab::Folders,
+            all_items: Vec::new(),
+            recent: Vec::new(),
+            group: None,
             path: Vec::new(),
             folders: Vec::new(),
             items: Vec::new(),
@@ -79,6 +121,93 @@ impl LibraryView {
             .ok();
         })
         .detach();
+    }
+
+    /// Debug routes: opens the tab at `index`.
+    pub fn dev_select_tab(&mut self, index: usize, cx: &mut Context<Self>) {
+        self.select_tab(Tab::ALL[index.min(Tab::ALL.len() - 1)], cx);
+    }
+
+    fn select_tab(&mut self, tab: Tab, cx: &mut Context<Self>) {
+        self.tab = tab;
+        self.group = None;
+        if tab == Tab::Folders {
+            self.refresh(cx);
+        } else {
+            self.refresh_all(cx);
+        }
+        cx.notify();
+    }
+
+    /// Every file, plus the recently played ones in play order.
+    fn refresh_all(&mut self, cx: &mut Context<Self>) {
+        let (store, history) = (self.store.clone(), self.history.clone());
+        let load = on_core(cx, async move {
+            tokio::task::spawn_blocking(move || {
+                let items = store.all_items().map_err(|error| error.to_string())?;
+                let codes = history.local_recent(ym_history::RETAIN).map_err(|error| error.to_string())?;
+                let by_code: std::collections::HashMap<String, &MediaItem> =
+                    items.iter().map(|item| (history_code(item), item)).collect();
+                let recent = codes.iter().filter_map(|code| by_code.get(code).map(|item| (*item).clone())).collect();
+                Ok::<_, String>((items, recent))
+            })
+            .await
+        });
+        cx.spawn(async move |this, cx| {
+            let result = load.await;
+            this.update(cx, |view, cx| {
+                match result {
+                    Some(Ok(Ok((mut items, recent)))) => {
+                        items.sort_by_key(|item| item.title.to_lowercase());
+                        view.all_items = items;
+                        view.recent = recent;
+                    }
+                    Some(Ok(Err(message))) => {
+                        cx.global::<AppGraph>().log.warn(&format!("R90008 library read failed: {message}"), None);
+                        view.summary = Some(tf(Str::ErrorGeneric, &[&"R90008"]));
+                    }
+                    _ => {}
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// The artist (or album) names of the open tab with their song counts, by name.
+    fn groups(&self) -> Vec<(String, usize)> {
+        let mut counts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+        for item in &self.all_items {
+            if let Some(name) = self.group_of(item) {
+                *counts.entry(name).or_default() += 1;
+            }
+        }
+        counts.into_iter().collect()
+    }
+
+    fn group_of(&self, item: &MediaItem) -> Option<String> {
+        let name = match self.tab {
+            Tab::Artists => item.artist.clone(),
+            Tab::Albums => item.album.clone(),
+            _ => None,
+        };
+        name.filter(|name| !name.trim().is_empty())
+    }
+
+    /// The files the open tab lists, in the order they play.
+    fn shown_items(&self) -> Vec<MediaItem> {
+        match self.tab {
+            Tab::Folders => self.items.clone(),
+            Tab::Songs => self.all_items.clone(),
+            Tab::Recent => self.recent.clone(),
+            Tab::Artists | Tab::Albums => match &self.group {
+                Some(group) => {
+                    self.all_items.iter().filter(|item| self.group_of(item).as_ref() == Some(group)).cloned().collect()
+                }
+                None => Vec::new(),
+            },
+        }
     }
 
     fn open_folder(&mut self, bucket: Bucket, cx: &mut Context<Self>) {
@@ -186,7 +315,7 @@ impl LibraryView {
     }
 
     fn play(&mut self, index: usize, cx: &mut Context<Self>) {
-        let items = self.items.iter().map(QueueItem::from_local).collect();
+        let items = self.shown_items().iter().map(QueueItem::from_local).collect();
         cx.emit(PlayLocal { items, index });
     }
 }
@@ -210,6 +339,22 @@ impl Render for LibraryView {
                     .on_click(cx.listener(move |view, _, _, cx| view.open_crumb(depth + 1, cx))),
             );
         }
+        let crumbs: AnyElement = match (self.tab, &self.group) {
+            (Tab::Folders, _) => crumbs.into_any_element(),
+            (_, Some(group)) => h_flex()
+                .gap_1()
+                .items_center()
+                .child(Button::new("group-back").ghost().small().label(self.tab.label()).on_click(cx.listener(
+                    |view, _, _, cx| {
+                        view.group = None;
+                        cx.notify();
+                    },
+                )))
+                .child(div().text_color(theme.muted_foreground).child("/"))
+                .child(div().text_sm().px_2().child(group.clone()))
+                .into_any_element(),
+            _ => div().into_any_element(),
+        };
         let header = h_flex().justify_between().items_center().child(crumbs).child(
             h_flex()
                 .gap_2()
@@ -225,7 +370,35 @@ impl Render for LibraryView {
         );
 
         let mut list = v_flex().gap_1();
-        for (index, bucket) in self.folders.clone().into_iter().enumerate() {
+        let folders = if self.tab == Tab::Folders { self.folders.clone() } else { Vec::new() };
+        let groups = if self.group.is_none() && matches!(self.tab, Tab::Artists | Tab::Albums) {
+            self.groups()
+        } else {
+            Vec::new()
+        };
+        for (index, (name, count)) in groups.iter().cloned().enumerate() {
+            list = list.child(
+                h_flex()
+                    .id(("group", index))
+                    .gap_3()
+                    .px_2()
+                    .py_2()
+                    .rounded_md()
+                    .cursor_pointer()
+                    .hover(|style| style.bg(theme.secondary))
+                    .child(
+                        Icon::new(if self.tab == Tab::Artists { Lucide::User } else { Lucide::Disc })
+                            .text_color(theme.muted_foreground),
+                    )
+                    .child(div().flex_1().text_sm().truncate().child(name.clone()))
+                    .child(div().text_xs().text_color(theme.muted_foreground).child(count.to_string()))
+                    .on_click(cx.listener(move |view, _, _, cx| {
+                        view.group = Some(name.clone());
+                        cx.notify();
+                    })),
+            );
+        }
+        for (index, bucket) in folders.into_iter().enumerate() {
             let name = bucket.alias_name.clone().unwrap_or_else(|| bucket.name.clone());
             list = list.child(
                 h_flex()
@@ -241,7 +414,8 @@ impl Render for LibraryView {
                     .on_click(cx.listener(move |view, _, _, cx| view.open_folder(bucket.clone(), cx))),
             );
         }
-        for (index, item) in self.items.iter().enumerate() {
+        let shown = self.shown_items();
+        for (index, item) in shown.iter().enumerate() {
             list = list.child(
                 h_flex()
                     .id(("local-item", index))
@@ -271,17 +445,30 @@ impl Render for LibraryView {
                     .on_click(cx.listener(move |view, _, _, cx| view.play(index, cx))),
             );
         }
-        let empty = self.folders.is_empty() && self.items.is_empty();
+        let empty = groups.is_empty() && shown.is_empty() && (self.tab != Tab::Folders || self.folders.is_empty());
+        let selected = Tab::ALL.iter().position(|tab| *tab == self.tab).unwrap_or(0);
+        let tabs = TabBar::new("library-tabs")
+            .underline()
+            .selected_index(selected)
+            .children(Tab::ALL.iter().map(|tab| Tab_::new().label(tab.label())))
+            .on_click(cx.listener(|view, index: &usize, _, cx| view.select_tab(Tab::ALL[*index], cx)));
         v_flex()
             .size_full()
             .gap_3()
             .p_4()
+            .child(tabs)
             .child(header)
             .when_some(self.summary.clone(), |column, summary| {
                 column.child(div().text_sm().text_color(theme.muted_foreground).child(summary))
             })
             .when(empty, |column| {
-                let message = if self.path.is_empty() { t(Str::LibraryEmpty) } else { t(Str::LibraryEmptyFolder) };
+                let message = t(match self.tab {
+                    Tab::Folders if self.path.is_empty() => Str::LibraryEmpty,
+                    Tab::Folders => Str::LibraryEmptyFolder,
+                    Tab::Songs | Tab::Recent => Str::LibraryNoSongs,
+                    Tab::Artists => Str::LibraryNoArtists,
+                    Tab::Albums => Str::LibraryNoAlbums,
+                });
                 column.child(div().py_16().flex().justify_center().text_color(theme.muted_foreground).child(message))
             })
             .child(
