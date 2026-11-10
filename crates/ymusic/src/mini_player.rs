@@ -264,9 +264,19 @@ impl Render for MiniPlayer {
             )
             .child(
                 h_flex()
-                    .w(px(200.))
+                    .w(px(232.))
                     .gap_2()
                     .items_center()
+                    .child(
+                        Button::new("sound")
+                            .ghost()
+                            .small()
+                            .icon(Icon::new(Lucide::SlidersHorizontal))
+                            .tooltip(t(Str::SoundTitle))
+                            .on_click(cx.listener(|player, _, window, cx| {
+                                crate::sound_panel::SoundPanel::open(player.playback.clone(), window, cx)
+                            })),
+                    )
                     .child(self.sleep_button(sleep_remaining, sleep_after_current))
                     .child(Icon::new(Lucide::Volume2).small().text_color(theme.muted_foreground))
                     .child(div().flex_1().child(Slider::new(&self.volume))),

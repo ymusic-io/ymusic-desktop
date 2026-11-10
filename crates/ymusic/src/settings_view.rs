@@ -48,14 +48,15 @@ fn saved(settings: &dyn SettingsStore, key: &str) -> String {
 }
 
 pub struct SettingsView {
+    playback: Entity<crate::playback::Playback>,
     account: Option<YtAccountInfo>,
     signing_out: bool,
     scroll: ScrollHandle,
 }
 
 impl SettingsView {
-    pub fn new(cx: &mut Context<Self>) -> Self {
-        let mut view = Self { account: None, signing_out: false, scroll: ScrollHandle::new() };
+    pub fn new(playback: Entity<crate::playback::Playback>, cx: &mut Context<Self>) -> Self {
+        let mut view = Self { playback, account: None, signing_out: false, scroll: ScrollHandle::new() };
         view.refresh_account(cx);
         view
     }
@@ -287,6 +288,14 @@ impl Render for SettingsView {
             .child(row(t(Str::SettingsTheme), None, theme_menu, cx))
             .child(row(t(Str::SettingsLanguage), None, language_menu, cx))
             .child(heading(t(Str::SettingsSectionPlayback), cx))
+            .child(row(
+                t(Str::SettingsSound),
+                Some(t(Str::SettingsSoundHint).to_owned()),
+                Button::new("sound").small().label(t(Str::SoundTitle)).on_click(cx.listener(|view, _, window, cx| {
+                    crate::sound_panel::SoundPanel::open(view.playback.clone(), window, cx)
+                })),
+                cx,
+            ))
             .child(row(
                 t(Str::SettingsSponsorBlock),
                 Some(t(Str::SettingsSponsorBlockHint).to_owned()),

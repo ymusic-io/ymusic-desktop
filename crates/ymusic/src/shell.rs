@@ -169,6 +169,8 @@ pub struct Shell {
     settings: Option<Entity<SettingsView>>,
     /// Debug: open the sign-in dialog on the next frame.
     pending_signin: bool,
+    /// Debug: open the Sound panel on the next frame.
+    pending_sound: bool,
     /// A download dialog to open on the next frame (opening needs the window).
     pending_download: Option<DownloadTarget>,
     _media_session: Entity<MediaSession>,
@@ -217,6 +219,7 @@ impl Shell {
             downloads: None,
             settings: None,
             pending_signin: false,
+            pending_sound: false,
             pending_download: None,
             _media_session: media_session,
             _history: history,
@@ -286,6 +289,7 @@ impl Shell {
             _ if route == "playagain" => self.section = Section::PlayAgain,
             _ if route == "downloads" => self.section = Section::Downloads,
             _ if route == "settings" => self.section = Section::Settings,
+            _ if route == "sound" => self.pending_sound = true,
             _ if route == "signin" => {
                 self.section = Section::Settings;
                 self.pending_signin = true;
@@ -687,7 +691,8 @@ impl Shell {
             Section::PlayAgain => self.play_again_view(cx).into_any_element(),
             Section::Downloads => self.downloads_view(cx).into_any_element(),
             Section::Settings => {
-                let view = self.settings.get_or_insert_with(|| cx.new(SettingsView::new)).clone();
+                let playback = self.playback.clone();
+                let view = self.settings.get_or_insert_with(|| cx.new(|cx| SettingsView::new(playback, cx))).clone();
                 view.into_any_element()
             }
             other => {
@@ -803,6 +808,9 @@ impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if let Some(target) = self.pending_download.take() {
             DownloadPicker::open(target, window, cx);
+        }
+        if std::mem::take(&mut self.pending_sound) {
+            crate::sound_panel::SoundPanel::open(self.playback.clone(), window, cx);
         }
         if std::mem::take(&mut self.pending_signin) {
             crate::signin_dialog::SignInDialog::open(window, cx, |_| {});

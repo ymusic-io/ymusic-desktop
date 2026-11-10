@@ -19,6 +19,7 @@ mod settings_view;
 mod shell;
 mod signin;
 mod signin_dialog;
+mod sound_panel;
 mod sponsor_block;
 mod telemetry;
 mod video_layer;

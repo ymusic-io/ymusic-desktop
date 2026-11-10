@@ -27,7 +27,8 @@ gpui_kit::assets::icon_assets!(
         Timer,
         RotateCcw,
         FolderOpen,
-        X
+        X,
+        SlidersHorizontal
     ]
 );
 
