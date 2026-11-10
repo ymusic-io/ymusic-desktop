@@ -2,6 +2,8 @@
 //! local files and YouTube videos, a display snapshot per YouTube video, and "Play again": whole
 //! queues saved where they were left. Blocking SQLite: call from a worker.
 
+pub mod sponsor;
+
 use std::path::Path;
 use std::sync::Mutex;
 
