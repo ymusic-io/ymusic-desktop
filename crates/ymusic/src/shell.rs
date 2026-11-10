@@ -15,7 +15,8 @@ use ym_i18n::{Str, t};
 
 use crate::feed::{FeedSource, FeedView, Navigate, Play};
 use crate::graph::{AppGraph, on_core};
-use crate::mini_player::MiniPlayer;
+use crate::mini_player::{MiniPlayer, ToggleNowPlaying};
+use crate::now_playing::NowPlaying;
 use crate::playback::Playback;
 
 const SUGGEST_DEBOUNCE: Duration = Duration::from_millis(150);
@@ -114,6 +115,8 @@ pub struct Shell {
     suggestions_open: bool,
     playback: Entity<Playback>,
     mini_player: Entity<MiniPlayer>,
+    now_playing: Entity<NowPlaying>,
+    now_playing_open: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -135,9 +138,16 @@ impl Shell {
             });
         let playback = cx.new(|_| Playback::new());
         let mini_player = cx.new(|cx| MiniPlayer::new(playback.clone(), window, cx));
+        let now_playing = cx.new(|cx| NowPlaying::new(playback.clone(), cx));
+        let toggle = cx.subscribe(&mini_player, |shell, _, _: &ToggleNowPlaying, cx| {
+            shell.now_playing_open = !shell.now_playing_open;
+            cx.notify();
+        });
         Self {
             playback,
             mini_player,
+            now_playing,
+            now_playing_open: false,
             section: Section::Discover,
             discover_tab: DiscoverTab::Home,
             roots: HashMap::new(),
@@ -146,7 +156,7 @@ impl Shell {
             suggestions: Vec::new(),
             suggest_generation: 0,
             suggestions_open: false,
-            _subscriptions: vec![subscription],
+            _subscriptions: vec![subscription, toggle],
         }
     }
 
@@ -160,6 +170,10 @@ impl Shell {
         match route.split_once(':') {
             Some(("search", query)) => self.submit_search(query.to_owned(), window, cx),
             Some(("play", url)) => self.play_link(url.to_owned(), cx),
+            Some(("nowplaying", url)) => {
+                self.now_playing_open = true;
+                self.play_link(url.to_owned(), cx);
+            }
             _ if route == "trending" => self.discover_tab = DiscoverTab::Trending,
             _ if route == "music" => self.section = Section::YtMusic,
             _ => {}
@@ -208,6 +222,7 @@ impl Shell {
     }
 
     fn push(&mut self, source: FeedSource, title: Option<SharedString>, cx: &mut Context<Self>) {
+        self.now_playing_open = false;
         let view = self.feed_view(source, title, cx);
         let stack = self.stacks.entry(self.section).or_default();
         stack.pushed.push(view);
@@ -232,6 +247,7 @@ impl Shell {
     }
 
     fn select_section(&mut self, section: Section, cx: &mut Context<Self>) {
+        self.now_playing_open = false;
         if self.section == section {
             // Re-selecting the current section returns to its root.
             let stack = self.stacks.entry(section).or_default();
@@ -286,6 +302,9 @@ impl Shell {
     }
 
     fn content(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        if self.now_playing_open && self.playback.read(cx).current().is_some() {
+            return self.now_playing.clone().into_any_element();
+        }
         if let Some(top) = self.stacks.get(&self.section).and_then(|stack| stack.pushed.last()) {
             return top.clone().into_any_element();
         }

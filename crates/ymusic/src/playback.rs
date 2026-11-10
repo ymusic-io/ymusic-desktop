@@ -119,6 +119,14 @@ impl Playback {
         self.extend_queue_if_near_end(cx);
     }
 
+    pub fn jump_to(&mut self, index: usize, cx: &mut Context<Self>) {
+        if index < self.queue.len() && index != self.index {
+            self.index = index;
+            self.load_current(cx);
+            self.extend_queue_if_near_end(cx);
+        }
+    }
+
     pub fn previous(&mut self, cx: &mut Context<Self>) {
         if self.position_ms > 3_000 || self.index == 0 {
             self.seek(0, cx);

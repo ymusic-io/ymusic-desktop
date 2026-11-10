@@ -12,6 +12,9 @@ use ym_i18n::{Str, t};
 
 use crate::playback::{PlayState, Playback};
 
+/// The user asked to open (or close) Now Playing.
+pub struct ToggleNowPlaying;
+
 pub struct MiniPlayer {
     playback: Entity<Playback>,
     seek: Entity<SliderState>,
@@ -19,6 +22,8 @@ pub struct MiniPlayer {
     dragging_seek: bool,
     _subscriptions: Vec<Subscription>,
 }
+
+impl EventEmitter<ToggleNowPlaying> for MiniPlayer {}
 
 impl MiniPlayer {
     pub fn new(playback: Entity<Playback>, window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -113,9 +118,12 @@ impl Render for MiniPlayer {
             .bg(theme.sidebar)
             .child(
                 h_flex()
+                    .id("now-playing-toggle")
                     .w(px(300.))
                     .gap_3()
                     .min_w_0()
+                    .cursor_pointer()
+                    .on_click(cx.listener(|_, _, _, cx| cx.emit(ToggleNowPlaying)))
                     .child(
                         div()
                             .size(px(48.))
