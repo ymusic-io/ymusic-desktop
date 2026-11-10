@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
 use bytes::{Buf, Bytes, BytesMut};
-use futures::future::BoxFuture;
+use futures::future::LocalBoxFuture;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::ffi;
@@ -18,7 +18,8 @@ pub const PIPE_CAP: usize = 64 * 1024;
 const PIPE_LOW: usize = PIPE_CAP / 2;
 
 pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
-pub type Handler = Arc<dyn Fn(Pipe) -> BoxFuture<'static, Result<(), BoxError>> + Send + Sync>;
+/// Invoked and polled on the engine thread only, so the future it returns need not be `Send`.
+pub type Handler = Arc<dyn Fn(Pipe) -> LocalBoxFuture<'static, Result<(), BoxError>> + Send + Sync>;
 pub type LogHandler = Arc<dyn Fn(LogLevel, &str) + Send + Sync>;
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -182,7 +183,7 @@ impl QuickJsRuntime {
     pub fn on_accept<F, Fut>(&self, command: &str, handler: F) -> AcceptRegistration
     where
         F: Fn(Pipe) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = Result<(), BoxError>> + Send + 'static,
+        Fut: Future<Output = Result<(), BoxError>> + 'static,
     {
         self.register(command, false, Arc::new(move |pipe| Box::pin(handler(pipe))))
     }
@@ -191,7 +192,7 @@ impl QuickJsRuntime {
     pub fn on_accept_prefix<F, Fut>(&self, prefix: &str, handler: F) -> AcceptRegistration
     where
         F: Fn(Pipe) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = Result<(), BoxError>> + Send + 'static,
+        Fut: Future<Output = Result<(), BoxError>> + 'static,
     {
         assert!(!prefix.is_empty(), "prefix must not be empty");
         self.register(prefix, true, Arc::new(move |pipe| Box::pin(handler(pipe))))
