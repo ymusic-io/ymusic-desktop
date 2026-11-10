@@ -6,7 +6,22 @@ use gpui_kit::{AssetSource, Result, SharedString};
 
 gpui_kit::assets::icon_assets!(
     ShellIcons,
-    [MonitorPlay, CirclePlay, LibraryBig, RotateCcwClock, Download, Settings, Heart, Send, MessageCircle]
+    [
+        MonitorPlay,
+        CirclePlay,
+        LibraryBig,
+        RotateCcwClock,
+        Download,
+        Settings,
+        Heart,
+        Send,
+        MessageCircle,
+        Play,
+        Pause,
+        SkipBack,
+        SkipForward,
+        Volume2
+    ]
 );
 
 pub struct AppAssets;

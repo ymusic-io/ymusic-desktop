@@ -33,3 +33,5 @@ R20019 - player main-proxy: host/main/ opened without a command
 R20020 - player main-proxy: no main engine, or the main engine refused the command
 R20021 - player/mintPo answered without a content PO token
 R90001 - app boot: the engine cache store could not be opened (data dir I/O, index)
+R90002 - playback: the native MSE host could not be created
+R90003 - playback: the player reported an error state without a code of its own

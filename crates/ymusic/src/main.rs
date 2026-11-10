@@ -2,6 +2,8 @@ mod assets;
 mod feed;
 mod graph;
 mod http_client;
+mod mini_player;
+mod playback;
 mod shell;
 
 use std::sync::Arc;

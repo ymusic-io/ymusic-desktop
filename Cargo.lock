@@ -8517,10 +8517,12 @@ dependencies = [
  "futures",
  "gpui-kit",
  "reqwest",
+ "serde_json",
  "tokio",
  "ym-common",
  "ym-engine",
  "ym-i18n",
+ "ym-mse",
  "ym-settings",
 ]
 

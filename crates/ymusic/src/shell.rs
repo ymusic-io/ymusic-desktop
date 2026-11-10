@@ -13,8 +13,10 @@ use gpui_kit::component::{ActiveTheme, Disableable, Icon, IconName, Sizable, Sty
 use gpui_kit::*;
 use ym_i18n::{Str, t};
 
-use crate::feed::{FeedSource, FeedView, Navigate};
+use crate::feed::{FeedSource, FeedView, Navigate, Play};
 use crate::graph::{AppGraph, on_core};
+use crate::mini_player::MiniPlayer;
+use crate::playback::Playback;
 
 const SUGGEST_DEBOUNCE: Duration = Duration::from_millis(150);
 
@@ -110,6 +112,8 @@ pub struct Shell {
     suggestions: Vec<String>,
     suggest_generation: u64,
     suggestions_open: bool,
+    playback: Entity<Playback>,
+    mini_player: Entity<MiniPlayer>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -129,7 +133,11 @@ impl Shell {
                 }
                 InputEvent::Blur => {}
             });
+        let playback = cx.new(|_| Playback::new());
+        let mini_player = cx.new(|cx| MiniPlayer::new(playback.clone(), window, cx));
         Self {
+            playback,
+            mini_player,
             section: Section::Discover,
             discover_tab: DiscoverTab::Home,
             roots: HashMap::new(),
@@ -143,7 +151,7 @@ impl Shell {
     }
 
     /// Debug builds only: `YMUSIC_DEV_ROUTE` opens a surface at start (`trending`, `music`,
-    /// `search:<query>`), for screenshots without driving the UI.
+    /// `search:<query>`, `play:<youtube url>`), for screenshots without driving the UI.
     pub fn apply_dev_route(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !cfg!(debug_assertions) {
             return;
@@ -151,10 +159,25 @@ impl Shell {
         let Ok(route) = std::env::var("YMUSIC_DEV_ROUTE") else { return };
         match route.split_once(':') {
             Some(("search", query)) => self.submit_search(query.to_owned(), window, cx),
+            Some(("play", url)) => self.play_link(url.to_owned(), cx),
             _ if route == "trending" => self.discover_tab = DiscoverTab::Trending,
             _ if route == "music" => self.section = Section::YtMusic,
             _ => {}
         }
+    }
+
+    /// Resolves a shared YouTube link and plays it when it names a video.
+    fn play_link(&mut self, url: String, cx: &mut Context<Self>) {
+        let graph = cx.global::<AppGraph>();
+        let (engine, log) = (graph.engine.clone(), graph.log.fork("link"));
+        let resolve = on_core(cx, async move { engine.resolve_link(&url, &log).await });
+        cx.spawn(async move |this, cx| {
+            if let Some(Ok(Some(ym_engine::yt::YtLinkTarget::Video { item, .. }))) = resolve.await {
+                this.update(cx, |shell, cx| shell.playback.update(cx, |playback, cx| playback.play(*item, None, cx)))
+                    .ok();
+            }
+        })
+        .detach();
     }
 
     fn feed_view(
@@ -164,10 +187,14 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> Entity<FeedView> {
         let view = cx.new(|cx| FeedView::new(source, title, cx));
-        let subscription = cx.subscribe(&view, |shell, _, event: &Navigate, cx| {
+        let navigate = cx.subscribe(&view, |shell, _, event: &Navigate, cx| {
             shell.push(event.source.clone(), event.title.clone(), cx);
         });
-        self._subscriptions.push(subscription);
+        let play = cx.subscribe(&view, |shell, _, event: &Play, cx| {
+            let (item, queue) = (event.item.clone(), event.queue.clone());
+            shell.playback.update(cx, |playback, cx| playback.play(item, queue, cx));
+        });
+        self._subscriptions.extend([navigate, play]);
         view
     }
 
@@ -406,16 +433,22 @@ impl Render for Shell {
         let header = self.render_header(cx);
         let suggestions = self.render_suggestions(cx);
         let sidebar = self.render_sidebar(cx);
-        h_flex().size_full().bg(cx.theme().background).child(sidebar).child(
-            v_flex()
-                .relative()
-                .flex_1()
-                .min_w_0()
-                .h_full()
-                .child(header)
-                .child(div().flex_1().min_h_0().child(content))
-                .children(suggestions),
-        )
+        v_flex()
+            .size_full()
+            .bg(cx.theme().background)
+            .child(
+                h_flex().flex_1().min_h_0().w_full().child(sidebar).child(
+                    v_flex()
+                        .relative()
+                        .flex_1()
+                        .min_w_0()
+                        .h_full()
+                        .child(header)
+                        .child(div().flex_1().min_h_0().child(content))
+                        .children(suggestions),
+                ),
+            )
+            .child(self.mini_player.clone())
     }
 }
 

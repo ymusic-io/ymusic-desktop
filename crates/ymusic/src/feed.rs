@@ -25,7 +25,6 @@ pub enum FeedSource {
     Channel(String),
     MusicBrowse(String),
     Search(String),
-    WatchNext(String),
 }
 
 impl FeedSource {
@@ -64,12 +63,14 @@ impl FeedSource {
                 let query = continuation.is_none().then_some(query.as_str());
                 engine.search(query, None, continuation, &log).await
             }
-            Self::WatchNext(video_id) => {
-                let video_id = continuation.is_none().then_some(video_id.as_str());
-                engine.watch_next(video_id, continuation, &log).await
-            }
         }
     }
+}
+
+/// A request to play a video; `queue` is set when its section plays in order.
+pub struct Play {
+    pub item: YtFeedItem,
+    pub queue: Option<Vec<YtFeedItem>>,
 }
 
 /// A request to open a new surface on the current section's stack.
@@ -96,6 +97,7 @@ pub struct FeedView {
 }
 
 impl EventEmitter<Navigate> for FeedView {}
+impl EventEmitter<Play> for FeedView {}
 
 impl FeedView {
     pub fn new(source: FeedSource, title: Option<SharedString>, cx: &mut Context<Self>) -> Self {
@@ -182,10 +184,13 @@ impl FeedView {
         self.page.continuation = page.continuation;
     }
 
-    fn open_item(&mut self, item: &YtFeedItem, cx: &mut Context<Self>) {
+    fn open_item(&mut self, item: &YtFeedItem, queue: Option<Vec<YtFeedItem>>, cx: &mut Context<Self>) {
         let title = Some(SharedString::from(item.title.clone()));
         let source = match item.kind.as_str() {
-            "video" => Some(FeedSource::WatchNext(item.id.clone())),
+            "video" => {
+                cx.emit(Play { item: item.clone(), queue });
+                return;
+            }
             "playlist" => item
                 .url
                 .as_deref()
@@ -290,7 +295,13 @@ impl FeedView {
             )
     }
 
-    fn render_item(&self, item: &YtFeedItem, index: usize, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    fn render_item(
+        &self,
+        item: &YtFeedItem,
+        index: usize,
+        queue: Option<std::rc::Rc<Vec<YtFeedItem>>>,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
         let theme = cx.theme();
         let (width, height, round) = match item.kind.as_str() {
             "channel" => (68., 68., true),
@@ -345,7 +356,11 @@ impl FeedView {
                         column.child(div().text_xs().text_color(theme.muted_foreground).truncate().child(line))
                     }),
             )
-            .on_click(cx.listener(move |view, _, _, cx| view.open_item(&clicked, cx)))
+            .on_click(cx.listener(move |view, _, _, cx| {
+                let queue =
+                    queue.as_ref().map(|items| items.iter().filter(|item| item.kind == "video").cloned().collect());
+                view.open_item(&clicked, queue, cx)
+            }))
     }
 }
 
@@ -445,8 +460,10 @@ impl Render for FeedView {
                             }),
                     );
             }
+            let queue =
+                (section.play_mode.as_deref() == Some("queue")).then(|| std::rc::Rc::new(section.items.clone()));
             for item in &section.items {
-                block = block.child(self.render_item(item, index, cx));
+                block = block.child(self.render_item(item, index, queue.clone(), cx));
                 index += 1;
             }
             column = column.child(block);
