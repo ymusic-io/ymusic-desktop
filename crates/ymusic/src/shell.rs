@@ -22,6 +22,7 @@ use crate::now_playing::NowPlaying;
 use crate::play_again::{PlayAgainView, ResumeQueue};
 use crate::play_history::HistoryRecorder;
 use crate::playback::Playback;
+use crate::sponsor_block::SponsorBlock;
 
 const SUGGEST_DEBOUNCE: Duration = Duration::from_millis(150);
 
@@ -163,6 +164,7 @@ pub struct Shell {
     play_again: Option<Entity<PlayAgainView>>,
     _media_session: Entity<MediaSession>,
     _history: Entity<HistoryRecorder>,
+    _sponsor_block: Entity<SponsorBlock>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -187,6 +189,7 @@ impl Shell {
         let now_playing = cx.new(|cx| NowPlaying::new(playback.clone(), cx));
         let media_session = cx.new(|cx| MediaSession::new(playback.clone(), cx));
         let history = cx.new(|cx| HistoryRecorder::new(playback.clone(), cx));
+        let sponsor_block = cx.new(|cx| SponsorBlock::new(playback.clone(), cx));
         let toggle = cx.subscribe(&mini_player, |shell, _, _: &ToggleNowPlaying, cx| {
             shell.now_playing_open = !shell.now_playing_open;
             cx.notify();
@@ -204,6 +207,7 @@ impl Shell {
             play_again: None,
             _media_session: media_session,
             _history: history,
+            _sponsor_block: sponsor_block,
             section,
             discover_tab,
             roots: HashMap::new(),

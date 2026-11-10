@@ -91,3 +91,4 @@ R70037 - download: the video scratch file could not be opened
 R90015 - app boot: the download stores (downloads.db / download-segments.db) could not be opened
 R90016 - app boot: play_history.db could not be opened
 R90017 - play again: the saved queues could not be read or decoded
+R90018 - app boot: sponsor_block.db could not be opened

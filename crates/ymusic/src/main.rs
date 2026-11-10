@@ -15,6 +15,7 @@ mod playback;
 mod queue_nav;
 mod shell;
 mod signin;
+mod sponsor_block;
 mod telemetry;
 mod video_layer;
 mod youtube_session;

@@ -60,6 +60,7 @@ pub struct AppGraph {
     pub youtube: Arc<YoutubeSessions>,
     pub downloads: DownloadService,
     pub history: Arc<ym_history::PlayHistory>,
+    pub sponsor_block: Arc<ym_history::sponsor::SponsorBlockStore>,
 }
 
 impl Global for AppGraph {}
@@ -189,6 +190,13 @@ impl AppGraph {
                 .map_err(|error| boot_error("R90016", "play history")(error.to_string()))?
                 .map_err(|error| boot_error("R90016", "play history")(error.to_string()))?,
         );
+        let sponsor_path = data_dir.join("sponsor_block.db");
+        let sponsor_block = Arc::new(
+            tokio::task::spawn_blocking(move || ym_history::sponsor::SponsorBlockStore::open(&sponsor_path))
+                .await
+                .map_err(|error| boot_error("R90018", "sponsorblock store")(error.to_string()))?
+                .map_err(|error| boot_error("R90018", "sponsorblock store")(error.to_string()))?,
+        );
 
         let graph = Self {
             engines,
@@ -204,6 +212,7 @@ impl AppGraph {
             youtube,
             downloads,
             history,
+            sponsor_block,
         };
         graph.follow_published_bundles(engine_source);
         Ok(graph)

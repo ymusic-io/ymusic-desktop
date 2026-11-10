@@ -41,6 +41,7 @@ pub fn encode_items(items: &[QueueItem]) -> String {
                     row["uri"] = json!(path.to_string_lossy());
                     row["code"] = json!(item.history_code);
                     row["videoId"] = json!(item.youtube_vid);
+                    row["gainDb"] = json!(item.loudness_gain_db);
                 }
             }
             row
@@ -80,6 +81,7 @@ pub fn decode_items(text: &str) -> Result<Vec<QueueItem>, String> {
                     .collect(),
                 history_code: if local { string("code") } else { None },
                 youtube_vid: if local { string("videoId") } else { None },
+                loudness_gain_db: if local { row.get("gainDb").and_then(Value::as_f64) } else { None },
                 source,
             })
         })

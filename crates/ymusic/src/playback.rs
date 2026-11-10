@@ -28,6 +28,8 @@ const VOLUME_KEY: &str = "playback.volume";
 const LOOP_MODE_KEY: &str = "player.loopMode";
 const SHUFFLE_KEY: &str = "player.shuffle";
 const LOCAL_POLL: Duration = Duration::from_millis(250);
+const MIN_SKIP_MS: i64 = 1_000;
+const OUTRO_TOLERANCE_MS: i64 = 1_000;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum PlayState {
@@ -58,6 +60,8 @@ pub struct QueueItem {
     pub history_code: Option<String>,
     /// A local file downloaded from YouTube (its `composer` tag).
     pub youtube_vid: Option<String>,
+    /// A local file's dB to its loudness target.
+    pub loudness_gain_db: Option<f64>,
 }
 
 impl QueueItem {
@@ -71,6 +75,7 @@ impl QueueItem {
             thumbs: item.thumbs.clone(),
             history_code: None,
             youtube_vid: None,
+            loudness_gain_db: None,
         }
     }
 
@@ -88,6 +93,7 @@ impl QueueItem {
                     .unwrap_or_else(|| format!("@{}:{}", item.file_size, item.duration_ms.unwrap_or(0) / 1000)),
             ),
             youtube_vid: item.youtube_vid.clone(),
+            loudness_gain_db: item.loudness_gain_db,
         }
     }
 
@@ -135,6 +141,10 @@ pub struct Playback {
     pub queue_revision: u64,
     /// Where the next load starts, once.
     start_position_ms: i64,
+    /// SponsorBlock spans (start, end ms) for the item with this key.
+    skip_segments: Option<(String, Vec<(i64, i64)>)>,
+    /// The span last skipped, so a late position report doesn't skip it twice.
+    skipped: Option<(String, i64)>,
     queue_continuation: Option<String>,
     loading_queue: bool,
     pub state: PlayState,
@@ -142,6 +152,8 @@ pub struct Playback {
     pub duration_ms: i64,
     loading_video: Option<String>,
     gain: f32,
+    /// The local item's attenuate-only loudness gain.
+    local_gain: f32,
     pub volume: f32,
     pub effects: AudioEffects,
     pub nav: QueueNav,
@@ -174,6 +186,8 @@ impl Playback {
             queue_id: String::new(),
             queue_revision: 0,
             start_position_ms: 0,
+            skip_segments: None,
+            skipped: None,
             queue_continuation: None,
             loading_queue: false,
             state: PlayState::Idle,
@@ -181,6 +195,7 @@ impl Playback {
             duration_ms: 0,
             loading_video: None,
             gain: 1.0,
+            local_gain: 1.0,
             volume: if muted { 0.0 } else { saved_volume.unwrap_or(1.0).clamp(0.0, 1.0) },
             effects: AudioEffects::load(cx.global::<AppGraph>().settings.as_ref()),
             nav: {
@@ -524,12 +539,44 @@ impl Playback {
         if let Some(session) = &self.session {
             session.host.set_volume(self.volume * self.gain);
         }
-        self.send_local(LocalCommand::Volume(self.volume));
+        self.send_local(LocalCommand::Volume(self.volume * self.local_gain));
     }
 
     fn send_local(&self, command: LocalCommand) {
         if let Some(local) = &self.local {
             local.send(command);
+        }
+    }
+
+    /// Spans to skip in the item with `key`; spans under a second are ignored.
+    pub fn set_skip_segments(&mut self, key: String, segments: Vec<(i64, i64)>) {
+        let usable: Vec<(i64, i64)> = segments.into_iter().filter(|(start, end)| end - start >= MIN_SKIP_MS).collect();
+        self.skip_segments = (!usable.is_empty()).then_some((key, usable));
+    }
+
+    /// Seeks past a span the play-head entered; a span running out the track ends it.
+    fn check_skip(&mut self, cx: &mut Context<Self>) {
+        if self.state != PlayState::Playing {
+            return;
+        }
+        let Some(key) = self.current().map(QueueItem::key) else { return };
+        let Some((owner, segments)) = &self.skip_segments else { return };
+        if *owner != key {
+            return;
+        }
+        let position = self.position_ms;
+        let Some(&(start, end)) = segments.iter().find(|(start, end)| position >= *start && position < *end) else {
+            return;
+        };
+        if self.skipped.as_ref() == Some(&(key.clone(), start)) {
+            return;
+        }
+        self.skipped = Some((key, start));
+        if self.duration_ms > 0 && end >= self.duration_ms - OUTRO_TOLERANCE_MS {
+            self.state = PlayState::Ended;
+            self.track_ended(cx);
+        } else {
+            self.seek(end, cx);
         }
     }
 
@@ -586,6 +633,8 @@ impl Playback {
                 }
                 self.active = Some(Active::Local);
                 self.loading_video = None;
+                self.local_gain = item.loudness_gain_db.map_or(1.0, |db| 10f64.powf(db.min(0.0) / 20.0) as f32);
+                self.apply_volume();
                 self.local_generation += 1;
                 self.bind_presenter();
                 self.send_local(LocalCommand::Load { path, video: self.video });
@@ -638,6 +687,7 @@ impl Playback {
             return self.active == Some(Active::Local) && generation == self.local_generation;
         }
         self.state = if status.playing { PlayState::Playing } else { PlayState::Paused };
+        self.check_skip(cx);
         cx.notify();
         true
     }
@@ -763,6 +813,7 @@ impl Playback {
                 self.track_ended(cx);
             }
         }
+        self.check_skip(cx);
         if let Some(gain) = status.get("gain").and_then(|gain| gain.get("value")).and_then(Value::as_f64) {
             self.gain = (gain as f32).clamp(0.0, 1.0);
             self.apply_volume();
