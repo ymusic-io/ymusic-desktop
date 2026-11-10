@@ -137,23 +137,39 @@ impl SettingsView {
     }
 }
 
-fn heading(label: &'static str, cx: &App) -> impl IntoElement {
-    div().pt_4().pb_1().text_sm().font_semibold().text_color(cx.theme().muted_foreground).child(label)
+/// A header inset 32 (card margin + row padding) over a rounded card of borderless rows.
+fn section(label: &'static str, rows: Vec<AnyElement>, cx: &App) -> impl IntoElement {
+    let theme = cx.theme();
+    v_flex()
+        .child(
+            div()
+                .id(label)
+                .role(Role::Heading)
+                .px_8()
+                .pt_6()
+                .pb_2()
+                .text_sm()
+                .font_semibold()
+                .text_color(theme.muted_foreground)
+                .child(label),
+        )
+        .child(v_flex().mx_4().rounded(px(12.)).bg(theme.secondary).overflow_hidden().children(rows))
 }
 
-fn row(title: impl Into<SharedString>, hint: Option<String>, control: impl IntoElement, cx: &App) -> impl IntoElement {
+fn row(title: impl Into<SharedString>, hint: Option<String>, control: impl IntoElement, cx: &App) -> AnyElement {
     let theme = cx.theme();
     h_flex()
         .gap_4()
-        .py_2()
-        .border_b_1()
-        .border_color(theme.border)
+        .px_4()
+        .py(px(14.))
+        .items_center()
         .child(
             v_flex().flex_1().min_w_0().child(div().text_sm().child(title.into())).when_some(hint, |column, hint| {
-                column.child(div().text_xs().text_color(theme.muted_foreground).child(hint))
+                column.child(div().pt(px(2.)).text_xs().text_color(theme.muted_foreground).child(hint))
             }),
         )
         .child(div().flex_shrink_0().child(control))
+        .into_any_element()
 }
 
 fn language_name(tag: &str) -> String {
@@ -214,25 +230,26 @@ impl Render for SettingsView {
             _ => Str::SettingsThemeSystem,
         });
         let entity = cx.entity().downgrade();
-        let theme_menu = Button::new("theme").small().label(theme_label).dropdown_menu(move |mut menu, _, _| {
-            for (choice, label) in [
-                ("system", Str::SettingsThemeSystem),
-                ("light", Str::SettingsThemeLight),
-                ("dark", Str::SettingsThemeDark),
-            ] {
-                let view = entity.clone();
-                menu = menu.item(PopupMenuItem::new(t(label)).on_click(move |_, _, cx| {
-                    view.update(cx, |view, cx| view.set_theme(choice, cx)).ok();
-                }));
-            }
-            menu
-        });
+        let theme_menu =
+            Button::new("theme").small().ghost().label(theme_label).dropdown_menu(move |mut menu, _, _| {
+                for (choice, label) in [
+                    ("system", Str::SettingsThemeSystem),
+                    ("light", Str::SettingsThemeLight),
+                    ("dark", Str::SettingsThemeDark),
+                ] {
+                    let view = entity.clone();
+                    menu = menu.item(PopupMenuItem::new(t(label)).on_click(move |_, _, cx| {
+                        view.update(cx, |view, cx| view.set_theme(choice, cx)).ok();
+                    }));
+                }
+                menu
+            });
 
         let language_label =
             if language.is_empty() { t(Str::SettingsThemeSystem).to_owned() } else { language_name(&language) };
         let entity = cx.entity().downgrade();
         let language_menu =
-            Button::new("language").small().label(language_label).dropdown_menu(move |mut menu, _, _| {
+            Button::new("language").small().ghost().label(language_label).dropdown_menu(move |mut menu, _, _| {
                 menu = menu.scrollable(true).max_h(px(360.));
                 let system = entity.clone();
                 menu = menu.item(PopupMenuItem::new(t(Str::SettingsThemeSystem)).on_click(move |_, _, cx| {
@@ -280,58 +297,60 @@ impl Render for SettingsView {
             _ => Some(t(Str::SigninPrefaceSubtitle).to_owned()),
         };
 
-        let content = v_flex()
-            .max_w(px(720.))
-            .w_full()
-            .child(div().text_xl().font_semibold().child(t(Str::SectionSettings)))
-            .child(heading(t(Str::SettingsSectionAppearance), cx))
-            .child(row(t(Str::SettingsTheme), None, theme_menu, cx))
-            .child(row(t(Str::SettingsLanguage), None, language_menu, cx))
-            .child(heading(t(Str::SettingsSectionPlayback), cx))
-            .child(row(
+        let appearance = vec![
+            row(t(Str::SettingsTheme), None, theme_menu, cx),
+            row(t(Str::SettingsLanguage), None, language_menu, cx),
+        ];
+        let playback = vec![
+            row(
                 t(Str::SettingsSound),
                 Some(t(Str::SettingsSoundHint).to_owned()),
-                Button::new("sound").small().label(t(Str::SoundTitle)).on_click(cx.listener(|view, _, window, cx| {
-                    crate::sound_panel::SoundPanel::open(view.playback.clone(), window, cx)
-                })),
+                Button::new("sound").small().ghost().label(t(Str::SoundTitle)).on_click(cx.listener(
+                    |view, _, window, cx| crate::sound_panel::SoundPanel::open(view.playback.clone(), window, cx),
+                )),
                 cx,
-            ))
-            .child(row(
+            ),
+            row(
                 t(Str::SettingsSponsorBlock),
                 Some(t(Str::SettingsSponsorBlockHint).to_owned()),
-                Switch::new("sponsor-block").checked(sponsor_block).on_click(
-                    cx.listener(|view, checked: &bool, _, cx| view.put(SPONSOR_BLOCK_KEY, checked.to_string(), cx)),
-                ),
+                Switch::new("sponsor-block")
+                    .checked(sponsor_block)
+                    .accessibility_label(t(Str::SettingsSponsorBlock))
+                    .on_click(
+                        cx.listener(|view, checked: &bool, _, cx| view.put(SPONSOR_BLOCK_KEY, checked.to_string(), cx)),
+                    ),
                 cx,
-            ))
-            .child(heading(t(Str::SettingsSectionDownloads), cx))
-            .child(row(
-                t(Str::MenuDownloadLocation),
-                Some(
-                    folder
-                        .map(|folder| folder.display().to_string())
-                        .unwrap_or_else(|| t(Str::DownloadLocationNotSet).to_owned()),
-                ),
-                Button::new("download-folder")
-                    .small()
-                    .label(t(Str::MenuDownloadLocation))
-                    .on_click(cx.listener(|view, _, _, cx| view.choose_folder(cx))),
-                cx,
-            ))
-            .child(heading(t(Str::SettingsSectionDevices), cx))
-            .child(row(account_title, account_hint, account_control, cx))
-            .child(heading(t(Str::SettingsSectionPrivacy), cx))
-            .child(row(
-                t(Str::SettingsCrashReports),
-                Some(t(Str::SettingsCrashReportsHint).to_owned()),
-                Switch::new("crash-reports").checked(crash_reports).on_click(
+            ),
+        ];
+        let downloads = vec![row(
+            t(Str::MenuDownloadLocation),
+            Some(
+                folder
+                    .map(|folder| folder.display().to_string())
+                    .unwrap_or_else(|| t(Str::DownloadLocationNotSet).to_owned()),
+            ),
+            Button::new("download-folder")
+                .small()
+                .ghost()
+                .label(t(Str::MenuDownloadLocation))
+                .on_click(cx.listener(|view, _, _, cx| view.choose_folder(cx))),
+            cx,
+        )];
+        let account = vec![row(account_title, account_hint, account_control, cx)];
+        let privacy = vec![row(
+            t(Str::SettingsCrashReports),
+            Some(t(Str::SettingsCrashReportsHint).to_owned()),
+            Switch::new("crash-reports")
+                .checked(crash_reports)
+                .accessibility_label(t(Str::SettingsCrashReports))
+                .on_click(
                     cx.listener(|view, checked: &bool, _, cx| view.put(CRASH_REPORTS_KEY, checked.to_string(), cx)),
                 ),
-                cx,
-            ))
-            .child(heading(t(Str::SettingsSectionAbout), cx))
-            .child(row(t(Str::SettingsVersions), Some(versions), div(), cx))
-            .child(row(
+            cx,
+        )];
+        let about = vec![
+            row(t(Str::SettingsVersions), Some(versions), div(), cx),
+            row(
                 t(Str::SettingsSourceCode),
                 Some(SOURCE_CODE_URL.to_owned()),
                 Button::new("source")
@@ -340,13 +359,18 @@ impl Render for SettingsView {
                     .label(t(Str::SettingsSourceCode))
                     .on_click(|_, _, cx| cx.open_url(SOURCE_CODE_URL)),
                 cx,
-            ));
+            ),
+        ];
+        let content = v_flex()
+            .w_full()
+            .pb_6()
+            .child(section(t(Str::SettingsSectionAppearance), appearance, cx))
+            .child(section(t(Str::SettingsSectionPlayback), playback, cx))
+            .child(section(t(Str::SettingsSectionDownloads), downloads, cx))
+            .child(section(t(Str::SettingsSectionDevices), account, cx))
+            .child(section(t(Str::SettingsSectionPrivacy), privacy, cx))
+            .child(section(t(Str::SettingsSectionAbout), about, cx));
 
-        div()
-            .id("settings-scroll")
-            .size_full()
-            .overflow_y_scroll()
-            .track_scroll(&self.scroll)
-            .child(div().p_4().flex().justify_center().child(content))
+        div().id("settings-scroll").size_full().overflow_y_scroll().track_scroll(&self.scroll).child(content)
     }
 }
