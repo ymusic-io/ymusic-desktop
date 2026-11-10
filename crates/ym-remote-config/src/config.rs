@@ -103,6 +103,22 @@ pub struct ApiIdentity {
     pub device_id: String,
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum RelayError {
+    #[error("this build has no config service")]
+    NoService,
+    #[error("relay unreachable: {0}")]
+    Transport(String),
+    #[error("relay answered HTTP {0}")]
+    Status(u16),
+}
+
+impl RelayError {
+    fn transport(error: reqwest::Error) -> Self {
+        Self::Transport(error.without_url().to_string())
+    }
+}
+
 /// The policy around the service: the cache of the previous run, the throttle, what counts as
 /// fresh. A failed fetch publishes nothing, so an outage never changes how the app behaves.
 pub struct RemoteConfig {
@@ -194,6 +210,67 @@ impl RemoteConfig {
             }
             Err(error) => self.log.warn(&format!("R30003 config fetch failed: {error}"), None),
         }
+    }
+
+    /// The service's base url and identity headers on a request to `path`; `None` without a service.
+    fn request(&self, method: reqwest::Method, path: &str) -> Option<reqwest::RequestBuilder> {
+        let identity = self.identity.as_ref()?;
+        let url = format!("{}{path}", identity.base_url.trim_end_matches('/'));
+        let mut request = self
+            .client
+            .request(method, url)
+            .timeout(Duration::from_secs(10))
+            .header("x-os", &identity.os)
+            .header("x-os-ver", &identity.os_version)
+            .header("x-app-ver", identity.app_version_code.to_string())
+            .header("x-app-ver-name", &identity.app_version_name)
+            .header("x-device-id", &identity.device_id)
+            .header("x-arch", &identity.arch);
+        if let Some(key) = &identity.api_key {
+            request = request.header("x-api-key", key);
+        }
+        Some(request)
+    }
+
+    /// Opens a one-shot relay slot for a device-link handoff; returns its id.
+    pub async fn open_device_link(&self) -> Result<String, RelayError> {
+        let request = self.request(reqwest::Method::POST, "/v1/link").ok_or(RelayError::NoService)?;
+        let response = request.send().await.map_err(RelayError::transport)?;
+        if !response.status().is_success() {
+            return Err(RelayError::Status(response.status().as_u16()));
+        }
+        let body: serde_json::Value = serde_json::from_slice(&response.bytes().await.map_err(RelayError::transport)?)
+            .map_err(|_| RelayError::Status(0))?;
+        body.get("id").and_then(serde_json::Value::as_str).map(str::to_owned).ok_or(RelayError::Status(0))
+    }
+
+    /// The payload once the other device posted it (taking it deletes it); `None` while empty.
+    pub async fn take_device_link(&self, id: &str) -> Result<Option<String>, RelayError> {
+        let request = self.request(reqwest::Method::GET, &format!("/v1/link/{id}")).ok_or(RelayError::NoService)?;
+        let response = request.send().await.map_err(RelayError::transport)?;
+        match response.status().as_u16() {
+            200 => Ok(Some(response.text().await.map_err(RelayError::transport)?)),
+            204 => Ok(None),
+            code => Err(RelayError::Status(code)),
+        }
+    }
+
+    /// `false` when the slot is gone (expired or taken).
+    pub async fn put_device_link(&self, id: &str, payload: String) -> Result<bool, RelayError> {
+        let request = self.request(reqwest::Method::PUT, &format!("/v1/link/{id}")).ok_or(RelayError::NoService)?;
+        let response =
+            request.header("content-type", "text/plain").body(payload).send().await.map_err(RelayError::transport)?;
+        match response.status().as_u16() {
+            404 => Ok(false),
+            code if (200..300).contains(&code) => Ok(true),
+            code => Err(RelayError::Status(code)),
+        }
+    }
+
+    pub async fn close_device_link(&self, id: &str) -> Result<(), RelayError> {
+        let request = self.request(reqwest::Method::DELETE, &format!("/v1/link/{id}")).ok_or(RelayError::NoService)?;
+        let response = request.send().await.map_err(RelayError::transport)?;
+        if response.status().is_success() { Ok(()) } else { Err(RelayError::Status(response.status().as_u16())) }
     }
 
     async fn fetch(&self, identity: &ApiIdentity) -> Result<RemoteConfigData, String> {
