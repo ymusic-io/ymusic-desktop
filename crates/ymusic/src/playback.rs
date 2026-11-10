@@ -14,11 +14,12 @@ use ym_engine::player::LoadRequest;
 use ym_engine::yt::{YtFeedItem, YtThumb};
 use ym_engine::{DynamicEngine, EngineError};
 use ym_i18n::{Str, tf};
-use ym_mse::{MseHost, Presenter};
+use ym_mse::Presenter;
 
 use crate::feed::error_text;
 use crate::graph::{AppGraph, on_core};
 use crate::local_engine::{LocalCommand, LocalEngine};
+use crate::youtube_session::YoutubeSession;
 
 const VOLUME_KEY: &str = "playback.volume";
 const LOCAL_POLL: Duration = Duration::from_millis(250);
@@ -95,12 +96,6 @@ impl QueueItem {
     }
 }
 
-/// The YouTube engine closes before its host: JS calls straight into the C host.
-struct Session {
-    engine: Arc<DynamicEngine>,
-    host: Arc<MseHost>,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Active {
     YouTube,
@@ -108,7 +103,7 @@ enum Active {
 }
 
 pub struct Playback {
-    session: Option<Arc<Session>>,
+    session: Option<Arc<YoutubeSession>>,
     booting: bool,
     /// What to load once the YouTube session is up.
     pending: Option<String>,
@@ -441,58 +436,15 @@ impl Playback {
             return;
         }
         self.booting = true;
-        let graph = cx.global::<AppGraph>();
-        let mut config = graph.engine_config("player");
-        config.main = Some(graph.main_resolver());
-        let candidates = graph.player_candidates();
-        let player_source = graph.player_source.clone();
-        let log = graph.log.fork("playback");
-        let boot = on_core(cx, async move {
-            let host =
-                Arc::new(MseHost::create().ok_or_else(|| EngineError::site("R90002", "mse_host_create failed"))?);
-            config.mse = Some(host.attach_pointers());
-            let mse_log = log.fork("mse");
-            ym_mse::set_log_sink(move |level, message| {
-                let level = if level >= 2 { ym_common::log::Level::Warn } else { ym_common::log::Level::Info };
-                mse_log.log(level, message, None);
-            });
-            // A published bundle that will not boot must not take playback down: the next one boots.
-            let mut last_error = None;
-            for (script, staged) in candidates {
-                let engine = match DynamicEngine::create(script, config.clone()).await {
-                    Ok(engine) => Arc::new(engine),
-                    Err(error) => {
-                        last_error = Some(error);
-                        continue;
-                    }
-                };
-                if let Err(error) = engine.health_check().await {
-                    engine.close().await;
-                    last_error = Some(error);
-                    continue;
-                }
-                if let Some(bundle) = staged {
-                    let source = player_source.clone();
-                    let _ = tokio::task::spawn_blocking(move || source.store(&bundle)).await;
-                }
-                let weak = engine.runtime().downgrade();
-                ym_mse::set_event_sink(move |name| {
-                    if let Some(runtime) = weak.upgrade() {
-                        runtime.fire_event(name);
-                    }
-                });
-                engine.player_init(None, false, &log).await?;
-                return Ok::<_, EngineError>(Session { engine, host });
-            }
-            Err(last_error.unwrap_or_else(|| EngineError::site("R90002", "no player bundle booted")))
-        });
+        let sessions = cx.global::<AppGraph>().youtube.clone();
+        let boot = on_core(cx, async move { sessions.get().await });
         cx.spawn(async move |this, cx| {
             let result = boot.await;
             this.update(cx, |playback, cx| {
                 playback.booting = false;
                 match result {
                     Some(Ok(session)) => {
-                        playback.session = Some(Arc::new(session));
+                        playback.session = Some(session);
                         playback.apply_volume();
                         playback.bind_presenter();
                         playback.listen(cx);

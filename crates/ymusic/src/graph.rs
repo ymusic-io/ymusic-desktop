@@ -9,13 +9,17 @@ use tokio::runtime::Handle;
 use ym_common::http::HttpClients;
 use ym_common::log::Logger;
 use ym_engine::{
-    CookieJar, DiskCacheStore, DynamicEngine, EngineConfig, EngineError, EngineManager, MainResolver, MemoryCookieJar,
+    CookieJar, DiskCacheStore, DynamicEngine, EngineConfig, EngineError, EngineManager, MemoryCookieJar,
     PersistentCookieJar,
 };
 use ym_remote_config::{ApiIdentity, BundleSource, RemoteConfig, VerifiedBundle};
 use ym_settings::{AppDb, SettingsStore};
 use ym_signin::CookieVault;
 use ym_store::MediaStore;
+use ym_download::DownloadService;
+
+use crate::downloads::DownloadInputs;
+use crate::youtube_session::{CandidateSource, YoutubeSessions};
 
 const ENGINE_JS: &str = include_str!(concat!(env!("YMUSIC_V4_DIR"), "/engine-js/build/dist/engine.js"));
 const PLAYER_JS: &str = include_str!(concat!(env!("YMUSIC_V4_DIR"), "/engine-js/build/dist/player.js"));
@@ -42,11 +46,9 @@ pub struct AppGraph {
     pub engines: Arc<EngineManager>,
     pub tokio: Handle,
     pub log: Logger,
-    pub http: HttpClients,
     /// One identity for scraping and playback.
     pub cookies: Arc<dyn CookieJar>,
     pub settings: Arc<dyn SettingsStore>,
-    pub cache: Arc<DiskCacheStore>,
     pub media: Arc<MediaStore>,
     pub remote: Arc<RemoteConfig>,
     pub player_source: Arc<BundleSource>,
@@ -54,6 +56,9 @@ pub struct AppGraph {
     pub pending_player: Arc<Mutex<Option<VerifiedBundle>>>,
     /// The jar is password-sealed and this launch runs on in-memory cookies until it is unlocked.
     pub cookies_locked: bool,
+    /// The YouTube player session playback and downloads share.
+    pub youtube: Arc<YoutubeSessions>,
+    pub downloads: DownloadService,
 }
 
 impl Global for AppGraph {}
@@ -148,19 +153,47 @@ impl AppGraph {
         let engines = Arc::new(EngineManager::start(candidates, template).await?);
         remote.set_running_bundles(Some(i64::from(engines.backend_version())), None);
 
+        let pending_player: Arc<Mutex<Option<VerifiedBundle>>> = Arc::new(Mutex::new(None));
+        let media = Arc::new(media);
+        let mut player_config = template_for("player", &http, &log, &cookies, &settings, &cache, &remote);
+        player_config.main = Some({
+            let engines = engines.clone();
+            Arc::new(move || Some(engines.current().runtime().clone()))
+        });
+        let candidates: CandidateSource = {
+            let (pending, source) = (pending_player.clone(), player_source.clone());
+            Arc::new(move || player_candidates(&pending, &source))
+        };
+        let youtube =
+            Arc::new(YoutubeSessions::new(player_config, candidates, player_source.clone(), log.fork("youtube")));
+        let download_inputs = DownloadInputs {
+            tokio: tokio.clone(),
+            data_dir: data_dir.clone(),
+            http: http.clone(),
+            cookies: cookies.clone(),
+            settings: settings.clone(),
+            media: media.clone(),
+            sessions: youtube.clone(),
+            log: log.clone(),
+        };
+        let downloads = tokio::task::spawn_blocking(move || crate::downloads::open(download_inputs))
+            .await
+            .map_err(|error| boot_error("R90015", "downloads")(error.to_string()))?
+            .map_err(boot_error("R90015", "downloads"))?;
+
         let graph = Self {
             engines,
             tokio,
             log,
-            http,
             cookies,
             settings,
-            cache,
-            media: Arc::new(media),
+            media,
             remote,
             player_source,
-            pending_player: Arc::new(Mutex::new(None)),
+            pending_player,
             cookies_locked,
+            youtube,
+            downloads,
         };
         graph.follow_published_bundles(engine_source);
         Ok(graph)
@@ -169,28 +202,6 @@ impl AppGraph {
     /// The engine new work goes to; hold it for one job.
     pub fn engine(&self) -> Arc<DynamicEngine> {
         self.engines.current()
-    }
-
-    /// Resolves the current main engine at each call (the player's `host/main/*` proxy).
-    pub fn main_resolver(&self) -> MainResolver {
-        let engines = self.engines.clone();
-        Arc::new(move || Some(engines.current().runtime().clone()))
-    }
-
-    /// An engine config sharing this graph's HTTP, cookies, settings, cache and remote features.
-    pub fn engine_config(&self, tag: &str) -> EngineConfig {
-        let remote = self.remote.clone();
-        EngineConfig {
-            app_version: APP_VERSION,
-            http: self.http.clone(),
-            logger: self.log.fork(tag),
-            cookies: Some(self.cookies.clone()),
-            settings: Some(self.settings.clone()),
-            remote_features: Some(Arc::new(move |key| remote.current().feature(key).cloned())),
-            cache: Some(self.cache.clone()),
-            mse: None,
-            main: None,
-        }
     }
 
     /// Refreshes the config, then swaps in a newer published engine bundle (cached once it
@@ -238,17 +249,45 @@ impl AppGraph {
         });
     }
 
-    /// The player bundles to try, best first: a staged newer one, the cached one, the embedded one.
-    pub fn player_candidates(&self) -> Vec<(String, Option<VerifiedBundle>)> {
-        let mut candidates = Vec::new();
-        if let Some(bundle) = self.pending_player.lock().unwrap().take() {
-            candidates.push((bundle.source.clone(), Some(bundle)));
-        }
-        if let Some((script, _)) = self.player_source.cached() {
-            candidates.push((script, None));
-        }
-        candidates.push((PLAYER_JS.to_owned(), None));
-        candidates
+}
+
+/// The player bundles to try, best first: a staged newer one, the cached one, the embedded one.
+fn player_candidates(
+    pending: &Mutex<Option<VerifiedBundle>>,
+    source: &BundleSource,
+) -> Vec<(String, Option<VerifiedBundle>)> {
+    let mut candidates = Vec::new();
+    if let Some(bundle) = pending.lock().unwrap().take() {
+        candidates.push((bundle.source.clone(), Some(bundle)));
+    }
+    if let Some((script, _)) = source.cached() {
+        candidates.push((script, None));
+    }
+    candidates.push((PLAYER_JS.to_owned(), None));
+    candidates
+}
+
+/// An engine config sharing the app's HTTP, cookies, settings, cache and remote features.
+fn template_for(
+    tag: &str,
+    http: &HttpClients,
+    log: &Logger,
+    cookies: &Arc<dyn CookieJar>,
+    settings: &Arc<dyn SettingsStore>,
+    cache: &Arc<DiskCacheStore>,
+    remote: &Arc<RemoteConfig>,
+) -> EngineConfig {
+    let remote = remote.clone();
+    EngineConfig {
+        app_version: APP_VERSION,
+        http: http.clone(),
+        logger: log.fork(tag),
+        cookies: Some(cookies.clone()),
+        settings: Some(settings.clone()),
+        remote_features: Some(Arc::new(move |key| remote.current().feature(key).cloned())),
+        cache: Some(cache.clone()),
+        mse: None,
+        main: None,
     }
 }
 

@@ -88,3 +88,4 @@ R70034 - download: a scratch file could not be removed
 R70035 - download: the download run panicked
 R70036 - download: the download store (SQLite) failed (not disk full)
 R70037 - download: the video scratch file could not be opened
+R90015 - app boot: the download stores (downloads.db / download-segments.db) could not be opened

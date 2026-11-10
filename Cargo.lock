@@ -9207,6 +9207,7 @@ dependencies = [
  "url",
  "uuid",
  "ym-common",
+ "ym-download",
  "ym-engine",
  "ym-i18n",
  "ym-logstore",
@@ -9216,6 +9217,7 @@ dependencies = [
  "ym-signin",
  "ym-store",
  "ym-telemetry",
+ "ym-ytmedia",
 ]
 
 [[package]]

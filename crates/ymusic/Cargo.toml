@@ -28,6 +28,8 @@ ym-remote-config = { path = "../ym-remote-config" }
 ym-logstore = { path = "../ym-logstore" }
 ym-signin = { path = "../ym-signin" }
 ym-telemetry = { path = "../ym-telemetry" }
+ym-download = { path = "../ym-download" }
+ym-ytmedia = { path = "../ym-ytmedia" }
 uuid = { version = "1", features = ["v4"] }
 rfd = { version = "0.15", default-features = false, features = ["tokio"] }
 

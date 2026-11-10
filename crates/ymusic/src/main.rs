@@ -12,6 +12,8 @@ mod shell;
 mod signin;
 mod telemetry;
 mod video_layer;
+mod downloads;
+mod youtube_session;
 
 use gpui_kit::*;
 use ym_common::http::HttpClients;
@@ -23,7 +25,11 @@ use crate::shell::Shell;
 
 fn main() {
     ym_i18n::use_system_locale();
-    let data_dir = dirs::data_local_dir().unwrap_or_else(std::env::temp_dir).join("YMusicRust");
+    // Debug runs can be pointed at a throwaway data dir for automated checks.
+    let data_dir = std::env::var_os("YMUSIC_DATA_DIR")
+        .filter(|_| cfg!(debug_assertions))
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| dirs::data_local_dir().unwrap_or_else(std::env::temp_dir).join("YMusicRust"));
     let log_setup = crate::telemetry::logger(&data_dir);
     let log = log_setup.log.clone();
     let tokio =

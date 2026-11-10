@@ -210,7 +210,9 @@ impl Shell {
     }
 
     /// Debug builds only: `YMUSIC_DEV_ROUTE` opens a surface at start (`trending`, `music`,
-    /// `search:<query>`, `play:<youtube url>`, `nowplaying:<url>`, `library:<dir>`, `localplay:<dir>`, `signin-paste:<file>`, `devicelink`, `signout`), for screenshots without driving the UI.
+    /// `search:<query>`, `play:<youtube url>`, `nowplaying:<url>`, `library:<dir>`, `localplay:<dir>`, `signin-paste:<file>`, `devicelink`, `signout`,
+    /// `download:<FORMAT>:<videoId>` into `YMUSIC_DEV_DOWNLOAD_DIR` or the chosen folder), for
+    /// screenshots and checks without driving the UI.
     pub fn apply_dev_route(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !cfg!(debug_assertions) {
             return;
@@ -226,6 +228,7 @@ impl Shell {
                 view.update(cx, |library, cx| library.scan_path(path.into(), play_first, cx));
             }
             Some(("signin-paste", path)) => self.dev_sign_in_paste(path.into(), cx),
+            Some(("download", spec)) => self.dev_download(spec, cx),
             _ if route == "devicelink" => self.dev_device_link(cx),
             _ if route == "signout" => self.dev_sign_out(cx),
             Some(("nowplaying", url)) => {
@@ -264,6 +267,67 @@ impl Shell {
             match crate::signin::sign_in_with_cookies(cookies, jar, engines, &log).await {
                 Ok(account) => log.info(&format!("signed in as {}", account.name.unwrap_or_default())),
                 Err(error) => log.warn("sign-in failed", Some(&error)),
+            }
+        });
+    }
+
+    /// Debug route: probes and downloads one video, logging every queue change.
+    fn dev_download(&mut self, spec: &str, cx: &mut Context<Self>) {
+        let graph = cx.global::<AppGraph>();
+        let (downloads, settings, log) = (graph.downloads.clone(), graph.settings.clone(), graph.log.fork("dev-download"));
+        let (format, video_id) = spec.split_once(':').unwrap_or(("M4A", spec));
+        let Some(format) = ym_download::DownloadFormat::from_name(format) else {
+            log.warn(&format!("unknown download format {format}"), None);
+            return;
+        };
+        let video_id = video_id.to_owned();
+        graph.tokio.spawn(async move {
+            if let Some(dir) = std::env::var_os("YMUSIC_DEV_DOWNLOAD_DIR")
+                && let Ok(uri) = url::Url::from_directory_path(std::path::PathBuf::from(dir))
+                && let Err(error) = settings.put_raw(crate::downloads::DOWNLOAD_LOCATION_KEY, uri.to_string())
+            {
+                log.warn(&format!("the dev download folder could not be saved: {error}"), None);
+            }
+            let mut changes = downloads.subscribe();
+            match downloads.probe(&video_id).await {
+                Ok(options) => log.info(&format!(
+                    "options: {}ms, {} video heights, audio {:?}, {} captions",
+                    options.duration_ms,
+                    options.video.len(),
+                    options.audio.iter().map(|option| option.format).collect::<Vec<_>>(),
+                    options.captions.len()
+                )),
+                Err(error) => log.warn("download probe failed", Some(&error)),
+            }
+            let id = downloads.enqueue(ym_download::DownloadRequest {
+                video_id: video_id.clone(),
+                title: video_id.clone(),
+                artist: None,
+                thumbnail_url: None,
+                format,
+                requested_height: format.is_video().then_some(360),
+                file_name: None,
+                audio_track_id: None,
+                captions: None,
+                audio_language: None,
+                caption_language: None,
+                audio_quality: ym_download::AudioQuality::Best,
+            });
+            while let Ok(change) = changes.recv().await {
+                match change {
+                    ym_download::DownloadChange::ProgressChanged { .. } => {}
+                    ym_download::DownloadChange::Completed { id: done, file_uri, bytes } if done == id => {
+                        log.info(&format!("download completed: {file_uri} ({bytes} bytes)"));
+                        return;
+                    }
+                    ym_download::DownloadChange::StateChanged { id: changed, state, error } if changed == id => {
+                        log.info(&format!("download {state:?} {error:?}"));
+                        if state == ym_download::DownloadState::Failed {
+                            return;
+                        }
+                    }
+                    _ => {}
+                }
             }
         });
     }
