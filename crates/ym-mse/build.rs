@@ -56,6 +56,8 @@ fn main() {
     for source in APPLE_C {
         c.file(native.join(source));
     }
+    c.file("native/vt_overlay_stub.c");
+    println!("cargo:rerun-if-changed=native/vt_overlay_stub.c");
     c.compile("msehost_c");
     let mut objc = cc::Build::new();
     objc.include(&native)

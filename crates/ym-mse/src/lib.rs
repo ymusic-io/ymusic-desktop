@@ -13,6 +13,47 @@ unsafe extern "C" {
     fn mse_host_set_volume(host: *mut c_void, volume: f32);
     fn mse_host_set_speed(host: *mut c_void, speed: f32, tempo: f32);
     fn mse_host_samples_played(host: *mut c_void) -> i64;
+    fn mse_host_bind_presenter(host: *mut c_void, presenter: *mut c_void);
+    fn vpresent_create_vt_layer(layer: *mut c_void, sink: *const VpSink) -> *mut c_void;
+    fn vpresent_release(presenter: *mut c_void);
+    fn vpresent_mode(presenter: *mut c_void) -> c_int;
+}
+
+#[repr(C)]
+struct VpSink {
+    on_frame: Option<unsafe extern "C" fn(user: *mut c_void, width: c_int, height: c_int, bgra: *const u8)>,
+    on_mode: Option<unsafe extern "C" fn(user: *mut c_void, mode: c_int)>,
+    release: Option<unsafe extern "C" fn(user: *mut c_void)>,
+    user: *mut c_void,
+}
+
+/// Video output into an `AVSampleBufferDisplayLayer` (zero-copy VideoToolbox frames on macOS).
+pub struct Presenter {
+    raw: *mut c_void,
+}
+
+unsafe impl Send for Presenter {}
+unsafe impl Sync for Presenter {}
+
+impl Presenter {
+    /// # Safety
+    /// `layer` must be a live `AVSampleBufferDisplayLayer` that outlives the presenter.
+    pub unsafe fn on_layer(layer: *mut c_void) -> Option<Self> {
+        let sink = VpSink { on_frame: None, on_mode: None, release: None, user: std::ptr::null_mut() };
+        let raw = unsafe { vpresent_create_vt_layer(layer, &sink) };
+        (!raw.is_null()).then_some(Self { raw })
+    }
+
+    /// 1 = GPU (the layer shows frames), 2 = CPU, 0 = detached.
+    pub fn mode(&self) -> i32 {
+        unsafe { vpresent_mode(self.raw) }
+    }
+}
+
+impl Drop for Presenter {
+    fn drop(&mut self) {
+        unsafe { vpresent_release(self.raw) }
+    }
 }
 
 /// One native MSE host. Attach it to the player's QuickJS runtime before the bundle evaluates;
@@ -43,6 +84,11 @@ impl MseHost {
 
     pub fn set_speed(&self, speed: f32, tempo: f32) {
         unsafe { mse_host_set_speed(self.raw, speed, tempo) }
+    }
+
+    /// Sends this host's pictures to `presenter` (`None` unbinds). The host keeps its own reference.
+    pub fn bind_presenter(&self, presenter: Option<&Presenter>) {
+        unsafe { mse_host_bind_presenter(self.raw, presenter.map_or(std::ptr::null_mut(), |presenter| presenter.raw)) }
     }
 
     pub fn samples_played(&self) -> i64 {
