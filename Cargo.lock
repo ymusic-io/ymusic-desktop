@@ -8539,6 +8539,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ym-store"
+version = "0.1.0"
+dependencies = [
+ "rusqlite",
+ "thiserror 2.0.21",
+ "ym-mse",
+]
+
+[[package]]
 name = "ymusic"
 version = "0.1.0"
 dependencies = [
