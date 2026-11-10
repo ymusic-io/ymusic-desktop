@@ -3,21 +3,23 @@
 
 use std::sync::Arc;
 
-use ym_quickjs::{BoxError, PIPE_CAP, Pipe, PipeError, QuickJsRuntime, WeakRuntime};
+use ym_quickjs::{BoxError, PIPE_CAP, Pipe, PipeError, QuickJsRuntime};
+
+use crate::engine::MainResolver;
 
 use crate::error::WireError;
 use crate::logs::ParkedLoggers;
 
 const PREFIX: &str = "host/main/";
 
-pub(crate) fn install(runtime: &QuickJsRuntime, main: WeakRuntime, parked: Arc<ParkedLoggers>) {
+pub(crate) fn install(runtime: &QuickJsRuntime, main: MainResolver, parked: Arc<ParkedLoggers>) {
     runtime.on_accept_prefix(PREFIX, move |pipe| serve(pipe, main.clone(), parked.clone()));
 }
 
-async fn serve(pipe: Pipe, main: WeakRuntime, parked: Arc<ParkedLoggers>) -> Result<(), BoxError> {
+async fn serve(pipe: Pipe, main: MainResolver, parked: Arc<ParkedLoggers>) -> Result<(), BoxError> {
     let command = pipe.command().trim_start_matches(PREFIX).to_owned();
     let log = parked.root().fork("main");
-    let opened = match (command.is_empty(), main.upgrade()) {
+    let opened = match (command.is_empty(), main()) {
         (true, _) => Err(WireError::new("R20019", "main-proxy missing command")),
         (false, None) => Err(WireError::new("R20020", "no main engine")),
         (false, Some(main)) => main

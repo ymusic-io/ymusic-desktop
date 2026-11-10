@@ -12,7 +12,10 @@ use crate::error::EngineError;
 use crate::logs::ParkedLoggers;
 use crate::settings::FeatureLookup;
 
+pub type MainResolver = Arc<dyn Fn() -> Option<QuickJsRuntime> + Send + Sync>;
+
 /// A capability left `None` is not served: the bundle's open of it is refused.
+#[derive(Clone)]
 pub struct EngineConfig {
     /// The `versions.app` the bundle gates compatibility on: the desktop versionCode sequence.
     pub app_version: i32,
@@ -25,8 +28,9 @@ pub struct EngineConfig {
     /// The player bundle's native MSE host and `__mse*` vtable, attached before the eval. The
     /// host must outlive the engine.
     pub mse: Option<(usize, usize)>,
-    /// The main engine, for the player bundle's `host/main/*` proxy.
-    pub main: Option<ym_quickjs::WeakRuntime>,
+    /// Resolves the main engine at each call, for the player bundle's `host/main/*` proxy (so it
+    /// follows engine swaps).
+    pub main: Option<MainResolver>,
 }
 
 /// One booted `engine.js` and the host protocols it is served.
@@ -112,6 +116,15 @@ impl DynamicEngine {
 
     pub fn runtime(&self) -> &QuickJsRuntime {
         &self.runtime
+    }
+
+    /// SIGINT as a pipe: the bundle stops its repeat work and ENDs; a bundle without the lifecycle
+    /// module refuses the open, which the drain deadline backstops.
+    pub async fn signal_shutdown(&self) {
+        let Ok(pipe) = self.runtime.open_pipe("shutdown").await else { return };
+        let _ = pipe.close_write(None).await;
+        let _ = pipe.read_to_end().await;
+        let _ = pipe.close_read().await;
     }
 
     pub async fn close(&self) {
