@@ -7,12 +7,15 @@ use std::time::Duration;
 
 use ym_mse::{LocalAv, Presenter};
 
+use crate::audio_effects::AudioEffects;
+
 pub enum LocalCommand {
     Load { path: PathBuf, video: bool },
     Play,
     Pause,
     Seek(i64),
     Volume(f32),
+    Effects(AudioEffects),
     Video(bool),
     Presenter(Option<Arc<Presenter>>),
     Stop,
@@ -65,6 +68,7 @@ impl LocalEngine {
 fn run(mut player: LocalAv, commands: mpsc::Receiver<LocalCommand>, status: Arc<Mutex<LocalStatus>>) {
     let mut loaded = false;
     let mut playing = false;
+    let mut effects = AudioEffects::default();
     loop {
         let next = if playing {
             commands.try_recv().map_err(|error| error == TryRecvError::Disconnected)
@@ -82,6 +86,8 @@ fn run(mut player: LocalAv, commands: mpsc::Receiver<LocalCommand>, status: Arc<
                     status.position_ms = 0;
                     match player.open(&path) {
                         Ok(()) => {
+                            player.set_speed_pitch(f64::from(effects.speed), f64::from(effects.pitch));
+                            player.set_tone(&effects.tone);
                             loaded = true;
                             playing = true;
                             player.play();
@@ -114,6 +120,11 @@ fn run(mut player: LocalAv, commands: mpsc::Receiver<LocalCommand>, status: Arc<
                     status.ended = false;
                 }
                 LocalCommand::Volume(volume) => player.set_volume(f64::from(volume)),
+                LocalCommand::Effects(next) => {
+                    effects = next;
+                    player.set_speed_pitch(f64::from(effects.speed), f64::from(effects.pitch));
+                    player.set_tone(&effects.tone);
+                }
                 LocalCommand::Video(on) => player.set_video_enabled(on),
                 LocalCommand::Presenter(presenter) => player.bind_presenter(presenter.as_deref()),
                 LocalCommand::Stop => {

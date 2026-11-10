@@ -31,13 +31,7 @@ impl YoutubeSessions {
         player_source: Arc<BundleSource>,
         log: Logger,
     ) -> Self {
-        Self {
-            session: tokio::sync::Mutex::new(None),
-            config,
-            candidates,
-            player_source,
-            log,
-        }
+        Self { session: tokio::sync::Mutex::new(None), config, candidates, player_source, log }
     }
 
     /// The session, booting it on the first call; concurrent callers share one boot, and a failed

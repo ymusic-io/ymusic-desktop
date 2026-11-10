@@ -16,6 +16,7 @@ use ym_engine::{DynamicEngine, EngineError};
 use ym_i18n::{Str, tf};
 use ym_mse::Presenter;
 
+use crate::audio_effects::AudioEffects;
 use crate::feed::error_text;
 use crate::graph::{AppGraph, on_core};
 use crate::local_engine::{LocalCommand, LocalEngine};
@@ -120,6 +121,7 @@ pub struct Playback {
     loading_video: Option<String>,
     gain: f32,
     pub volume: f32,
+    pub effects: AudioEffects,
     /// Video on: loads request pictures and the presenter shows them; off: audio only.
     pub video: bool,
     /// Presents into the Now Playing video layer, which outlives it.
@@ -151,6 +153,7 @@ impl Playback {
             loading_video: None,
             gain: 1.0,
             volume: if muted { 0.0 } else { saved_volume.unwrap_or(1.0).clamp(0.0, 1.0) },
+            effects: AudioEffects::load(cx.global::<AppGraph>().settings.as_ref()),
             video: true,
             presenter: None,
             _status: None,
@@ -298,6 +301,42 @@ impl Playback {
         cx.notify();
     }
 
+    /// Applies and saves speed, pitch and tone for both engines.
+    pub fn set_effects(&mut self, effects: AudioEffects, cx: &mut Context<Self>) {
+        if self.effects == effects {
+            return;
+        }
+        let speed_changed = (self.effects.speed, self.effects.pitch) != (effects.speed, effects.pitch);
+        self.effects = effects;
+        self.send_local(LocalCommand::Effects(effects));
+        if let Some(session) = &self.session {
+            session.host.set_tone(&effects.tone);
+        }
+        if speed_changed {
+            let (speed, pitch) = (effects.speed, effects.pitch);
+            self.command(cx, move |engine, log| async move { engine.player_set_speed_pitch(speed, pitch, &log).await });
+        }
+        let graph = cx.global::<AppGraph>();
+        let (settings, log) = (graph.settings.clone(), graph.log.fork("audio-effects"));
+        graph.tokio.spawn_blocking(move || {
+            for (key, value) in effects.rows() {
+                if let Err(error) = settings.put_raw(key, value) {
+                    log.warn(&format!("{key} could not be saved: {error}"), None);
+                }
+            }
+        });
+        cx.notify();
+    }
+
+    fn apply_youtube_effects(&mut self, cx: &mut Context<Self>) {
+        let Some(session) = &self.session else { return };
+        session.host.set_tone(&self.effects.tone);
+        let (speed, pitch) = (self.effects.speed, self.effects.pitch);
+        if (speed, pitch) != (1.0, 1.0) {
+            self.command(cx, move |engine, log| async move { engine.player_set_speed_pitch(speed, pitch, &log).await });
+        }
+    }
+
     fn apply_volume(&self) {
         if let Some(session) = &self.session {
             session.host.set_volume(self.volume * self.gain);
@@ -352,6 +391,7 @@ impl Playback {
                 if self.local.is_none() {
                     self.local = LocalEngine::start();
                     self.apply_volume();
+                    self.send_local(LocalCommand::Effects(self.effects));
                 }
                 if self.local.is_none() {
                     self.state = PlayState::Failed(tf(Str::ErrorGeneric, &[&"R90007"]));
@@ -446,6 +486,7 @@ impl Playback {
                     Some(Ok(session)) => {
                         playback.session = Some(session);
                         playback.apply_volume();
+                        playback.apply_youtube_effects(cx);
                         playback.bind_presenter();
                         playback.listen(cx);
                         if let Some(video_id) = playback.pending.take()

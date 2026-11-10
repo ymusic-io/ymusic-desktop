@@ -8,6 +8,7 @@ use gpui_kit::{App, Global};
 use tokio::runtime::Handle;
 use ym_common::http::HttpClients;
 use ym_common::log::Logger;
+use ym_download::DownloadService;
 use ym_engine::{
     CookieJar, DiskCacheStore, DynamicEngine, EngineConfig, EngineError, EngineManager, MemoryCookieJar,
     PersistentCookieJar,
@@ -16,7 +17,6 @@ use ym_remote_config::{ApiIdentity, BundleSource, RemoteConfig, VerifiedBundle};
 use ym_settings::{AppDb, SettingsStore};
 use ym_signin::CookieVault;
 use ym_store::MediaStore;
-use ym_download::DownloadService;
 
 use crate::downloads::DownloadInputs;
 use crate::youtube_session::{CandidateSource, YoutubeSessions};
@@ -248,7 +248,6 @@ impl AppGraph {
             }
         });
     }
-
 }
 
 /// The player bundles to try, best first: a staged newer one, the cached one, the embedded one.

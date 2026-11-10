@@ -1,4 +1,6 @@
 mod assets;
+mod audio_effects;
+mod downloads;
 mod feed;
 mod graph;
 mod http_client;
@@ -12,7 +14,6 @@ mod shell;
 mod signin;
 mod telemetry;
 mod video_layer;
-mod downloads;
 mod youtube_session;
 
 use gpui_kit::*;

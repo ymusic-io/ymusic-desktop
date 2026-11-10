@@ -217,6 +217,9 @@ impl Shell {
         if !cfg!(debug_assertions) {
             return;
         }
+        if let Ok(spec) = std::env::var("YMUSIC_DEV_EFFECTS") {
+            self.dev_effects(&spec, cx);
+        }
         let Ok(route) = std::env::var("YMUSIC_DEV_ROUTE") else { return };
         match route.split_once(':') {
             Some(("search", query)) => self.submit_search(query.to_owned(), window, cx),
@@ -271,10 +274,28 @@ impl Shell {
         });
     }
 
+    /// Debug: `<speed>:<pitch>:<preset index>` applied at start.
+    fn dev_effects(&mut self, spec: &str, cx: &mut Context<Self>) {
+        let parts: Vec<&str> = spec.split(':').collect();
+        let number = |index: usize| parts.get(index).and_then(|part| part.parse::<f32>().ok());
+        let mut effects = self.playback.read(cx).effects;
+        effects.speed = number(0).unwrap_or(effects.speed);
+        effects.pitch = number(1).unwrap_or(effects.pitch);
+        if let Some((_, bands)) = parts
+            .get(2)
+            .and_then(|part| part.parse::<usize>().ok())
+            .and_then(|index| crate::audio_effects::EQ_PRESETS.get(index))
+        {
+            effects.tone.eq_db = *bands;
+        }
+        self.playback.update(cx, |playback, cx| playback.set_effects(effects, cx));
+    }
+
     /// Debug route: probes and downloads one video, logging every queue change.
     fn dev_download(&mut self, spec: &str, cx: &mut Context<Self>) {
         let graph = cx.global::<AppGraph>();
-        let (downloads, settings, log) = (graph.downloads.clone(), graph.settings.clone(), graph.log.fork("dev-download"));
+        let (downloads, settings, log) =
+            (graph.downloads.clone(), graph.settings.clone(), graph.log.fork("dev-download"));
         let (format, video_id) = spec.split_once(':').unwrap_or(("M4A", spec));
         let Some(format) = ym_download::DownloadFormat::from_name(format) else {
             log.warn(&format!("unknown download format {format}"), None);
