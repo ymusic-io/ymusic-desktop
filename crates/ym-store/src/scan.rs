@@ -25,10 +25,17 @@ pub struct ScanError {
     pub message: String,
 }
 
+impl ScanReport {
+    pub fn scanned(&self) -> usize {
+        self.added + self.updated + self.unchanged + self.errors.len()
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct ScanReport {
     pub root_bucket: Option<i64>,
-    pub added_or_updated: usize,
+    pub added: usize,
+    pub updated: usize,
     pub unchanged: usize,
     pub removed: usize,
     pub errors: Vec<ScanError>,
@@ -102,11 +109,12 @@ pub fn scan_folder(store: &MediaStore, root: &Path, cancel: &AtomicBool) -> Resu
                 .ok()
                 .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
                 .map_or(0, |elapsed| elapsed.as_millis() as i64);
-            if let Some((existing, deleted)) = store.find_item_by_uri(&uri)?
+            let existing = store.find_item_by_uri(&uri)?;
+            if let Some((item, deleted)) = &existing
                 && !deleted
-                && existing.file_size == size
-                && existing.last_modified == modified
-                && existing.bucket_id == Some(bucket_id)
+                && item.file_size == size
+                && item.last_modified == modified
+                && item.bucket_id == Some(bucket_id)
             {
                 report.unchanged += 1;
                 continue;
@@ -137,7 +145,11 @@ pub fn scan_folder(store: &MediaStore, root: &Path, cancel: &AtomicBool) -> Resu
                         uri,
                         ..MediaItem::default()
                     })?;
-                    report.added_or_updated += 1;
+                    if existing.is_some() {
+                        report.updated += 1;
+                    } else {
+                        report.added += 1;
+                    }
                 }
                 Ok(_) => report.errors.push(ScanError { path, message: "no audio or video stream".into() }),
                 Err(code) => report.errors.push(ScanError { path, message: format!("libav error {code}") }),
