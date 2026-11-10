@@ -9075,6 +9075,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ym-history"
+version = "0.1.0"
+dependencies = [
+ "rusqlite",
+ "serde_json",
+ "ym-common",
+]
+
+[[package]]
 name = "ym-i18n"
 version = "0.1.0"
 dependencies = [
