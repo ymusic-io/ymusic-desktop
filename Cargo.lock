@@ -8818,10 +8818,12 @@ dependencies = [
  "serde_json",
  "souvlaki",
  "tokio",
+ "uuid",
  "ym-common",
  "ym-engine",
  "ym-i18n",
  "ym-mse",
+ "ym-remote-config",
  "ym-settings",
  "ym-store",
 ]

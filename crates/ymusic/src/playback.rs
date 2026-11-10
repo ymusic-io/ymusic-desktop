@@ -17,7 +17,7 @@ use ym_i18n::{Str, tf};
 use ym_mse::{MseHost, Presenter};
 
 use crate::feed::error_text;
-use crate::graph::{AppGraph, PLAYER_JS, on_core};
+use crate::graph::{AppGraph, on_core};
 use crate::local_engine::{LocalCommand, LocalEngine};
 
 const VOLUME_KEY: &str = "playback.volume";
@@ -443,7 +443,9 @@ impl Playback {
         self.booting = true;
         let graph = cx.global::<AppGraph>();
         let mut config = graph.engine_config("player");
-        config.main = Some(graph.engine.runtime().downgrade());
+        config.main = Some(graph.main_resolver());
+        let candidates = graph.player_candidates();
+        let player_source = graph.player_source.clone();
         let log = graph.log.fork("playback");
         let boot = on_core(cx, async move {
             let host =
@@ -454,16 +456,35 @@ impl Playback {
                 let level = if level >= 2 { ym_common::log::Level::Warn } else { ym_common::log::Level::Info };
                 mse_log.log(level, message, None);
             });
-            let engine = Arc::new(DynamicEngine::create(PLAYER_JS.to_owned(), config).await?);
-            let weak = engine.runtime().downgrade();
-            ym_mse::set_event_sink(move |name| {
-                if let Some(runtime) = weak.upgrade() {
-                    runtime.fire_event(name);
+            // A published bundle that will not boot must not take playback down: the next one boots.
+            let mut last_error = None;
+            for (script, staged) in candidates {
+                let engine = match DynamicEngine::create(script, config.clone()).await {
+                    Ok(engine) => Arc::new(engine),
+                    Err(error) => {
+                        last_error = Some(error);
+                        continue;
+                    }
+                };
+                if let Err(error) = engine.health_check().await {
+                    engine.close().await;
+                    last_error = Some(error);
+                    continue;
                 }
-            });
-            engine.health_check().await?;
-            engine.player_init(None, false, &log).await?;
-            Ok::<_, EngineError>(Session { engine, host })
+                if let Some(bundle) = staged {
+                    let source = player_source.clone();
+                    let _ = tokio::task::spawn_blocking(move || source.store(&bundle)).await;
+                }
+                let weak = engine.runtime().downgrade();
+                ym_mse::set_event_sink(move |name| {
+                    if let Some(runtime) = weak.upgrade() {
+                        runtime.fire_event(name);
+                    }
+                });
+                engine.player_init(None, false, &log).await?;
+                return Ok::<_, EngineError>(Session { engine, host });
+            }
+            Err(last_error.unwrap_or_else(|| EngineError::site("R90002", "no player bundle booted")))
         });
         cx.spawn(async move |this, cx| {
             let result = boot.await;
@@ -567,7 +588,7 @@ impl Playback {
 
     fn fetch_radio(&mut self, video_id: String, cx: &mut Context<Self>) {
         let graph = cx.global::<AppGraph>();
-        let (engine, log) = (graph.engine.clone(), graph.log.fork("queue"));
+        let (engine, log) = (graph.engine(), graph.log.fork("queue"));
         self.loading_queue = true;
         let fetch = on_core(cx, async move { engine.start_radio_queue(&video_id, &log).await });
         cx.spawn(async move |this, cx| {
@@ -598,7 +619,7 @@ impl Playback {
         }
         let Some(continuation) = self.queue_continuation.take() else { return };
         let graph = cx.global::<AppGraph>();
-        let (engine, log) = (graph.engine.clone(), graph.log.fork("queue"));
+        let (engine, log) = (graph.engine(), graph.log.fork("queue"));
         self.loading_queue = true;
         let fetch = on_core(cx, async move { engine.queue_continuation(&continuation, &log).await });
         cx.spawn(async move |this, cx| {

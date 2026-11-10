@@ -143,7 +143,7 @@ impl FeedView {
         self.generation += 1;
         let generation = self.generation;
         let graph = cx.global::<AppGraph>();
-        let (engine, log) = (graph.engine.clone(), graph.log.fork("feed"));
+        let (engine, log) = (graph.engine(), graph.log.fork("feed"));
         let load = on_core(cx, self.source.clone().load(engine, continuation, log));
         cx.spawn(async move |this, cx| {
             let result = load.await;

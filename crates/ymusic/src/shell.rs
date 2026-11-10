@@ -253,7 +253,7 @@ impl Shell {
     /// Resolves a shared YouTube link and plays it when it names a video.
     fn play_link(&mut self, url: String, cx: &mut Context<Self>) {
         let graph = cx.global::<AppGraph>();
-        let (engine, log) = (graph.engine.clone(), graph.log.fork("link"));
+        let (engine, log) = (graph.engine(), graph.log.fork("link"));
         let resolve = on_core(cx, async move { engine.resolve_link(&url, &log).await });
         cx.spawn(async move |this, cx| {
             if let Some(Ok(Some(ym_engine::yt::YtLinkTarget::Video { item, .. }))) = resolve.await {
@@ -341,7 +341,7 @@ impl Shell {
             return;
         }
         let graph = cx.global::<AppGraph>();
-        let (engine, log) = (graph.engine.clone(), graph.log.fork("search"));
+        let (engine, log) = (graph.engine(), graph.log.fork("search"));
         let executor = cx.background_executor().clone();
         cx.spawn(async move |this, cx| {
             executor.timer(SUGGEST_DEBOUNCE).await;

@@ -32,6 +32,7 @@ R20018 - an engine command could not be reached (no handler for it in the bundle
 R20019 - player main-proxy: host/main/ opened without a command
 R20020 - player main-proxy: no main engine, or the main engine refused the command
 R20021 - player/mintPo answered without a content PO token
+R20022 - engine manager: no engine bundle candidate to boot
 R30001 - remote config: the cached config was unreadable and was dropped (logged; defaults used)
 R30002 - remote config: the fetched config could not be written to the cache (logged)
 R30003 - remote config: fetching /v1/config failed (logged; the held config stays)
@@ -46,3 +47,5 @@ R90007 - playback: a local file could not be played (local player unavailable, o
 R90008 - library: reading folders or items from the media store failed
 R90009 - library: the folder scan failed (store error)
 R90010 - app boot: the media store could not be opened
+R90011 - app boot: the remote config could not be opened
+R90012 - a published bundle was not taken (download, signature or boot failed; logged, the running one stays)
