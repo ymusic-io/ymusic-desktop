@@ -11,3 +11,8 @@
 #         R8xxxx ym-mse | R9xxxx ym-app / ym-ui / ym-shell / ym-update / ym-settings / ym-logstore / ym-telemetry
 
 R12345 - (example) doc placeholder in AGENTS.md minting rule
+R20001 - http protocol: request the host cannot build (malformed head, bad method/URL/header) — caller bug
+R20002 - http protocol: unexpected data on the control pipe after the head — protocol violation
+R20003 - engine bundle failed to load (runtime create or eval)
+R20004 - engine "init" health check failed (refused, not synchronous, malformed head)
+R20005 - unstructured pipe RESET without an embedded site code (decoder fallback)
