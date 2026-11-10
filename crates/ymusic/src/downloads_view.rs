@@ -7,9 +7,9 @@ use futures::StreamExt;
 use futures::channel::mpsc;
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::component::progress::Progress;
-use gpui_kit::component::tab::{Tab, TabBar};
-use gpui_kit::component::{ActiveTheme, Icon, Sizable, StyledExt, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme, Icon, IconName, Selectable, Sizable, StyledExt, WindowExt, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use ym_download::{DownloadChange, DownloadService, DownloadState, DownloadTask, TaskError};
@@ -227,8 +227,8 @@ pub fn task_error_text(error: &TaskError) -> String {
     }
 }
 
-fn state_label(task: &DownloadTask) -> String {
-    let base = t(match task.state {
+fn state_label(state: DownloadState) -> &'static str {
+    t(match state {
         DownloadState::Queued => Str::DownloadsStateQueued,
         DownloadState::Preparing => Str::DownloadsStatePreparing,
         DownloadState::Downloading => Str::DownloadsStateDownloading,
@@ -237,112 +237,183 @@ fn state_label(task: &DownloadTask) -> String {
         DownloadState::Paused => Str::DownloadsFilterPaused,
         DownloadState::Failed => Str::DownloadsStateFailed,
         DownloadState::Canceled => Str::DownloadsStateCanceled,
-    });
-    let format = task.format.extension().to_uppercase();
-    match task.state {
-        DownloadState::Downloading if task.total_bytes > 0 => {
-            format!("{base} · {} / {} · {format}", size_label(task.downloaded_bytes), size_label(task.total_bytes))
-        }
-        DownloadState::Completed => format!("{base} · {} · {format}", size_label(task.total_bytes)),
-        DownloadState::Failed => match &task.error {
-            Some(error) => format!("{base} · {}", task_error_text(error)),
-            None => base.to_owned(),
-        },
-        _ => format!("{base} · {format}"),
-    }
+    })
 }
 
-impl Render for DownloadsView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme().clone();
-        let filter = self.filter;
-        let visible: Vec<DownloadTask> = self.tasks.iter().filter(|task| filter.matches(task.state)).cloned().collect();
-        let any_active = self.tasks.iter().any(|task| task.state.is_active());
-        let any_paused = self.tasks.iter().any(|task| task.state == DownloadState::Paused);
+const CARD_MIN: f32 = 340.;
+const THUMB: f32 = 56.;
 
-        let mut list = v_flex().gap_1();
-        for (row, task) in visible.iter().enumerate() {
-            let id = task.id.clone();
-            let thumb = task
-                .thumbnail_url
-                .clone()
-                .unwrap_or_else(|| format!("https://i.ytimg.com/vi/{}/mqdefault.jpg", task.video_id));
-            let progress = match task.state {
-                DownloadState::Downloading | DownloadState::Processing => task.progress(),
-                _ => None,
-            };
-            let failed = task.state == DownloadState::Failed;
-            let mut actions = h_flex().gap_1().flex_shrink_0();
-            match task.state {
-                DownloadState::Queued
-                | DownloadState::Preparing
-                | DownloadState::Downloading
-                | DownloadState::Processing => {
-                    let target = id.clone();
-                    actions = actions.child(
-                        Button::new(("pause", row))
-                            .ghost()
-                            .small()
-                            .icon(Icon::new(Lucide::Pause))
-                            .tooltip(t(Str::DownloadsActionPause))
-                            .on_click(cx.listener(move |view, _, _, _| view.service.pause(&target))),
-                    );
+impl DownloadsView {
+    /// Deletes the finished file, then the task; a failed delete keeps the task and says so.
+    fn remove_from_disk(&mut self, task: DownloadTask, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(path) = file_path(&task) else {
+            self.service.remove(&task.id);
+            return;
+        };
+        let delete = on_core(cx, async move { tokio::task::spawn_blocking(move || std::fs::remove_file(&path)).await });
+        cx.spawn_in(window, async move |this, cx| {
+            let result = delete.await;
+            this.update_in(cx, |view, window, cx| match result {
+                Some(Ok(Ok(()))) => view.service.remove(&task.id),
+                Some(Ok(Err(error))) if error.kind() == std::io::ErrorKind::NotFound => view.service.remove(&task.id),
+                Some(Ok(Err(error))) => {
+                    cx.global::<AppGraph>().log.warn("R90022 downloaded file not deleted", Some(&error));
+                    window.push_notification(tf(Str::ErrorGeneric, &[&"R90022"]), cx);
                 }
-                DownloadState::Paused | DownloadState::Failed => {
-                    let target = id.clone();
-                    actions = actions.child(
-                        Button::new(("resume", row))
-                            .ghost()
-                            .small()
-                            .icon(Icon::new(if failed { Lucide::RotateCcw } else { Lucide::Play }))
-                            .tooltip(t(if failed { Str::Retry } else { Str::DownloadsActionResume }))
-                            .on_click(cx.listener(move |view, _, _, _| view.service.resume(&target))),
-                    );
+                Some(Err(error)) => {
+                    cx.global::<AppGraph>().log.warn("R90022 downloaded file not deleted", Some(&error));
+                    window.push_notification(tf(Str::ErrorGeneric, &[&"R90022"]), cx);
                 }
-                DownloadState::Completed => {
-                    let playable = task.clone();
-                    actions = actions.child(
-                        Button::new(("play", row))
-                            .ghost()
-                            .small()
-                            .icon(Icon::new(Lucide::Play))
-                            .tooltip(t(Str::MenuPlay))
-                            .on_click(cx.listener(move |view, _, _, cx| view.play(&playable, cx))),
-                    );
-                    if let Some(path) = file_path(task) {
-                        actions = actions.child(
-                            Button::new(("reveal", row))
-                                .ghost()
-                                .small()
-                                .icon(Icon::new(Lucide::FolderOpen))
-                                .tooltip(t(Str::DownloadsActionRevealLibrary))
-                                .on_click(move |_, _, cx| cx.reveal_path(&path)),
+                None => {}
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn menu(&self, row: usize, task: &DownloadTask, cx: &mut Context<Self>) -> impl IntoElement {
+        let view = cx.entity().downgrade();
+        let task = task.clone();
+        Button::new(("download-more", row))
+            .ghost()
+            .small()
+            .icon(IconName::EllipsisVertical)
+            .accessibility_label(t(Str::CdMore))
+            .tooltip(t(Str::CdMore))
+            .dropdown_menu_with_anchor(Anchor::TopRight, move |mut menu, _, _| {
+                let id = task.id.clone();
+                let act = |label: &'static str, action: fn(&DownloadService, &str)| {
+                    let (view, id) = (view.clone(), id.clone());
+                    PopupMenuItem::new(label).on_click(move |_, _, cx| {
+                        view.update(cx, |view, _| action(&view.service, &id)).ok();
+                    })
+                };
+                match task.state {
+                    DownloadState::Queued
+                    | DownloadState::Preparing
+                    | DownloadState::Downloading
+                    | DownloadState::Processing => {
+                        menu = menu
+                            .item(act(t(Str::DownloadsActionPause), DownloadService::pause))
+                            .item(act(t(Str::DialogCancel), DownloadService::cancel));
+                    }
+                    DownloadState::Paused => {
+                        menu = menu
+                            .item(act(t(Str::DownloadsActionResume), DownloadService::resume))
+                            .item(act(t(Str::DialogCancel), DownloadService::cancel));
+                    }
+                    DownloadState::Failed => {
+                        menu = menu
+                            .item(act(t(Str::Retry), DownloadService::retry))
+                            .item(act(t(Str::MenuRemove), DownloadService::remove));
+                    }
+                    DownloadState::Completed => {
+                        let (play_view, play_task) = (view.clone(), task.clone());
+                        menu = menu.item(PopupMenuItem::new(t(Str::MenuPlay)).on_click(move |_, _, cx| {
+                            play_view.update(cx, |view, cx| view.play(&play_task, cx)).ok();
+                        }));
+                        if let Some(path) = file_path(&task) {
+                            menu = menu.item(
+                                PopupMenuItem::new(crate::library::reveal_label())
+                                    .on_click(move |_, _, cx| cx.reveal_path(&path)),
+                            );
+                        }
+                        let (disk_view, disk_task) = (view.clone(), task.clone());
+                        menu = menu.separator().item(act(t(Str::MenuRemove), DownloadService::remove)).item(
+                            PopupMenuItem::new(t(Str::MenuRemoveFromDisk)).on_click(move |_, window, cx| {
+                                disk_view
+                                    .update(cx, |view, cx| view.remove_from_disk(disk_task.clone(), window, cx))
+                                    .ok();
+                            }),
                         );
                     }
+                    DownloadState::Canceled => {
+                        menu = menu.item(act(t(Str::MenuRemove), DownloadService::remove));
+                    }
                 }
-                DownloadState::Canceled => {}
-            }
-            let target = id.clone();
-            actions = actions.child(
-                Button::new(("remove", row))
-                    .ghost()
-                    .small()
-                    .icon(Icon::new(Lucide::X))
-                    .tooltip(t(Str::MenuRemove))
-                    .on_click(cx.listener(move |view, _, _, _| view.service.remove(&target))),
-            );
-            list = list.child(
+                menu
+            })
+    }
+
+    fn card(&self, row: usize, task: &DownloadTask, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme().clone();
+        let thumb = task
+            .thumbnail_url
+            .clone()
+            .unwrap_or_else(|| format!("https://i.ytimg.com/vi/{}/mqdefault.jpg", task.video_id));
+        let active = task.state.is_active() || task.state == DownloadState::Paused;
+        let fraction = task.progress();
+        let percent =
+            fraction.filter(|_| task.state.is_active()).map(|value| format!("{}%", (value * 100.).round() as i32));
+        let show_bar = matches!(task.state, DownloadState::Preparing)
+            || (matches!(task.state, DownloadState::Downloading | DownloadState::Processing | DownloadState::Paused)
+                && fraction.is_some());
+        let failed = task.state == DownloadState::Failed;
+        let (pill_bg, pill_fg) = match task.state {
+            DownloadState::Failed => (theme.danger, theme.danger_foreground),
+            DownloadState::Completed => (theme.secondary, theme.foreground),
+            _ if active => (theme.primary, theme.primary_foreground),
+            _ => (theme.secondary, theme.muted_foreground),
+        };
+        let status = state_label(task.state);
+        let detail: AnyElement = match task.state {
+            DownloadState::Downloading | DownloadState::Paused if task.total_bytes > 0 => div()
+                .text_xs()
+                .text_color(theme.muted_foreground)
+                .child(format!("{} / {}", size_label(task.downloaded_bytes), size_label(task.total_bytes)))
+                .into_any_element(),
+            DownloadState::Completed => div()
+                .text_xs()
+                .text_color(theme.muted_foreground)
+                .child(size_label(task.total_bytes))
+                .into_any_element(),
+            DownloadState::Failed => {
+                let id = task.id.clone();
                 h_flex()
-                    .gap_3()
-                    .p_2()
-                    .rounded_md()
-                    .hover(|style| style.bg(theme.secondary))
+                    .flex_1()
+                    .gap_2()
+                    .items_center()
                     .child(
                         div()
-                            .w(px(96.))
-                            .h(px(54.))
+                            .flex_1()
+                            .min_w_0()
+                            .text_xs()
+                            .text_color(theme.danger)
+                            .line_clamp(2)
+                            .child(task.error.as_ref().map(task_error_text).unwrap_or_default()),
+                    )
+                    .child(
+                        Button::new(("retry", row))
+                            .outline()
+                            .xsmall()
+                            .rounded_full()
+                            .label(t(Str::Retry))
+                            .on_click(cx.listener(move |view, _, _, _| view.service.retry(&id))),
+                    )
+                    .into_any_element()
+            }
+            _ => div().into_any_element(),
+        };
+        let label =
+            [task.title.clone(), status.to_owned()].into_iter().chain(percent.clone()).collect::<Vec<_>>().join(", ");
+        v_flex()
+            .id(("download", row))
+            .role(Role::ListItem)
+            .aria_label(label)
+            .rounded(px(6.))
+            .border_1()
+            .border_color(theme.border)
+            .p(px(14.))
+            .gap_2()
+            .child(
+                h_flex()
+                    .gap_3()
+                    .items_start()
+                    .child(
+                        div()
+                            .size(px(THUMB))
                             .flex_shrink_0()
-                            .rounded_md()
+                            .rounded(px(6.))
                             .overflow_hidden()
                             .bg(theme.secondary)
                             .child(img(SharedString::from(thumb)).size_full().object_fit(ObjectFit::Cover)),
@@ -352,88 +423,132 @@ impl Render for DownloadsView {
                             .flex_1()
                             .min_w_0()
                             .gap_1()
-                            .child(div().text_sm().font_medium().truncate().child(task.title.clone()))
+                            .child(div().text_sm().font_medium().line_clamp(2).child(task.title.clone()))
                             .child(
-                                div()
-                                    .text_xs()
-                                    .truncate()
-                                    .text_color(if failed { theme.danger } else { theme.muted_foreground })
-                                    .child(state_label(task)),
-                            )
-                            .when_some(progress, |column, value| {
-                                column.child(Progress::new(("progress", row)).value(value * 100.))
-                            }),
+                                h_flex()
+                                    .gap_2()
+                                    .items_center()
+                                    .child(
+                                        div()
+                                            .px_2()
+                                            .py(px(2.))
+                                            .rounded_full()
+                                            .bg(pill_bg)
+                                            .text_color(pill_fg)
+                                            .text_xs()
+                                            .child(status),
+                                    )
+                                    .when_some(percent, |row, percent| {
+                                        row.child(div().text_xs().text_color(theme.muted_foreground).child(percent))
+                                    }),
+                            ),
                     )
-                    .child(actions),
-            );
-        }
-
-        let selected = Filter::ALL.iter().position(|candidate| *candidate == filter).unwrap_or(0);
-        v_flex()
-            .size_full()
-            .p_4()
-            .gap_3()
+                    .child(self.menu(row, task, cx)),
+            )
+            .when(show_bar, |card| {
+                card.child(
+                    div()
+                        .pl(px(THUMB + 12.))
+                        .child(Progress::new(("progress", row)).value(fraction.unwrap_or(0.) * 100.)),
+                )
+            })
             .child(
                 h_flex()
-                    .justify_between()
+                    .gap_3()
                     .items_center()
-                    .child(div().text_xl().font_semibold().child(t(Str::SectionDownloads)))
                     .child(
-                        h_flex()
-                            .gap_2()
-                            .when(any_active, |row| {
-                                row.child(
-                                    Button::new("pause-all")
-                                        .small()
-                                        .label(t(Str::DownloadsPauseAll))
-                                        .on_click(cx.listener(|view, _, _, _| view.service.pause_all())),
-                                )
-                            })
-                            .when(any_paused, |row| {
-                                row.child(
-                                    Button::new("resume-all")
-                                        .small()
-                                        .label(t(Str::DownloadsResumeAll))
-                                        .on_click(cx.listener(|view, _, _, _| view.service.resume_all())),
-                                )
-                            }),
+                        div().w(px(THUMB)).flex().justify_center().child(
+                            div()
+                                .px_1()
+                                .rounded(px(3.))
+                                .border_1()
+                                .border_color(theme.border)
+                                .text_xs()
+                                .text_color(theme.muted_foreground)
+                                .child(task.format.extension().to_uppercase()),
+                        ),
+                    )
+                    .child(if failed { detail } else { div().flex_1().child(detail).into_any_element() }),
+            )
+            .into_any_element()
+    }
+}
+
+impl Render for DownloadsView {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme().clone();
+        if self.tasks.iter().all(|task| task.state == DownloadState::Canceled) {
+            return v_flex()
+                .size_full()
+                .items_center()
+                .justify_center()
+                .gap_2()
+                .child(Icon::new(Lucide::Download).size(px(56.)).text_color(theme.muted_foreground))
+                .child(div().text_lg().child(t(Str::DownloadsNoneTitle)))
+                .child(div().text_sm().text_color(theme.muted_foreground).child(t(Str::DownloadsNoneMessage)))
+                .into_any_element();
+        }
+        let filter = self.filter;
+        let visible: Vec<DownloadTask> = self.tasks.iter().filter(|task| filter.matches(task.state)).cloned().collect();
+        let any_active = self.tasks.iter().any(|task| task.state.is_active());
+        let any_paused = self.tasks.iter().any(|task| task.state == DownloadState::Paused);
+
+        let mut chips = h_flex().id("download-filters").role(Role::TabList).gap_2().overflow_x_scroll();
+        for (index, candidate) in Filter::ALL.into_iter().enumerate() {
+            let count = self.tasks.iter().filter(|task| candidate.matches(task.state)).count();
+            let label = if candidate == Filter::All {
+                candidate.label().to_owned()
+            } else {
+                format!("{} {count}", candidate.label())
+            };
+            let selected = candidate == filter;
+            let chip = Button::new(("filter", index)).small().rounded_full().label(label).selected(selected);
+            let chip = if selected { chip.primary() } else { chip.outline() };
+            chips = chips.child(chip.on_click(cx.listener(move |view, _, _, cx| {
+                view.filter = candidate;
+                cx.notify();
+            })));
+        }
+
+        let width = crate::feed::feed_width(window);
+        let columns = ((width - 32. + 16.) / (CARD_MIN + 16.)).floor().max(1.) as usize;
+        let mut grid = v_flex().w_full().px_4().pt_2().pb(px(88.)).gap(px(12.)).child(chips);
+        if visible.is_empty() {
+            grid = grid
+                .child(div().py_16().flex().justify_center().text_color(theme.muted_foreground).child(filter.empty()));
+        }
+        for (row_index, row) in visible.chunks(columns).enumerate() {
+            let mut cells = h_flex().w_full().gap_4().items_start();
+            for (offset, task) in row.iter().enumerate() {
+                cells = cells.child(div().flex_1().min_w_0().child(self.card(row_index * columns + offset, task, cx)));
+            }
+            for _ in row.len()..columns {
+                cells = cells.child(div().flex_1());
+            }
+            grid = grid.child(cells);
+        }
+        let fab = if any_active {
+            Some((t(Str::DownloadsPauseAll), Lucide::Pause, true))
+        } else if any_paused {
+            Some((t(Str::DownloadsResumeAll), Lucide::Play, false))
+        } else {
+            None
+        };
+        div()
+            .relative()
+            .size_full()
+            .child(div().id("downloads-scroll").size_full().overflow_y_scroll().track_scroll(&self.scroll).child(grid))
+            .when_some(fab, |frame, (label, icon, pause)| {
+                frame.child(div().absolute().right_4().bottom_4().child(
+                    Button::new("downloads-fab").primary().large().rounded(px(16.)).icon(icon).label(label).on_click(
+                        cx.listener(
+                            move |view, _, _, _| {
+                                if pause { view.service.pause_all() } else { view.service.resume_all() }
+                            },
+                        ),
                     ),
-            )
-            .child(
-                TabBar::new("download-filters")
-                    .underline()
-                    .selected_index(selected)
-                    .children(Filter::ALL.iter().map(|filter| Tab::new().label(filter.label())))
-                    .on_click(cx.listener(|view, index: &usize, _, cx| {
-                        view.filter = Filter::ALL[*index];
-                        cx.notify();
-                    })),
-            )
-            .when(self.tasks.is_empty(), |column| {
-                column.child(
-                    v_flex()
-                        .flex_1()
-                        .items_center()
-                        .justify_center()
-                        .gap_2()
-                        .child(Icon::new(Lucide::Download).large().text_color(theme.muted_foreground))
-                        .child(div().text_lg().child(t(Str::DownloadsNoneTitle)))
-                        .child(div().text_sm().text_color(theme.muted_foreground).child(t(Str::DownloadsNoneMessage))),
-                )
+                ))
             })
-            .when(!self.tasks.is_empty() && visible.is_empty(), |column| {
-                column.child(div().text_sm().text_color(theme.muted_foreground).child(filter.empty()))
-            })
-            .when(!visible.is_empty(), |column| {
-                column.child(
-                    div()
-                        .id("downloads-scroll")
-                        .flex_1()
-                        .min_h_0()
-                        .overflow_y_scroll()
-                        .track_scroll(&self.scroll)
-                        .child(list),
-                )
-            })
+            .into_any_element()
     }
 }

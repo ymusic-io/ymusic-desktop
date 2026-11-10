@@ -452,7 +452,7 @@ impl LibraryView {
     }
 }
 
-fn reveal_label() -> &'static str {
+pub fn reveal_label() -> &'static str {
     t(if cfg!(target_os = "macos") {
         Str::MenuRevealFinder
     } else if cfg!(target_os = "windows") {
