@@ -79,14 +79,18 @@ fn main() {
             } else {
                 WindowKind::Normal
             },
+            // The video view sits behind gpui's, so the window and Root stay unpainted and the
+            // Shell paints everything but the video box.
+            window_background: WindowBackgroundAppearance::Transparent,
             ..Default::default()
         };
-        open_window(options, cx, |window, cx| {
-            cx.new(|cx| {
+        cx.open_window(options, |window, cx| {
+            let shell = cx.new(|cx| {
                 let mut shell = Shell::new(window, cx);
                 shell.apply_dev_route(window, cx);
                 shell
-            })
+            });
+            cx.new(|cx| gpui_kit::base::Root::new(shell, window, cx).bg(transparent_black()))
         })
         .expect("open main window");
         cx.activate(true);

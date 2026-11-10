@@ -159,6 +159,7 @@ pub struct Playback {
     pub nav: QueueNav,
     sleep_deadline: Option<Instant>,
     pub sleep_after_current: bool,
+    pub captions: bool,
     _sleep: Option<Task<()>>,
     /// Video on: loads request pictures and the presenter shows them; off: audio only.
     pub video: bool,
@@ -205,6 +206,7 @@ impl Playback {
             },
             sleep_deadline: None,
             sleep_after_current: false,
+            captions: false,
             _sleep: None,
             video: true,
             presenter: None,
@@ -288,6 +290,44 @@ impl Playback {
         }
         self.queue.push(item);
         self.queue_revision += 1;
+        cx.notify();
+    }
+
+    /// Takes the item at `index` out of the queue; removing the playing one moves on.
+    pub fn remove_at(&mut self, index: usize, cx: &mut Context<Self>) {
+        if index >= self.queue.len() {
+            return;
+        }
+        self.queue.remove(index);
+        self.queue_revision += 1;
+        if index < self.index {
+            self.index -= 1;
+        } else if index == self.index {
+            if self.queue.is_empty() {
+                self.index = 0;
+                self.send_local(LocalCommand::Stop);
+                self.command(cx, |engine, log| async move { engine.player_stop(&log).await });
+                self.state = PlayState::Idle;
+            } else {
+                self.index = self.index.min(self.queue.len() - 1);
+                self.load_current(cx);
+            }
+        }
+        self.nav.reset(self.index);
+        cx.notify();
+    }
+
+    /// Seeks by `delta_ms` from where playback is, within the item.
+    pub fn seek_by(&mut self, delta_ms: i64, cx: &mut Context<Self>) {
+        let target = (self.position_ms + delta_ms).max(0);
+        let target = if self.duration_ms > 0 { target.min(self.duration_ms) } else { target };
+        self.seek(target, cx);
+    }
+
+    /// YouTube captions on or off; the bundle keeps the choice across videos.
+    pub fn set_captions(&mut self, visible: bool, cx: &mut Context<Self>) {
+        self.captions = visible;
+        self.command(cx, move |engine, log| async move { engine.player_set_caption(None, visible, &log).await });
         cx.notify();
     }
 

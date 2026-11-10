@@ -20,7 +20,7 @@ use crate::graph::{AppGraph, on_core};
 use crate::library::{LibraryView, PlayLocal};
 use crate::media_session::MediaSession;
 use crate::mini_player::{MiniPlayer, ToggleNowPlaying};
-use crate::now_playing::NowPlaying;
+use crate::now_playing::{NowPlaying, NowPlayingEvent};
 use crate::play_again::{PlayAgainView, ResumeQueue};
 use crate::play_history::HistoryRecorder;
 use crate::playback::{Playback, QueueItem};
@@ -218,12 +218,20 @@ impl Shell {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let playback = cx.new(|cx| Playback::new(cx));
         let mini_player = cx.new(|cx| MiniPlayer::new(playback.clone(), window, cx));
-        let now_playing = cx.new(|cx| NowPlaying::new(playback.clone(), cx));
+        let now_playing = cx.new(|cx| NowPlaying::new(playback.clone(), window, cx));
         let media_session = cx.new(|cx| MediaSession::new(playback.clone(), cx));
         let history = cx.new(|cx| HistoryRecorder::new(playback.clone(), cx));
         let sponsor_block = cx.new(|cx| SponsorBlock::new(playback.clone(), cx));
         let toggle = cx.subscribe(&mini_player, |shell, _, _: &ToggleNowPlaying, cx| {
             shell.now_playing_open = !shell.now_playing_open;
+            cx.notify();
+        });
+        let now_playing_events = cx.subscribe(&now_playing, |shell, _, event: &NowPlayingEvent, cx| {
+            match event {
+                NowPlayingEvent::Close => shell.now_playing_open = false,
+                NowPlayingEvent::Download(target) => shell.pending_download = Some(target.clone()),
+                NowPlayingEvent::OpenSound => shell.pending_sound = true,
+            }
             cx.notify();
         });
         let settings = cx.global::<AppGraph>().settings.clone();
@@ -253,7 +261,7 @@ impl Shell {
             rail_manual: None,
             rail_auto: None,
             drawer_open: false,
-            _subscriptions: vec![toggle],
+            _subscriptions: vec![toggle, now_playing_events],
         }
     }
 
@@ -1084,9 +1092,9 @@ impl Render for Shell {
         v_flex()
             .relative()
             .size_full()
-            .bg(cx.theme().background)
+            .when(!now_playing, |shell| shell.bg(cx.theme().background))
             .child(div().flex_1().min_h_0().w_full().child(body))
-            .child(self.mini_player.clone())
+            .when(!now_playing, |shell| shell.child(self.mini_player.clone()))
             .children(drawer)
     }
 }

@@ -1,37 +1,119 @@
-//! Now Playing: the current track large, and the queue ("Up next") to jump around in.
+//! Now Playing, laid out like the JVM desktop app. Wide (W > H and W >= 640): the video on the left
+//! with overlay controls, the queue pane on the right (`clamp(0.3W, 320, 480)`) under its top bar.
+//! Narrow: top bar, video full width, title, then the queue.
+//! The video is a native view behind the window (see `video_layer`), so its box stays unpainted.
 
 use std::cell::Cell;
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
-use gpui_kit::component::switch::Switch;
-use gpui_kit::component::{ActiveTheme, Sizable, StyledExt, WindowExt, h_flex, v_flex};
+use gpui_kit::assets::IconName as Lucide;
+use gpui_kit::base::slider::{SliderEvent, SliderState};
+use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
+use gpui_kit::component::slider::Slider;
+use gpui_kit::component::{ActiveTheme, Icon, IconName, Selectable, Sizable, StyledExt, WindowExt, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
-use ym_i18n::{Str, t};
+use ym_i18n::{Str, t, tf};
 
-use crate::playback::Playback;
+use crate::download_dialog::DownloadTarget;
+use crate::mini_player::clock;
+use crate::playback::{PlayState, Playback, QueueItem};
+use crate::queue_nav::LoopMode;
 use crate::video_layer::VideoLayer;
+
+const CONTROLS_HIDE_AFTER: Duration = Duration::from_secs(3);
+const SKIP_MS: i64 = 10_000;
+const SLEEP_PRESET_MINUTES: [u64; 5] = [15, 30, 45, 60, 90];
+const PLAY_BUTTON: f32 = 58.;
+
+pub enum NowPlayingEvent {
+    Close,
+    Download(DownloadTarget),
+    OpenSound,
+}
 
 pub struct NowPlaying {
     playback: Entity<Playback>,
-    scroll: ScrollHandle,
+    queue_scroll: ScrollHandle,
     video_layer: Option<Rc<VideoLayer>>,
     /// The video box as last painted, to report viewport changes to the player.
     video_box: Rc<Cell<(i32, i32)>>,
     reported_box: (i32, i32),
-    _observe: Subscription,
+    seek: Entity<SliderState>,
+    dragging_seek: bool,
+    touched_at: Instant,
+    controls_were_visible: bool,
+    fullscreen: bool,
+    _subscriptions: Vec<Subscription>,
+    _controls_timer: Task<()>,
+}
+
+impl EventEmitter<NowPlayingEvent> for NowPlaying {}
+
+fn icon_button(id: impl Into<ElementId>, icon: impl Into<Icon>, label: &'static str) -> Button {
+    Button::new(id).ghost().icon(icon).accessibility_label(label).tooltip(label)
 }
 
 impl NowPlaying {
-    pub fn new(playback: Entity<Playback>, cx: &mut Context<Self>) -> Self {
-        let observe = cx.observe(&playback, |_, _, cx| cx.notify());
+    pub fn new(playback: Entity<Playback>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let seek = cx.new(|_| SliderState::new().min(0.).max(1.).step(0.001));
+        let subscriptions = vec![
+            cx.observe_in(&playback, window, |view, playback, window, cx| {
+                if !view.dragging_seek {
+                    let playback = playback.read(cx);
+                    let fraction = if playback.duration_ms > 0 {
+                        (playback.position_ms as f32 / playback.duration_ms as f32).clamp(0., 1.)
+                    } else {
+                        0.
+                    };
+                    view.seek.update(cx, |slider, cx| slider.set_value(fraction, window, cx));
+                }
+                cx.notify();
+            }),
+            cx.subscribe(&seek, |view, _, event: &SliderEvent, cx| match event {
+                SliderEvent::Change(_) => {
+                    view.dragging_seek = true;
+                    view.touch(cx);
+                }
+                SliderEvent::Release(value) => {
+                    view.dragging_seek = false;
+                    let fraction = value.end();
+                    view.playback.update(cx, |playback, cx| {
+                        let target = (playback.duration_ms as f32 * fraction) as i64;
+                        playback.seek(target, cx);
+                    });
+                }
+            }),
+        ];
+        let executor = cx.background_executor().clone();
+        let controls_timer = cx.spawn(async move |this, cx| {
+            loop {
+                executor.timer(Duration::from_millis(500)).await;
+                let alive = this.update(cx, |view, cx| {
+                    if view.controls_visible(cx) != view.controls_were_visible {
+                        cx.notify();
+                    }
+                });
+                if alive.is_err() {
+                    return;
+                }
+            }
+        });
         Self {
             playback,
-            scroll: ScrollHandle::new(),
+            queue_scroll: ScrollHandle::new(),
             video_layer: None,
             video_box: Rc::new(Cell::new((0, 0))),
             reported_box: (0, 0),
-            _observe: observe,
+            seek,
+            dragging_seek: false,
+            touched_at: Instant::now(),
+            controls_were_visible: true,
+            fullscreen: false,
+            _subscriptions: subscriptions,
+            _controls_timer: controls_timer,
         }
     }
 
@@ -52,44 +134,365 @@ impl NowPlaying {
         self.playback.update(cx, |playback, _| unsafe { playback.attach_video_layer(pointer) });
         self.video_layer = Some(layer);
     }
-}
 
-impl Render for NowPlaying {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.ensure_video_layer(window, cx);
-        let painted = self.video_box.get();
-        if painted.0 > 0 && painted != self.reported_box {
-            self.reported_box = painted;
-            self.playback.update(cx, |playback, cx| playback.set_viewport(painted.0, painted.1, cx));
-        }
-        // The video layer draws above every gpui layer, so it gives way to dialogs and sheets.
-        let covered = window.has_active_dialog(cx) || window.has_active_sheet(cx);
+    fn touch(&mut self, cx: &mut Context<Self>) {
+        self.touched_at = Instant::now();
+        cx.notify();
+    }
+
+    /// Shown while paused or seeking, and for a few seconds after the last pointer move.
+    fn controls_visible(&self, cx: &App) -> bool {
+        !self.playback.read(cx).is_playing() || self.dragging_seek || self.touched_at.elapsed() < CONTROLS_HIDE_AFTER
+    }
+
+    fn render_play_button(&self, playing: bool, buffering: bool, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme();
+        let label = t(if playing { Str::CdPause } else { Str::CdPlay });
+        div()
+            .id("np-play")
+            .role(Role::Button)
+            .aria_label(label)
+            .tab_stop(true)
+            .size(px(PLAY_BUTTON))
+            .flex_shrink_0()
+            .rounded_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .cursor_pointer()
+            .bg(theme.primary)
+            .text_color(theme.primary_foreground)
+            .opacity(if buffering { 0.6 } else { 1. })
+            .child(Icon::new(if playing { Lucide::Pause } else { Lucide::Play }).large())
+            .on_click(cx.listener(|view, _, _, cx| view.playback.update(cx, |playback, cx| playback.toggle(cx))))
+    }
+
+    fn render_video(&mut self, current: &QueueItem, fill: bool, cx: &mut Context<Self>) -> AnyElement {
         let playback = self.playback.read(cx);
-        let video_on = playback.video;
-        let theme = cx.theme().clone();
-        let Some(current) = playback.current().cloned() else { return div().into_any_element() };
-        let queue = playback.queue.clone();
-        let index = playback.index;
-        let artist = current.artist.clone();
+        let (video_on, playing) = (playback.video, playback.is_playing());
+        let buffering = playback.state == PlayState::Buffering;
+        let (position, duration, captions) = (playback.position_ms, playback.duration_ms, playback.captions);
+        let layer = self.video_layer.clone();
+        let video_box = self.video_box.clone();
+        let show_video = video_on && layer.is_some();
+        let controls = self.controls_visible(cx);
+        self.controls_were_visible = controls;
+        let fullscreen = self.fullscreen;
 
-        let mut list = v_flex().gap_1();
+        let transport = h_flex()
+            .gap_6()
+            .items_center()
+            .child(icon_button("np-rewind", Lucide::RotateCcw, t(Str::CdRewind10)).on_click(
+                cx.listener(|view, _, _, cx| view.playback.update(cx, |playback, cx| playback.seek_by(-SKIP_MS, cx))),
+            ))
+            .child(
+                icon_button("np-previous", Lucide::SkipBack, t(Str::CdPrevious)).on_click(
+                    cx.listener(|view, _, _, cx| view.playback.update(cx, |playback, cx| playback.previous(cx))),
+                ),
+            )
+            .child(self.render_play_button(playing, buffering, cx))
+            .child(
+                icon_button("np-next", Lucide::SkipForward, t(Str::CdNext))
+                    .on_click(cx.listener(|view, _, _, cx| view.playback.update(cx, |playback, cx| playback.next(cx)))),
+            )
+            .child(icon_button("np-forward", Lucide::RotateCw, t(Str::CdForward10)).on_click(
+                cx.listener(|view, _, _, cx| view.playback.update(cx, |playback, cx| playback.seek_by(SKIP_MS, cx))),
+            ));
+        let bottom = v_flex()
+            .px(px(11.))
+            .pb_2()
+            .gap_1()
+            .child(
+                h_flex()
+                    .gap_1()
+                    .items_center()
+                    .child(div().text_sm().child(format!("{} / {}", clock(position), clock(duration))))
+                    .child(div().flex_1())
+                    .child(
+                        icon_button("np-captions", Lucide::Captions, t(Str::CdCaptions)).selected(captions).on_click(
+                            cx.listener(move |view, _, _, cx| {
+                                view.playback.update(cx, |playback, cx| playback.set_captions(!captions, cx))
+                            }),
+                        ),
+                    )
+                    .child(
+                        icon_button(
+                            "np-fullscreen",
+                            if fullscreen { Lucide::Minimize } else { Lucide::Maximize },
+                            t(if fullscreen { Str::CdExitFullscreen } else { Str::CdFullscreen }),
+                        )
+                        .on_click(cx.listener(|view, _, window, cx| {
+                            view.fullscreen = !view.fullscreen;
+                            window.toggle_fullscreen();
+                            cx.notify();
+                        })),
+                    ),
+            )
+            .child(Slider::new(&self.seek).accessibility_label(t(Str::A11yPlaybackPosition)));
+        let overlay = div()
+            .absolute()
+            .inset_0()
+            .bg(black().opacity(0.35))
+            .text_color(white())
+            .child(
+                v_flex()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .right_0()
+                    .px_4()
+                    .pt(px(11.))
+                    .child(div().font_semibold().truncate().child(current.title.clone()))
+                    .when_some(current.artist.clone(), |column, artist| {
+                        column.child(div().text_sm().opacity(0.8).truncate().child(artist))
+                    }),
+            )
+            .child(div().absolute().inset_0().flex().items_center().justify_center().child(transport))
+            .child(div().absolute().bottom_0().left_0().right_0().child(bottom));
+
+        div()
+            .id("video-area")
+            .relative()
+            .overflow_hidden()
+            .map(|frame| if fill { frame.size_full() } else { frame.w_full().aspect_ratio(16. / 9.) })
+            .when(!show_video, |frame| {
+                frame.bg(black()).when_some(current.thumb(i32::MAX), |frame, url| {
+                    frame.child(img(url).size_full().object_fit(ObjectFit::Contain))
+                })
+            })
+            .on_mouse_move(cx.listener(|view, _, _, cx| view.touch(cx)))
+            .child(
+                canvas(
+                    |_, _, _| {},
+                    move |bounds, _, _, _| {
+                        if let Some(layer) = &layer {
+                            layer.place(bounds, show_video);
+                        }
+                        let width = f32::from(bounds.size.width) as i32;
+                        let height = f32::from(bounds.size.height) as i32;
+                        video_box.set((width, height));
+                    },
+                )
+                .absolute()
+                .size_full(),
+            )
+            .when(controls, |frame| frame.child(overlay))
+            .into_any_element()
+    }
+
+    /// Close, then download · sleep · quality · ⋮ on the right.
+    fn render_top_bar(&self, current: &QueueItem, cx: &mut Context<Self>) -> AnyElement {
+        let playback = self.playback.read(cx);
+        let sleep_remaining = playback.sleep_remaining();
+        let sleep_after_current = playback.sleep_after_current;
+        let sleep_armed = sleep_remaining.is_some() || sleep_after_current;
+        let video = playback.video;
+        let target = current.video_id().map(|video_id| DownloadTarget {
+            video_id: video_id.to_owned(),
+            title: current.title.clone(),
+            artist: current.artist.clone(),
+            thumbnail_url: current.thumb(640).map(|url| url.to_string()),
+        });
+
+        let sleep_tooltip = match sleep_remaining {
+            Some(left) => tf(Str::SleepPausingIn, &[&clock(left.as_millis() as i64)]),
+            None if sleep_after_current => t(Str::SleepPausingAfterTrack).to_owned(),
+            None => t(Str::CdSleepTimer).to_owned(),
+        };
+        let sleep_playback = self.playback.clone();
+        let sleep = Button::new("np-sleep")
+            .ghost()
+            .icon(Lucide::Timer)
+            .selected(sleep_armed)
+            .accessibility_label(t(Str::CdSleepTimer))
+            .tooltip(sleep_tooltip)
+            .dropdown_menu_with_anchor(Anchor::TopRight, move |mut menu, _, _| {
+                for minutes in SLEEP_PRESET_MINUTES {
+                    let playback = sleep_playback.clone();
+                    menu =
+                        menu.item(PopupMenuItem::new(tf(Str::SleepMinutes, &[&minutes])).on_click(move |_, _, cx| {
+                            playback.update(cx, |playback, cx| {
+                                playback.set_sleep_timer(Some(Duration::from_secs(minutes * 60)), cx)
+                            })
+                        }));
+                }
+                let end = sleep_playback.clone();
+                menu = menu.item(PopupMenuItem::new(t(Str::SleepEndOfTrack)).checked(sleep_after_current).on_click(
+                    move |_, _, cx| end.update(cx, |playback, cx| playback.set_sleep_after_current(true, cx)),
+                ));
+                if sleep_armed {
+                    let off = sleep_playback.clone();
+                    menu =
+                        menu.separator().item(PopupMenuItem::new(t(Str::SleepTurnOff)).on_click(move |_, _, cx| {
+                            off.update(cx, |playback, cx| playback.set_sleep_timer(None, cx))
+                        }));
+                }
+                menu
+            });
+
+        let quality_playback = self.playback.clone();
+        let quality = Button::new("np-quality")
+            .outline()
+            .xsmall()
+            .label(if video { t(Str::VideoQualityAuto) } else { t(Str::AudioOnly) })
+            .accessibility_label(t(Str::DownloadQuality))
+            .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, _| {
+                let (to_video, to_audio) = (quality_playback.clone(), quality_playback.clone());
+                menu.item(
+                    PopupMenuItem::new(t(Str::VideoQualityAuto))
+                        .checked(video)
+                        .on_click(move |_, _, cx| to_video.update(cx, |playback, cx| playback.set_video(true, cx))),
+                )
+                .item(
+                    PopupMenuItem::new(t(Str::AudioOnly))
+                        .checked(!video)
+                        .on_click(move |_, _, cx| to_audio.update(cx, |playback, cx| playback.set_video(false, cx))),
+                )
+            });
+
+        let view = cx.entity().downgrade();
+        let more_target = target.clone();
+        let more = icon_button("np-more", IconName::EllipsisVertical, t(Str::CdMore)).dropdown_menu_with_anchor(
+            Anchor::TopRight,
+            move |mut menu, _, _| {
+                if let Some(target) = &more_target {
+                    let link = format!("https://youtu.be/{}", target.video_id);
+                    menu = menu.item(PopupMenuItem::new(t(Str::CdShare)).on_click(move |_, window, cx| {
+                        cx.write_to_clipboard(ClipboardItem::new_string(link.clone()));
+                        window.push_notification(t(Str::LinkCopied), cx);
+                    }));
+                    let query = format!("{} lyrics", target.title);
+                    menu = menu.item(PopupMenuItem::new(t(Str::MenuSearchLyrics)).on_click(move |_, _, cx| {
+                        let encoded: String = url::form_urlencoded::byte_serialize(query.as_bytes()).collect();
+                        cx.open_url(&format!("https://www.google.com/search?q={encoded}"));
+                    }));
+                    menu = menu.separator();
+                }
+                let sound = view.clone();
+                menu.item(PopupMenuItem::new(t(Str::MenuSpeedPitch)).on_click(move |_, _, cx| {
+                    sound.update(cx, |_, cx| cx.emit(NowPlayingEvent::OpenSound)).ok();
+                }))
+            },
+        );
+
+        h_flex()
+            .px_2()
+            .py_1()
+            .gap(px(5.))
+            .items_center()
+            .child(
+                icon_button("np-close", IconName::ChevronDown, t(Str::CdMinimize))
+                    .on_click(cx.listener(|_, _, _, cx| cx.emit(NowPlayingEvent::Close))),
+            )
+            .child(div().flex_1())
+            .when_some(target, |bar, target| {
+                bar.child(
+                    icon_button("np-download", Lucide::Download, t(Str::CdDownload))
+                        .on_click(cx.listener(move |_, _, _, cx| cx.emit(NowPlayingEvent::Download(target.clone())))),
+                )
+            })
+            .child(sleep)
+            .child(quality)
+            .child(more)
+            .into_any_element()
+    }
+
+    /// "Up next", n of total, then repeat and shuffle.
+    fn render_queue_header(&self, cx: &mut Context<Self>) -> AnyElement {
+        let playback = self.playback.read(cx);
+        let (loop_mode, shuffle) = (playback.nav.loop_mode, playback.nav.shuffle);
+        let position = tf(Str::A11yXOfY, &[&(playback.index + 1), &playback.queue.len()]);
+        let theme = cx.theme();
+        h_flex()
+            .px(px(20.))
+            .py(px(6.))
+            .gap_2()
+            .items_center()
+            .border_b_1()
+            .border_color(theme.border)
+            .child(div().id("np-up-next").role(Role::Heading).font_semibold().child(t(Str::UpNext)))
+            .child(div().text_sm().text_color(theme.muted_foreground).child(position))
+            .child(div().flex_1())
+            .child(
+                icon_button(
+                    "np-repeat",
+                    if loop_mode == LoopMode::One { Lucide::Repeat1 } else { Lucide::Repeat },
+                    t(match loop_mode {
+                        LoopMode::None => Str::CdRepeatOff,
+                        LoopMode::All => Str::CdRepeatAll,
+                        LoopMode::One => Str::CdRepeatOne,
+                    }),
+                )
+                .selected(loop_mode != LoopMode::None)
+                .on_click(cx.listener(move |view, _, _, cx| {
+                    view.playback.update(cx, |playback, cx| playback.set_loop_mode(loop_mode.cycled(), cx))
+                })),
+            )
+            .child(icon_button("np-shuffle", Lucide::Shuffle, t(Str::CdShuffle)).selected(shuffle).on_click(
+                cx.listener(move |view, _, _, cx| {
+                    view.playback.update(cx, |playback, cx| playback.set_shuffle(!shuffle, cx))
+                }),
+            ))
+            .into_any_element()
+    }
+
+    fn render_queue(&self, large: bool, cx: &mut Context<Self>) -> AnyElement {
+        let playback = self.playback.read(cx);
+        let (queue, index) = (playback.queue.clone(), playback.index);
+        let theme = cx.theme().clone();
+        let thumb = if large { 60. } else { 48. };
+        let mut list = v_flex();
         for (position, item) in queue.iter().enumerate() {
             let active = position == index;
+            let label = [Some(item.title.clone()), item.artist.clone(), item.duration_label.clone()]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+                .join(", ");
+            let detail = [item.duration_label.clone(), item.artist.clone()]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+                .join(" · ");
+            let menu_playback = self.playback.clone();
+            let menu_item = item.clone();
+            let more =
+                icon_button(("np-queue-more", position), IconName::EllipsisVertical, t(Str::CdMore))
+                    .small()
+                    .dropdown_menu_with_anchor(Anchor::TopRight, move |mut menu, _, _| {
+                        if !active {
+                            let (next, item) = (menu_playback.clone(), menu_item.clone());
+                            menu = menu.item(PopupMenuItem::new(t(Str::QueueNext)).on_click(move |_, _, cx| {
+                                next.update(cx, |playback, cx| {
+                                    playback.remove_at(position, cx);
+                                    playback.queue_next(item.clone(), cx);
+                                })
+                            }));
+                        }
+                        let remove = menu_playback.clone();
+                        menu.item(PopupMenuItem::new(t(Str::RemoveFromQueue)).on_click(move |_, _, cx| {
+                            remove.update(cx, |playback, cx| playback.remove_at(position, cx))
+                        }))
+                    });
             list = list.child(
                 h_flex()
-                    .id(("queue-item", position))
-                    .gap_3()
-                    .p_1()
-                    .rounded_md()
+                    .id(("np-queue-item", position))
+                    .role(Role::ListItem)
+                    .aria_label(label)
+                    .aria_selected(active)
+                    .tab_stop(true)
+                    .px_4()
+                    .py(px(if large { 10. } else { 8. }))
+                    .gap(px(if large { 12. } else { 8. }))
+                    .items_center()
                     .cursor_pointer()
                     .when(active, |row| row.bg(theme.secondary))
                     .hover(|style| style.bg(theme.secondary))
                     .child(
                         div()
-                            .w(px(80.))
-                            .h(px(45.))
+                            .size(px(thumb))
                             .flex_shrink_0()
-                            .rounded_md()
+                            .rounded(px(6.))
                             .overflow_hidden()
                             .bg(theme.secondary)
                             .when_some(item.thumb(120), |frame, url| {
@@ -107,90 +510,93 @@ impl Render for NowPlaying {
                                     .when(active, |text| text.font_semibold())
                                     .child(item.title.clone()),
                             )
-                            .when_some(item.artist.clone(), |column, line| {
-                                column.child(div().text_xs().text_color(theme.muted_foreground).truncate().child(line))
+                            .when(!detail.is_empty(), |column| {
+                                column
+                                    .child(div().text_xs().text_color(theme.muted_foreground).truncate().child(detail))
                             }),
                     )
-                    .when_some(item.duration_label.clone(), |row, duration| {
-                        row.child(div().text_xs().text_color(theme.muted_foreground).child(duration))
-                    })
+                    .child(more)
                     .on_click(cx.listener(move |view, _, _, cx| {
                         view.playback.update(cx, |playback, cx| playback.jump_to(position, cx))
                     })),
             );
         }
+        div()
+            .id("np-queue")
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .track_scroll(&self.queue_scroll)
+            .child(list)
+            .into_any_element()
+    }
+}
 
-        h_flex()
+impl Render for NowPlaying {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.ensure_video_layer(window, cx);
+        let painted = self.video_box.get();
+        if painted.0 > 0 && painted != self.reported_box {
+            self.reported_box = painted;
+            self.playback.update(cx, |playback, cx| playback.set_viewport(painted.0, painted.1, cx));
+        }
+        let Some(current) = self.playback.read(cx).current().cloned() else { return div().into_any_element() };
+        if self.fullscreen && !window.is_fullscreen() {
+            self.fullscreen = false;
+        }
+        if self.fullscreen {
+            return div().size_full().child(self.render_video(&current, true, cx)).into_any_element();
+        }
+        let viewport = window.viewport_size();
+        let (width, height) = (f32::from(viewport.width), f32::from(viewport.height));
+        let theme = cx.theme().clone();
+        let top_bar = self.render_top_bar(&current, cx);
+        let header = self.render_queue_header(cx);
+        if width > height && width >= 640. {
+            let pane = (0.3 * width).clamp(320., 480.);
+            let queue = self.render_queue(pane >= 380., cx);
+            let video = self.render_video(&current, true, cx);
+            return h_flex()
+                .size_full()
+                .child(div().flex_1().min_w_0().h_full().child(video))
+                .child(
+                    v_flex()
+                        .w(px(pane))
+                        .h_full()
+                        .flex_shrink_0()
+                        .bg(theme.background)
+                        .border_l_1()
+                        .border_color(theme.border)
+                        .child(top_bar)
+                        .child(header)
+                        .child(queue),
+                )
+                .into_any_element();
+        }
+        let video = self.render_video(&current, false, cx);
+        let queue = self.render_queue(false, cx);
+        v_flex()
             .size_full()
-            .gap_8()
-            .p_8()
+            .child(div().bg(theme.background).child(top_bar))
+            .child(video)
             .child(
                 v_flex()
                     .flex_1()
-                    .min_w_0()
-                    .gap_4()
-                    .items_center()
-                    .justify_center()
-                    .child({
-                        let layer = self.video_layer.clone();
-                        let video_box = self.video_box.clone();
-                        let show_video = video_on && !covered && layer.is_some();
-                        div()
-                            .relative()
-                            .w_full()
-                            .max_w(px(720.))
-                            .aspect_ratio(16. / 9.)
-                            .rounded_lg()
-                            .overflow_hidden()
-                            .bg(if show_video { black() } else { theme.secondary })
-                            .when(!show_video, |frame| {
-                                frame.when_some(current.thumb(i32::MAX), |frame, url| {
-                                    frame.child(img(url).size_full().object_fit(ObjectFit::Cover))
-                                })
-                            })
-                            .child(
-                                canvas(
-                                    |_, _, _| {},
-                                    move |bounds, _, window, cx| {
-                                        let covered = window.has_active_dialog(cx) || window.has_active_sheet(cx);
-                                        if let Some(layer) = &layer {
-                                            layer.place(bounds, show_video && !covered);
-                                        }
-                                        let width = f32::from(bounds.size.width) as i32;
-                                        let height = f32::from(bounds.size.height) as i32;
-                                        video_box.set((width, height));
-                                    },
-                                )
-                                .absolute()
-                                .size_full(),
-                            )
-                    })
-                    .child(Switch::new("audio-only").small().checked(!video_on).label(t(Str::AudioOnly)).on_click(
-                        cx.listener(|view, checked: &bool, _, cx| {
-                            let video = !*checked;
-                            view.playback.update(cx, |playback, cx| playback.set_video(video, cx));
-                        }),
-                    ))
-                    .child(div().text_xl().font_semibold().text_center().child(current.title.clone()))
-                    .when_some(artist, |column, artist| {
-                        column.child(div().text_color(theme.muted_foreground).child(artist))
-                    }),
-            )
-            .child(
-                v_flex()
-                    .w(px(380.))
-                    .h_full()
-                    .gap_2()
-                    .child(div().text_lg().font_semibold().child(t(Str::UpNext)))
+                    .min_h_0()
+                    .bg(theme.background)
                     .child(
-                        div()
-                            .id("queue-scroll")
-                            .flex_1()
-                            .min_h_0()
-                            .overflow_y_scroll()
-                            .track_scroll(&self.scroll)
-                            .child(list),
-                    ),
+                        v_flex()
+                            .items_center()
+                            .px(px(20.))
+                            .pt(px(18.))
+                            .pb_1()
+                            .child(div().font_semibold().truncate().child(current.title.clone()))
+                            .when_some(current.artist.clone(), |column, artist| {
+                                column.child(div().pt_1().text_sm().text_color(theme.muted_foreground).child(artist))
+                            }),
+                    )
+                    .child(header)
+                    .child(queue),
             )
             .into_any_element()
     }

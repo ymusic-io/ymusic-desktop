@@ -40,7 +40,11 @@ gpui_kit::assets::icon_assets!(
         Menu,
         ArrowUpLeft,
         ArrowLeft,
-        Search
+        Search,
+        RotateCw,
+        Captions,
+        Maximize,
+        Minimize
     ]
 );
 
