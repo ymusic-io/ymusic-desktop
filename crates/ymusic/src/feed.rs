@@ -710,7 +710,7 @@ impl Bands {
 }
 
 /// The feed's width as the JVM app measures it: the window, less the expanded rail in rail mode.
-fn feed_width(window: &Window) -> f32 {
+pub fn feed_width(window: &Window) -> f32 {
     let viewport = window.viewport_size();
     let (width, height) = (f32::from(viewport.width), f32::from(viewport.height));
     if width >= 750. && height >= 480. { width - 280. } else { width }

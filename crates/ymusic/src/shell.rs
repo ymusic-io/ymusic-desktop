@@ -19,7 +19,7 @@ use crate::downloads_view::DownloadsView;
 use crate::feed::{FeedAction, FeedSource, FeedView, ItemAction, Navigate, Play};
 use crate::feedback_view::FeedbackView;
 use crate::graph::{AppGraph, on_core};
-use crate::library::{LibraryView, PlayLocal};
+use crate::library::{LibraryView, PlayLocal, QueueLocal};
 use crate::media_session::MediaSession;
 use crate::mini_player::{MiniPlayer, ToggleNowPlaying};
 use crate::now_playing::{NowPlaying, NowPlayingEvent};
@@ -463,7 +463,14 @@ impl Shell {
             let (items, index) = (event.items.clone(), event.index);
             shell.playback.update(cx, |playback, cx| playback.play_queue(items, index, cx));
         });
-        self._subscriptions.push(play);
+        let queue =
+            cx.subscribe(&view, |shell, _, event: &QueueLocal, cx| {
+                let (item, next) = (event.item.clone(), event.next);
+                shell.playback.update(cx, |playback, cx| {
+                    if next { playback.queue_next(item, cx) } else { playback.queue_last(item, cx) }
+                });
+            });
+        self._subscriptions.extend([play, queue]);
         self.library = Some(view.clone());
         view
     }

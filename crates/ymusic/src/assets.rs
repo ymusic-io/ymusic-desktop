@@ -49,7 +49,10 @@ gpui_kit::assets::icon_assets!(
         ShieldOff,
         ListPlus,
         ListCheck,
-        Share2
+        Share2,
+        RefreshCw,
+        ArrowUpDown,
+        Tag
     ]
 );
 
