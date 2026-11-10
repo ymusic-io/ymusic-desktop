@@ -8,6 +8,8 @@ use std::sync::Mutex;
 use rusqlite::{Connection, OptionalExtension, Row, params};
 use ym_common::log::now_millis;
 
+pub use rusqlite::Error as StoreError;
+
 const SCHEMA_VERSION: i64 = 5;
 /// Rows kept per watch-time table.
 pub const RETAIN: usize = 200;
