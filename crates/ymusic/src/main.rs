@@ -4,6 +4,7 @@ mod download_dialog;
 mod downloads;
 mod downloads_view;
 mod feed;
+mod feedback_view;
 mod graph;
 mod http_client;
 mod library;

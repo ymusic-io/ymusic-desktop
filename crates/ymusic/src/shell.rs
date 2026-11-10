@@ -16,6 +16,7 @@ use ym_i18n::{Str, t};
 use crate::download_dialog::{DownloadPicker, DownloadTarget};
 use crate::downloads_view::DownloadsView;
 use crate::feed::{FeedAction, FeedSource, FeedView, ItemAction, Navigate, Play};
+use crate::feedback_view::FeedbackView;
 use crate::graph::{AppGraph, on_core};
 use crate::library::{LibraryView, PlayLocal};
 use crate::media_session::MediaSession;
@@ -50,7 +51,7 @@ impl Section {
     const GROUPS: [&'static [Section]; 3] = [
         &[Section::Discover, Section::YtMusic, Section::Library],
         &[Section::PlayAgain, Section::Downloads, Section::Settings],
-        &[Section::Donate, Section::Telegram, Section::Feedback],
+        &[Section::Telegram, Section::Feedback],
     ];
 
     const ALL: [Section; 9] = [
@@ -167,6 +168,7 @@ pub struct Shell {
     play_again: Option<Entity<PlayAgainView>>,
     downloads: Option<Entity<DownloadsView>>,
     settings: Option<Entity<SettingsView>>,
+    feedback: Option<Entity<FeedbackView>>,
     /// Debug: open the sign-in dialog on the next frame.
     pending_signin: bool,
     /// Debug: open the Sound panel on the next frame.
@@ -218,6 +220,7 @@ impl Shell {
             play_again: None,
             downloads: None,
             settings: None,
+            feedback: None,
             pending_signin: false,
             pending_sound: false,
             pending_download: None,
@@ -289,6 +292,7 @@ impl Shell {
             _ if route == "playagain" => self.section = Section::PlayAgain,
             _ if route == "downloads" => self.section = Section::Downloads,
             _ if route == "settings" => self.section = Section::Settings,
+            _ if route == "feedback" => self.section = Section::Feedback,
             _ if route == "sound" => self.pending_sound = true,
             _ if route == "signin" => {
                 self.section = Section::Settings;
@@ -589,6 +593,12 @@ impl Shell {
     }
 
     fn select_section(&mut self, section: Section, cx: &mut Context<Self>) {
+        if section == Section::Telegram {
+            let url =
+                crate::feedback_view::link(cx.global::<AppGraph>(), "telegramUrl", crate::feedback_view::TELEGRAM_URL);
+            cx.open_url(&url);
+            return;
+        }
         self.now_playing_open = false;
         if self.section == section {
             // Re-selecting the current section returns to its root.
@@ -690,6 +700,9 @@ impl Shell {
             Section::Library => self.library_view(cx).into_any_element(),
             Section::PlayAgain => self.play_again_view(cx).into_any_element(),
             Section::Downloads => self.downloads_view(cx).into_any_element(),
+            Section::Feedback => {
+                self.feedback.get_or_insert_with(|| cx.new(|_| FeedbackView::new())).clone().into_any_element()
+            }
             Section::Settings => {
                 let playback = self.playback.clone();
                 let view = self.settings.get_or_insert_with(|| cx.new(|cx| SettingsView::new(playback, cx))).clone();
