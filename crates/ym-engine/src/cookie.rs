@@ -41,6 +41,43 @@ impl CookieJar for MemoryCookieJar {
     }
 }
 
+/// Writes the jar's persistent cookies somewhere durable. Blocking.
+pub type CookiePersist = Box<dyn Fn(&[u8]) -> Result<(), BoxError> + Send + Sync>;
+
+/// [`MemoryCookieJar`] semantics, saved after every change and restored at start. Session
+/// cookies (no expiry) are not saved, as a browser drops them at exit.
+pub struct PersistentCookieJar {
+    store: Mutex<cookie_store::CookieStore>,
+    persist: CookiePersist,
+}
+
+impl PersistentCookieJar {
+    /// `saved` is what `persist` last wrote; unreadable bytes start an empty jar.
+    pub fn new(saved: Option<&[u8]>, persist: CookiePersist) -> Self {
+        let store = saved.and_then(|bytes| cookie_store::serde::json::load(bytes).ok()).unwrap_or_default();
+        Self { store: Mutex::new(store), persist }
+    }
+}
+
+impl CookieJar for PersistentCookieJar {
+    fn load_for_request(&self, url: &Url) -> Result<Vec<(String, String)>, BoxError> {
+        let store = self.store.lock().unwrap();
+        Ok(store.get_request_values(url).map(|(name, value)| (name.to_owned(), value.to_owned())).collect())
+    }
+
+    fn save_from_response(&self, url: &Url, set_cookies: &[String]) -> Result<(), BoxError> {
+        let mut bytes = Vec::new();
+        {
+            let mut store = self.store.lock().unwrap();
+            for set_cookie in set_cookies {
+                let _ = store.parse(set_cookie, url);
+            }
+            cookie_store::serde::json::save(&store, &mut bytes)?;
+        }
+        (self.persist)(&bytes)
+    }
+}
+
 pub(crate) fn install(runtime: &QuickJsRuntime, jar: Arc<dyn CookieJar>, parked: Arc<ParkedLoggers>) {
     let (get_jar, get_parked) = (jar.clone(), parked.clone());
     runtime.on_accept("cookie/get", move |pipe| {

@@ -17,7 +17,7 @@ mod settings;
 pub mod yt;
 
 pub use cache::{CacheEntry, CacheError, CacheMeta, Clock, DiskCacheStore, PutError};
-pub use cookie::{CookieJar, MemoryCookieJar};
+pub use cookie::{CookieJar, CookiePersist, MemoryCookieJar, PersistentCookieJar};
 pub use engine::{DynamicEngine, EngineConfig};
 pub use error::{EngineError, ErrorDetails, ErrorKind, WireError};
 pub use logs::ParkedLoggers;
