@@ -8486,6 +8486,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "ym-mse"
+version = "0.1.0"
+dependencies = [
+ "cc",
+]
+
+[[package]]
 name = "ym-quickjs"
 version = "0.1.0"
 dependencies = [
