@@ -20,13 +20,16 @@ const CACHE_TTL: Duration = Duration::from_secs(6 * 60);
 pub struct SponsorBlock {
     playback: Entity<Playback>,
     armed_for: Option<String>,
+    /// The current item's YouTube id and whether it is whitelisted; None while SponsorBlock is
+    /// off or the item has no YouTube id.
+    pub current: Option<(String, bool)>,
     _observe: Subscription,
 }
 
 impl SponsorBlock {
     pub fn new(playback: Entity<Playback>, cx: &mut Context<Self>) -> Self {
         let observe = cx.observe(&playback, |sponsor, playback, cx| sponsor.observe(&playback, cx));
-        Self { playback, armed_for: None, _observe: observe }
+        Self { playback, armed_for: None, current: None, _observe: observe }
     }
 
     fn observe(&mut self, playback: &Entity<Playback>, cx: &mut Context<Self>) {
@@ -36,6 +39,9 @@ impl SponsorBlock {
             return;
         }
         self.armed_for = Some(key.clone());
+        if self.current.take().is_some() {
+            cx.notify();
+        }
         let Some(video_id) = youtube_id(&item) else { return };
         let graph = cx.global::<AppGraph>();
         let (store, remote, settings, log) = (
@@ -44,15 +50,50 @@ impl SponsorBlock {
             graph.settings.clone(),
             graph.log.fork("sponsor-block"),
         );
-        let load = on_core(cx, async move { segments_for(&video_id, store, remote, settings, &log).await });
+        let id = video_id.clone();
+        let load = on_core(cx, async move { segments_for(&id, store, remote, settings, &log).await });
         let target = self.playback.downgrade();
-        cx.spawn(async move |_, cx| {
-            let Some(segments) = load.await else { return };
+        cx.spawn(async move |this, cx| {
+            let Some(Some((whitelisted, segments))) = load.await else { return };
             let spans = segments
                 .iter()
                 .map(|segment| ((segment.start_time * 1000.0) as i64, (segment.end_time * 1000.0) as i64))
                 .collect();
-            target.update(cx, |playback, _| playback.set_skip_segments(key, spans)).ok();
+            target.update(cx, |playback, _| playback.set_skip_segments(key.clone(), spans)).ok();
+            this.update(cx, |sponsor, cx| {
+                if sponsor.armed_for.as_deref() == Some(key.as_str()) {
+                    sponsor.current = Some((video_id, whitelisted));
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Turns SponsorBlock off (`whitelisted`) or back on for the current video, then re-arms it
+    /// from the store, so a failed write shows the stored state again.
+    pub fn set_whitelisted(&mut self, whitelisted: bool, cx: &mut Context<Self>) {
+        let Some((video_id, _)) = self.current.clone() else { return };
+        self.current = Some((video_id.clone(), whitelisted));
+        cx.notify();
+        let graph = cx.global::<AppGraph>();
+        let (store, log) = (graph.sponsor_block.clone(), graph.log.fork("sponsor-block"));
+        let write = on_core(cx, async move {
+            match tokio::task::spawn_blocking(move || store.set_whitelisted(&video_id, whitelisted)).await {
+                Ok(Ok(_)) => {}
+                Ok(Err(error)) => log.warn("R90021 sponsorblock whitelist not saved", Some(&error)),
+                Err(error) => log.warn("R90021 sponsorblock whitelist not saved", Some(&error)),
+            }
+        });
+        let playback = self.playback.clone();
+        cx.spawn(async move |this, cx| {
+            write.await;
+            this.update(cx, |sponsor, cx| {
+                sponsor.armed_for = None;
+                sponsor.observe(&playback, cx);
+            })
+            .ok();
         })
         .detach();
     }
@@ -62,17 +103,18 @@ fn youtube_id(item: &QueueItem) -> Option<String> {
     item.video_id().map(str::to_owned).or_else(|| item.youtube_vid.clone())
 }
 
-/// The spans to skip; empty when off, whitelisted, or unknown.
+/// Whether the video is whitelisted, and the spans to skip (empty when whitelisted or unknown);
+/// None while the setting is off.
 async fn segments_for(
     video_id: &str,
     store: Arc<SponsorBlockStore>,
     remote: Arc<RemoteConfig>,
     settings: Arc<dyn SettingsStore>,
     log: &Logger,
-) -> Vec<Segment> {
+) -> Option<(bool, Vec<Segment>)> {
     let enabled = settings.get_raw(SPONSOR_BLOCK_KEY).ok().flatten().is_none_or(|value| value != "false");
     if !enabled {
-        return Vec::new();
+        return None;
     }
     let id = video_id.to_owned();
     let local = {
@@ -85,7 +127,7 @@ async fn segments_for(
         .and_then(|result| result.map_err(|error| error.to_string()))
     };
     let cached = match local {
-        Ok((true, _)) => return Vec::new(),
+        Ok((true, _)) => return Some((true, Vec::new())),
         Ok((false, cached)) => cached,
         Err(message) => {
             log.warn(&format!("sponsorblock cache read failed: {message}"), None);
@@ -95,9 +137,9 @@ async fn segments_for(
     if let Some(cached) = &cached
         && now_millis() - cached.updated_at < CACHE_TTL.as_millis() as i64
     {
-        return cached.segments.clone();
+        return Some((false, cached.segments.clone()));
     }
-    match remote.skip_segments(video_id).await {
+    let segments = match remote.skip_segments(video_id).await {
         Ok(fetched) => {
             let segments: Vec<Segment> = fetched
                 .into_iter()
@@ -122,5 +164,6 @@ async fn segments_for(
             log.warn("sponsorblock segments unavailable", Some(&error));
             cached.map(|cached| cached.segments).unwrap_or_default()
         }
-    }
+    };
+    Some((false, segments))
 }

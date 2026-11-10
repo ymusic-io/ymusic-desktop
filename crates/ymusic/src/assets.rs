@@ -44,7 +44,9 @@ gpui_kit::assets::icon_assets!(
         RotateCw,
         Captions,
         Maximize,
-        Minimize
+        Minimize,
+        ShieldCheck,
+        ShieldOff
     ]
 );
 

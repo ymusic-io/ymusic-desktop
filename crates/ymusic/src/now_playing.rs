@@ -21,6 +21,7 @@ use crate::download_dialog::DownloadTarget;
 use crate::mini_player::clock;
 use crate::playback::{PlayState, Playback, QueueItem};
 use crate::queue_nav::LoopMode;
+use crate::sponsor_block::SponsorBlock;
 use crate::video_layer::VideoLayer;
 
 const CONTROLS_HIDE_AFTER: Duration = Duration::from_secs(3);
@@ -36,6 +37,7 @@ pub enum NowPlayingEvent {
 
 pub struct NowPlaying {
     playback: Entity<Playback>,
+    sponsor_block: Entity<SponsorBlock>,
     queue_scroll: ScrollHandle,
     video_layer: Option<Rc<VideoLayer>>,
     /// The video box as last painted, to report viewport changes to the player.
@@ -57,9 +59,15 @@ fn icon_button(id: impl Into<ElementId>, icon: impl Into<Icon>, label: &'static 
 }
 
 impl NowPlaying {
-    pub fn new(playback: Entity<Playback>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        playback: Entity<Playback>,
+        sponsor_block: Entity<SponsorBlock>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let seek = cx.new(|_| SliderState::new().min(0.).max(1.).step(0.001));
         let subscriptions = vec![
+            cx.observe(&sponsor_block, |_, _, cx| cx.notify()),
             cx.observe_in(&playback, window, |view, playback, window, cx| {
                 if !view.dragging_seek {
                     let playback = playback.read(cx);
@@ -103,6 +111,7 @@ impl NowPlaying {
         });
         Self {
             playback,
+            sponsor_block,
             queue_scroll: ScrollHandle::new(),
             video_layer: None,
             video_box: Rc::new(Cell::new((0, 0))),
@@ -287,6 +296,7 @@ impl NowPlaying {
         let sleep_after_current = playback.sleep_after_current;
         let sleep_armed = sleep_remaining.is_some() || sleep_after_current;
         let video = playback.video;
+        let sponsor_whitelisted = self.sponsor_block.read(cx).current.as_ref().map(|(_, whitelisted)| *whitelisted);
         let target = current.video_id().map(|video_id| DownloadTarget {
             video_id: video_id.to_owned(),
             title: current.title.clone(),
@@ -389,6 +399,20 @@ impl NowPlaying {
                 bar.child(
                     icon_button("np-download", Lucide::Download, t(Str::CdDownload))
                         .on_click(cx.listener(move |_, _, _, cx| cx.emit(NowPlayingEvent::Download(target.clone())))),
+                )
+            })
+            .when_some(sponsor_whitelisted, |bar, whitelisted| {
+                let state = t(if whitelisted { Str::SponsorBlockExcluded } else { Str::SponsorBlockIncluded });
+                bar.child(
+                    Button::new("np-sponsorblock")
+                        .ghost()
+                        .icon(if whitelisted { Lucide::ShieldOff } else { Lucide::ShieldCheck })
+                        .selected(!whitelisted)
+                        .accessibility_label(t(Str::SettingsSponsorBlock))
+                        .tooltip(state)
+                        .on_click(cx.listener(move |view, _, _, cx| {
+                            view.sponsor_block.update(cx, |sponsor, cx| sponsor.set_whitelisted(!whitelisted, cx))
+                        })),
                 )
             })
             .child(sleep)

@@ -218,10 +218,10 @@ impl Shell {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let playback = cx.new(|cx| Playback::new(cx));
         let mini_player = cx.new(|cx| MiniPlayer::new(playback.clone(), window, cx));
-        let now_playing = cx.new(|cx| NowPlaying::new(playback.clone(), window, cx));
+        let sponsor_block = cx.new(|cx| SponsorBlock::new(playback.clone(), cx));
+        let now_playing = cx.new(|cx| NowPlaying::new(playback.clone(), sponsor_block.clone(), window, cx));
         let media_session = cx.new(|cx| MediaSession::new(playback.clone(), cx));
         let history = cx.new(|cx| HistoryRecorder::new(playback.clone(), cx));
-        let sponsor_block = cx.new(|cx| SponsorBlock::new(playback.clone(), cx));
         let toggle = cx.subscribe(&mini_player, |shell, _, _: &ToggleNowPlaying, cx| {
             shell.now_playing_open = !shell.now_playing_open;
             cx.notify();
