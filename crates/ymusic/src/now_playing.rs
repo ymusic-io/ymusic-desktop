@@ -924,6 +924,18 @@ impl NowPlaying {
                         }));
                     }
                     (None, Source::Local(path)) => {
+                        if let Some(code) = item.history_code.clone().or_else(|| item.youtube_vid.clone()) {
+                            menu = menu.item(PopupMenuItem::new(t(Str::MenuAddToPlaylist)).on_click(
+                                move |_, window, cx| {
+                                    crate::library_playlist::AddToLocalPlaylist::open(
+                                        vec![code.clone()],
+                                        None,
+                                        window,
+                                        cx,
+                                    )
+                                },
+                            ));
+                        }
                         let uri = path.to_string_lossy().into_owned();
                         for (album, label) in [(false, Str::MenuGoToArtist), (true, Str::MenuGoToAlbum)] {
                             let (group, uri) = (view.clone(), uri.clone());

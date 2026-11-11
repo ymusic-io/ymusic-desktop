@@ -20,6 +20,7 @@ use crate::download_dialog::{DownloadPicker, DownloadTarget};
 use crate::downloads::pick_download_folder;
 use crate::graph::{AppGraph, on_core};
 use crate::library::PlayLocal;
+use crate::library_playlist::AddToLocalPlaylist;
 use crate::playback::{QueueItem, Source};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -258,7 +259,7 @@ impl DownloadsView {
         );
     }
 
-    /// Debug routes: `retry` or `reveal` the newest task of `video_id`.
+    /// Debug routes: `retry`, `reveal`, `format` or `addto` the newest task of `video_id`.
     pub fn dev_action(&mut self, action: &str, video_id: &str, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let Some(task) = self.tasks.iter().find(|task| task.video_id == video_id).cloned() else { return false };
         match action {
@@ -269,6 +270,7 @@ impl DownloadsView {
                 }
             }
             "format" => Self::other_format(&task, window, cx),
+            "addto" => AddToLocalPlaylist::open(vec![task.video_id.clone()], None, window, cx),
             _ => {}
         }
         true
@@ -515,7 +517,12 @@ impl DownloadsView {
                         menu = menu.item(PopupMenuItem::new(t(Str::MenuPlay)).on_click(move |_, _, cx| {
                             play_view.update(cx, |view, cx| view.play(&play_task, cx)).ok();
                         }));
-                        menu = menu.item(other_format());
+                        let code = task.video_id.clone();
+                        menu = menu
+                            .item(PopupMenuItem::new(t(Str::MenuAddToPlaylist)).on_click(move |_, window, cx| {
+                                AddToLocalPlaylist::open(vec![code.clone()], None, window, cx)
+                            }))
+                            .item(other_format());
                         if let Some(path) = file_path(&task) {
                             let (library_view, file) = (view.clone(), path.clone());
                             menu = menu
