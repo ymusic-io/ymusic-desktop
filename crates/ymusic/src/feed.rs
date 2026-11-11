@@ -168,6 +168,8 @@ pub struct FeedView {
     phase: Phase,
     loading_more: bool,
     more_failed: Option<EngineError>,
+    /// The chip whose page is loading; the current page stays up until it lands.
+    refiltering: Option<usize>,
     generation: u64,
     scroll: ScrollHandle,
     /// Collapsible sections the user expanded, by index.
@@ -215,6 +217,7 @@ impl FeedView {
             phase: Phase::Loading,
             loading_more: false,
             more_failed: None,
+            refiltering: None,
             generation: 0,
             scroll: scroll.clone(),
             expanded: std::collections::HashSet::new(),
@@ -370,18 +373,62 @@ impl FeedView {
         self.fetch(Some(continuation), true, cx);
     }
 
-    /// A chip or sort token re-serves the page in place.
-    fn refilter(&mut self, token: String, cx: &mut Context<Self>) {
-        self.phase = Phase::Loading;
-        self.fetch(Some(token), false, cx);
+    /// Chip `index` re-serves the page in place: the current page stays up, the chip spins, and
+    /// the new page replaces it when it lands; a failure leaves the page and says why.
+    fn refilter(&mut self, index: usize, token: String, window: &mut Window, cx: &mut Context<Self>) {
+        if self.refiltering == Some(index) {
+            return;
+        }
+        self.refiltering = Some(index);
+        self.generation += 1;
+        let generation = self.generation;
+        let load = self.load(Some(token), cx);
+        cx.notify();
+        cx.spawn_in(window, async move |this, cx| {
+            let result = load.await;
+            this.update_in(cx, |view, window, cx| {
+                if view.generation != generation {
+                    return;
+                }
+                view.refiltering = None;
+                view.loading_more = false;
+                match result {
+                    Some(Ok(page)) => {
+                        let carried_chips = page.chips.is_empty();
+                        view.replace(page);
+                        if carried_chips {
+                            for (position, chip) in view.page.chips.iter_mut().enumerate() {
+                                chip.selected = position == index;
+                            }
+                        }
+                    }
+                    Some(Err(error)) => window.push_notification(error_text(&error), cx),
+                    None => {}
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn load(
+        &self,
+        continuation: Option<String>,
+        cx: &mut Context<Self>,
+    ) -> impl Future<Output = Option<Result<YtFeedPage, EngineError>>> + 'static {
+        let graph = cx.global::<AppGraph>();
+        let (engine, history, log) = (graph.engine(), graph.history.clone(), graph.log.fork("feed"));
+        on_core(cx, self.source.clone().load(engine, history, continuation, log))
     }
 
     fn fetch(&mut self, continuation: Option<String>, append: bool, cx: &mut Context<Self>) {
         self.generation += 1;
+        if !append {
+            self.refiltering = None;
+        }
         let generation = self.generation;
-        let graph = cx.global::<AppGraph>();
-        let (engine, history, log) = (graph.engine(), graph.history.clone(), graph.log.fork("feed"));
-        let load = on_core(cx, self.source.clone().load(engine, history, continuation, log));
+        let load = self.load(continuation, cx);
         cx.spawn(async move |this, cx| {
             let result = load.await;
             this.update(cx, |view, cx| {
@@ -1335,13 +1382,17 @@ impl Render for FeedView {
                 });
             for (index, chip) in self.page.chips.clone().into_iter().enumerate() {
                 let token = chip.token.clone();
+                let loading = self.refiltering == Some(index);
                 let mut button = Button::new(("chip", index)).label(chip.title.clone()).small().rounded_full();
                 button = if chip.selected { button.primary() } else { button.outline() };
-                let button = button.selected(chip.selected).on_click(cx.listener(move |view, _, _, cx| {
-                    if let Some(token) = token.clone() {
-                        view.refilter(token, cx);
-                    }
-                }));
+                let button = button
+                    .selected(chip.selected)
+                    .when(loading, |button| button.child(Spinner::new().small()))
+                    .on_click(cx.listener(move |view, _, window, cx| {
+                        if let Some(token) = token.clone() {
+                            view.refilter(index, token, window, cx);
+                        }
+                    }));
                 let row = (!wrap).then(|| self.chips_drag.scroll().clone());
                 chips = chips.child(self.chips.button_in(index, button, row, cx));
             }
