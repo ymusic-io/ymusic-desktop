@@ -327,20 +327,14 @@ pub fn confirm_redownload(
     on_confirm: impl Fn(&mut Window, &mut App) + 'static,
 ) {
     let message = tf(Str::RedownloadMessage, &[&title]);
-    let on_confirm = Rc::new(on_confirm);
-    window.open_alert_dialog(cx, move |alert, _, _| {
-        let on_confirm = on_confirm.clone();
-        alert
-            .title(t(Str::RedownloadTitle))
-            .description(message.clone())
-            .ok_text(t(Str::RedownloadConfirm))
-            .cancel_text(t(Str::DialogCancel))
-            .show_cancel(true)
-            .on_ok(move |_, window, cx| {
-                on_confirm(window, cx);
-                true
-            })
-    });
+    crate::elevated_dialog::confirm(
+        t(Str::RedownloadTitle),
+        message,
+        t(Str::RedownloadConfirm),
+        window,
+        cx,
+        on_confirm,
+    );
 }
 
 /// Downloads `target` with the saved preset, no options dialog: straight into the download folder

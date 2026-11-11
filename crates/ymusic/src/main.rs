@@ -14,6 +14,7 @@ mod desktop;
 mod download_dialog;
 mod downloads;
 mod downloads_view;
+mod elevated_dialog;
 mod feed;
 mod feedback_view;
 mod file_rename;
