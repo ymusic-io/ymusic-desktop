@@ -455,7 +455,7 @@ impl Playback {
         self.queue_continuation = None;
         self.queue = vec![item];
         self.index = 0;
-        self.fetch_radio(video_id, cx);
+        self.fetch_radio(video_id, None, cx);
         self.new_queue();
         self.load_current(cx);
     }

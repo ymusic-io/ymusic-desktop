@@ -68,7 +68,7 @@ impl Shell {
         cx.spawn_in(window, async move |this, cx| {
             executor.timer(Duration::from_secs(3)).await;
             if mode == "hidden" {
-                this.update(cx, |shell, cx| shell.hide_to_tray(cx)).ok();
+                this.update_in(cx, |shell, window, cx| shell.hide_to_tray(window, cx)).ok();
             }
             executor.timer(Duration::from_secs(3)).await;
             this.update(cx, |shell, cx| {
