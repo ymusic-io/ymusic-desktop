@@ -111,3 +111,29 @@ impl Drop for VideoLayer {
         }
     }
 }
+
+/// Minimized, or ordered out (hidden or closed to the Dock), as opposed to merely covered.
+#[cfg(target_os = "macos")]
+pub fn window_out_of_sight(window: &Window) -> bool {
+    use objc2::msg_send;
+    use objc2::rc::Retained;
+    use objc2::runtime::AnyObject;
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    let Ok(handle) = HasWindowHandle::window_handle(window) else { return false };
+    let RawWindowHandle::AppKit(appkit) = handle.as_raw() else { return false };
+    let view = appkit.ns_view.as_ptr().cast::<AnyObject>();
+    // SAFETY: gpui's live NSView; NSWindow state queries on the main thread.
+    unsafe {
+        let ns_window: Option<Retained<AnyObject>> = msg_send![&*view, window];
+        let Some(ns_window) = ns_window else { return false };
+        let minimized: bool = msg_send![&*ns_window, isMiniaturized];
+        let visible: bool = msg_send![&*ns_window, isVisible];
+        minimized || !visible
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn window_out_of_sight(_: &Window) -> bool {
+    true
+}

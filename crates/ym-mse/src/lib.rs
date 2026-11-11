@@ -41,6 +41,7 @@ unsafe extern "C" {
     fn mse_host_set_bass(host: *mut c_void, db: f32);
     fn mse_host_set_virtualizer(host: *mut c_void, width: f32);
     fn mse_host_set_preamp(host: *mut c_void, db: f32);
+    fn mse_host_set_video_hidden(host: *mut c_void, hidden: c_int);
     fn mse_host_pcm_levels(host: *mut c_void, out: *mut f32, count: c_int) -> c_int;
     fn mse_host_samples_played(host: *mut c_void) -> i64;
     fn mse_host_bind_presenter(host: *mut c_void, presenter: *mut c_void);
@@ -127,6 +128,12 @@ impl MseHost {
             mse_host_set_virtualizer(self.raw, tone.virtualizer);
             mse_host_set_preamp(self.raw, tone.preamp_db);
         }
+    }
+
+    /// No view shows the picture: rests the video decoder and keeps buffering the chosen quality.
+    /// Can wait on the decoder stopping, so call it off the UI thread.
+    pub fn set_video_hidden(&self, hidden: bool) {
+        unsafe { mse_host_set_video_hidden(self.raw, c_int::from(hidden)) }
     }
 
     /// Spectrum bars in 0..=1, bass first, for what is playing now.

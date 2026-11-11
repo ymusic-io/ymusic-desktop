@@ -163,6 +163,10 @@ pub struct Playback {
     _sleep: Option<Task<()>>,
     /// Video on: loads request pictures and the presenter shows them; off: audio only.
     pub video: bool,
+    /// No view shows the picture: the engines rest their video decoders, keeping the chosen quality.
+    video_hidden: bool,
+    /// Video was switched to audio only because the window went out of sight; never saved.
+    demoted: bool,
     /// Presents into the Now Playing video layer, which outlives it.
     presenter: Option<Arc<Presenter>>,
     _status: Option<Task<()>>,
@@ -209,6 +213,8 @@ impl Playback {
             captions: false,
             _sleep: None,
             video: true,
+            video_hidden: false,
+            demoted: false,
             presenter: None,
             _status: None,
             _local_poll: None,
@@ -535,7 +541,8 @@ impl Playback {
             return;
         }
         self.video = video;
-        self.send_local(LocalCommand::Video(video));
+        self.demoted = false;
+        self.send_local(LocalCommand::Video(self.local_video()));
         if self.active == Some(Active::YouTube) {
             let (quality, audio_only) = if video { ("auto", false) } else { ("zero", true) };
             self.command(
@@ -544,6 +551,37 @@ impl Playback {
             );
         }
         cx.notify();
+    }
+
+    fn local_video(&self) -> bool {
+        self.video && !self.video_hidden
+    }
+
+    /// Only Now Playing shows the picture; elsewhere the decoders rest and the cover stands in.
+    pub fn set_video_hidden(&mut self, hidden: bool, cx: &mut Context<Self>) {
+        if self.video_hidden == hidden {
+            return;
+        }
+        self.video_hidden = hidden;
+        self.send_local(LocalCommand::Video(self.local_video()));
+        self.apply_youtube_video_hidden(cx);
+    }
+
+    /// Resting can wait on the decoder stopping, so it runs off the UI thread.
+    fn apply_youtube_video_hidden(&self, cx: &App) {
+        let Some(session) = &self.session else { return };
+        let (host, hidden) = (session.host.clone(), self.video_hidden);
+        cx.global::<AppGraph>().tokio.spawn_blocking(move || host.set_video_hidden(hidden));
+    }
+
+    /// Out of sight, video plays as audio only; it comes back with the window.
+    pub fn set_window_hidden(&mut self, hidden: bool, cx: &mut Context<Self>) {
+        if hidden && self.video {
+            self.set_video(false, cx);
+            self.demoted = true;
+        } else if !hidden && self.demoted {
+            self.set_video(true, cx);
+        }
     }
 
     /// The video box in CSS pixels; YouTube's ABR picks the quality for it.
@@ -700,7 +738,7 @@ impl Playback {
                 self.apply_volume();
                 self.local_generation += 1;
                 self.bind_presenter();
-                self.send_local(LocalCommand::Load { path, video: self.video });
+                self.send_local(LocalCommand::Load { path, video: self.local_video() });
                 let start = std::mem::take(&mut self.start_position_ms);
                 if start > 0 {
                     self.send_local(LocalCommand::Seek(start));
@@ -791,6 +829,7 @@ impl Playback {
                         playback.session = Some(session);
                         playback.apply_volume();
                         playback.apply_youtube_effects(cx);
+                        playback.apply_youtube_video_hidden(cx);
                         playback.bind_presenter();
                         playback.listen(cx);
                         if let Some(video_id) = playback.pending.take()

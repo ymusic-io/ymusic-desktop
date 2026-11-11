@@ -279,6 +279,10 @@ impl Shell {
             }
             cx.notify();
         });
+        let visibility = cx.observe_window_visibility(window, |shell, visibility, window, cx| {
+            let hidden = !visibility.is_visible() && crate::video_layer::window_out_of_sight(window);
+            shell.playback.update(cx, |playback, cx| playback.set_window_hidden(hidden, cx));
+        });
         let settings = cx.global::<AppGraph>().settings.clone();
         let section = settings.int(LAST_SECTION_KEY, 1).ok().and_then(Section::from_id).unwrap_or(Section::Discover);
         let discover_tab =
@@ -309,7 +313,7 @@ impl Shell {
             drawer_open: false,
             focus: cx.focus_handle(),
             idle_escape_at: None,
-            _subscriptions: vec![toggle, now_playing_events],
+            _subscriptions: vec![toggle, now_playing_events, visibility],
         }
     }
 
@@ -1308,6 +1312,7 @@ impl Render for Shell {
         if !now_playing {
             self.now_playing.read(cx).hide_video();
         }
+        self.playback.update(cx, |playback, cx| playback.set_video_hidden(!now_playing, cx));
         let body = if now_playing {
             self.now_playing.clone().into_any_element()
         } else {
