@@ -345,7 +345,7 @@ impl Playback {
             caption_stream: None,
             _catalog: None,
             _sleep: None,
-            video: cx.global::<AppGraph>().settings.string(AUDIO_ONLY_KEY, "0").is_ok_and(|raw| raw != "1"),
+            video: cx.global::<AppGraph>().settings.string(AUDIO_ONLY_KEY, "1").is_ok_and(|raw| raw == "0"),
             video_hidden: true,
             demoted: false,
             presenter: None,
