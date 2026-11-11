@@ -1,5 +1,6 @@
 //! Reconciles a directory tree into the store: each directory is a bucket, each media file an
-//! item; unchanged files (same size and mtime) are not probed again, vanished ones soft-delete.
+//! item; unchanged files (same size and mtime) are not probed again, vanished ones soft-delete,
+//! excluded folders are kept but not entered.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -135,6 +136,7 @@ pub fn scan_folder(store: &MediaStore, root: &Path, cancel: &AtomicBool) -> Resu
         root.file_name().map_or_else(|| root.to_string_lossy().into_owned(), |n| n.to_string_lossy().into_owned());
     let root_id = store.upsert_bucket(&root.to_string_lossy(), &root_name, None)?;
     report.root_bucket = Some(root_id);
+    let excluded = store.excluded_bucket_uris()?;
     let mut pending = vec![(root.to_path_buf(), root_id)];
     while let Some((directory, bucket_id)) = pending.pop() {
         if cancel.load(Ordering::Relaxed) {
@@ -161,8 +163,11 @@ pub fn scan_folder(store: &MediaStore, root: &Path, cancel: &AtomicBool) -> Resu
             }
             let Ok(metadata) = entry.metadata() else { continue };
             if metadata.is_dir() {
-                let child = store.upsert_bucket(&path.to_string_lossy(), &name, Some(bucket_id))?;
-                pending.push((path, child));
+                let uri = path.to_string_lossy();
+                let child = store.upsert_bucket(&uri, &name, Some(bucket_id))?;
+                if !excluded.contains(uri.as_ref()) {
+                    pending.push((path, child));
+                }
                 continue;
             }
             if !is_media_file(&path) {

@@ -3,6 +3,7 @@
 
 mod scan;
 
+use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -91,6 +92,13 @@ pub struct Bucket {
     pub name: String,
     pub alias_name: Option<String>,
     pub excluded: bool,
+    pub created_at: i64,
+}
+
+impl Bucket {
+    pub fn display_name(&self) -> &str {
+        self.alias_name.as_deref().filter(|alias| !alias.trim().is_empty()).unwrap_or(&self.name)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -117,11 +125,37 @@ pub struct MediaItem {
     pub file_size: i64,
     pub last_modified: i64,
     pub loudness_gain_db: Option<f64>,
+    pub created_at: i64,
+}
+
+impl MediaItem {
+    /// The content fingerprint playlists and play history key a file by: its YouTube id when tagged,
+    /// else `@fileSize:durationSec`, so moves, renames and rescans keep the link.
+    pub fn playlist_code(&self) -> String {
+        self.youtube_vid
+            .clone()
+            .unwrap_or_else(|| format!("@{}:{}", self.file_size, self.duration_ms.unwrap_or(0) / 1000))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Playlist {
+    pub id: i64,
+    pub name: String,
+    pub created_at: i64,
+}
+
+/// A playlist membership row with the media item its code resolves to now.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlaylistItemDetail {
+    pub code: String,
+    pub added_at: i64,
+    pub item: MediaItem,
 }
 
 const ITEM_COLUMNS: &str = "id, bucketId, uri, title, mimeType, artist, album, genre, trackNumber, year, durationMs, \
     audioCodec, videoCodec, subtitleCodec, bitrate, width, height, thumbnailStreamIndex, youtubeVid, fileSize, \
-    lastModified, loudnessGainDb";
+    lastModified, loudnessGainDb, createdAt";
 
 fn item_from_row(row: &Row<'_>) -> rusqlite::Result<MediaItem> {
     Ok(MediaItem {
@@ -147,6 +181,7 @@ fn item_from_row(row: &Row<'_>) -> rusqlite::Result<MediaItem> {
         file_size: row.get(19)?,
         last_modified: row.get(20)?,
         loudness_gain_db: row.get(21)?,
+        created_at: row.get(22)?,
     })
 }
 
@@ -158,17 +193,11 @@ fn bucket_from_row(row: &Row<'_>) -> rusqlite::Result<Bucket> {
         name: row.get(3)?,
         alias_name: row.get(4)?,
         excluded: row.get::<_, i64>(5)? != 0,
+        created_at: row.get(6)?,
     })
 }
 
-/// A user-made Library playlist; its members are content codes (a YouTube id, or size and length).
-#[derive(Debug, Clone, PartialEq)]
-pub struct Playlist {
-    pub id: i64,
-    pub name: String,
-}
-
-const BUCKET_COLUMNS: &str = "id, parentId, uri, name, aliasName, excluded";
+const BUCKET_COLUMNS: &str = "id, parentId, uri, name, aliasName, excluded, createdAt";
 
 fn now_millis() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_millis() as i64)
@@ -248,7 +277,7 @@ impl MediaStore {
     pub fn find_item_by_uri(&self, uri: &str) -> Result<Option<(MediaItem, bool)>, StoreError> {
         let db = self.db.lock().unwrap();
         let sql = format!("SELECT {ITEM_COLUMNS}, deleted FROM mediaItem WHERE uri = ?1");
-        Ok(db.query_row(&sql, params![uri], |row| Ok((item_from_row(row)?, row.get::<_, i64>(22)? != 0))).optional()?)
+        Ok(db.query_row(&sql, params![uri], |row| Ok((item_from_row(row)?, row.get::<_, i64>(23)? != 0))).optional()?)
     }
 
     /// Inserts `item` (its `id` ignored) or rewrites the row with its `uri`, reviving it.
@@ -367,18 +396,91 @@ impl MediaStore {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
-    pub fn playlists(&self) -> Result<Vec<Playlist>, StoreError> {
+    /// The live bucket `bucket_id` and its ancestors, root first; empty when it is gone.
+    pub fn bucket_chain(&self, bucket_id: i64) -> Result<Vec<Bucket>, StoreError> {
         let db = self.db.lock().unwrap();
-        let mut statement = db.prepare("SELECT id, name FROM playlist ORDER BY id")?;
-        let rows = statement.query_map([], |row| Ok(Playlist { id: row.get(0)?, name: row.get(1)? }))?;
+        let sql = format!("SELECT {BUCKET_COLUMNS} FROM bucket WHERE id = ?1 AND deleted = 0");
+        let mut chain = Vec::new();
+        let mut next = Some(bucket_id);
+        while let Some(id) = next {
+            let Some(bucket) = db.query_row(&sql, params![id], bucket_from_row).optional()? else { break };
+            next = bucket.parent_id;
+            chain.insert(0, bucket);
+        }
+        Ok(chain)
+    }
+
+    /// Tombstones the bucket's whole subtree, items included, so a later scan of it revives them.
+    pub fn remove_bucket(&self, bucket_id: i64) -> Result<(), StoreError> {
+        let mut db = self.db.lock().unwrap();
+        let transaction = db.transaction()?;
+        soft_delete_subtree(&transaction, bucket_id, now_millis())?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    /// Excluding keeps the folder's row (flagged, so it can be included again) but drops its
+    /// subfolders and tombstones every item below it; scans skip it until it is included.
+    pub fn set_bucket_excluded(&self, bucket_id: i64, excluded: bool) -> Result<(), StoreError> {
+        let mut db = self.db.lock().unwrap();
+        let transaction = db.transaction()?;
+        let now = now_millis();
+        if excluded {
+            delete_descendants(&transaction, bucket_id, now)?;
+            transaction.execute(
+                "UPDATE mediaItem SET deleted = 1, updatedAt = ?1 WHERE bucketId = ?2 AND deleted = 0",
+                params![now, bucket_id],
+            )?;
+        }
+        transaction.execute(
+            "UPDATE bucket SET excluded = ?1, updatedAt = ?2 WHERE id = ?3",
+            params![i64::from(excluded), now, bucket_id],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn excluded_bucket_uris(&self) -> Result<HashSet<String>, StoreError> {
+        let db = self.db.lock().unwrap();
+        let mut statement = db.prepare("SELECT uri FROM bucket WHERE excluded = 1 AND deleted = 0")?;
+        let rows = statement.query_map([], |row| row.get(0))?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Drops the item row for good (its file is gone).
+    pub fn delete_item(&self, item_id: i64) -> Result<(), StoreError> {
+        self.db.lock().unwrap().execute("DELETE FROM mediaItem WHERE id = ?1", params![item_id])?;
+        Ok(())
     }
 
     pub fn create_playlist(&self, name: &str) -> Result<Playlist, StoreError> {
         let db = self.db.lock().unwrap();
         let now = now_millis();
         db.execute("INSERT INTO playlist(name, createdAt, updatedAt) VALUES (?1, ?2, ?2)", params![name, now])?;
-        Ok(Playlist { id: db.last_insert_rowid(), name: name.to_owned() })
+        Ok(Playlist { id: db.last_insert_rowid(), name: name.to_owned(), created_at: now })
+    }
+
+    pub fn rename_playlist(&self, playlist_id: i64, name: &str) -> Result<(), StoreError> {
+        let db = self.db.lock().unwrap();
+        db.execute(
+            "UPDATE playlist SET name = ?1, updatedAt = ?2 WHERE id = ?3",
+            params![name, now_millis(), playlist_id],
+        )?;
+        Ok(())
+    }
+
+    /// Its membership rows go with it; the songs stay in the library.
+    pub fn delete_playlist(&self, playlist_id: i64) -> Result<(), StoreError> {
+        self.db.lock().unwrap().execute("DELETE FROM playlist WHERE id = ?1", params![playlist_id])?;
+        Ok(())
+    }
+
+    pub fn playlists(&self) -> Result<Vec<Playlist>, StoreError> {
+        let db = self.db.lock().unwrap();
+        let mut statement = db.prepare("SELECT id, name, createdAt FROM playlist ORDER BY id")?;
+        let rows = statement
+            .query_map([], |row| Ok(Playlist { id: row.get(0)?, name: row.get(1)?, created_at: row.get(2)? }))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
     /// Appends `codes` in order; members already in the playlist keep their place. A YouTube id
@@ -403,4 +505,99 @@ impl MediaStore {
         transaction.commit()?;
         Ok(())
     }
+
+    pub fn remove_from_playlist(&self, playlist_id: i64, code: &str) -> Result<(), StoreError> {
+        let db = self.db.lock().unwrap();
+        db.execute("DELETE FROM playlistItem WHERE playlistId = ?1 AND code = ?2", params![playlist_id, code])?;
+        Ok(())
+    }
+
+    /// Rewrites the order to `ordered_codes`; a code left out keeps its old key.
+    pub fn reorder_playlist(&self, playlist_id: i64, ordered_codes: &[String]) -> Result<(), StoreError> {
+        let mut db = self.db.lock().unwrap();
+        let transaction = db.transaction()?;
+        for (index, code) in ordered_codes.iter().enumerate() {
+            transaction.execute(
+                "UPDATE playlistItem SET sortKey = ?1 WHERE playlistId = ?2 AND code = ?3",
+                params![index as i64, playlist_id, code],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    /// Every membership code in playlist order, resolvable or not.
+    pub fn playlist_codes(&self, playlist_id: i64) -> Result<Vec<String>, StoreError> {
+        let db = self.db.lock().unwrap();
+        let mut statement = db.prepare("SELECT code FROM playlistItem WHERE playlistId = ?1 ORDER BY sortKey")?;
+        let rows = statement.query_map(params![playlist_id], |row| row.get(0))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// The members the library can resolve now, in playlist order.
+    pub fn playlist_item_details(&self, playlist_id: i64) -> Result<Vec<PlaylistItemDetail>, StoreError> {
+        let db = self.db.lock().unwrap();
+        let mut statement =
+            db.prepare("SELECT code, addedAt FROM playlistItem WHERE playlistId = ?1 ORDER BY sortKey")?;
+        let rows: Vec<(String, i64)> = statement
+            .query_map(params![playlist_id], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<rusqlite::Result<_>>()?;
+        let mut details = Vec::with_capacity(rows.len());
+        for (code, added_at) in rows {
+            if let Some(item) = resolve_code(&db, &code)? {
+                details.push(PlaylistItemDetail { code, added_at, item });
+            }
+        }
+        Ok(details)
+    }
+}
+
+/// The inverse of [`MediaItem::playlist_code`]; on a fingerprint collision the first match wins.
+fn resolve_code(db: &Connection, code: &str) -> Result<Option<MediaItem>, StoreError> {
+    if let Some(fingerprint) = code.strip_prefix('@') {
+        let Some((size, seconds)) = fingerprint.split_once(':') else { return Ok(None) };
+        let (Ok(size), Ok(seconds)) = (size.parse::<i64>(), seconds.parse::<i64>()) else { return Ok(None) };
+        let sql = format!(
+            "SELECT {ITEM_COLUMNS} FROM mediaItem WHERE fileSize = ?1 AND COALESCE(durationMs, 0) / 1000 = ?2 \
+             AND deleted = 0 LIMIT 1"
+        );
+        return Ok(db.query_row(&sql, params![size, seconds], item_from_row).optional()?);
+    }
+    let sql = format!("SELECT {ITEM_COLUMNS} FROM mediaItem WHERE youtubeVid = ?1 AND deleted = 0 LIMIT 1");
+    Ok(db.query_row(&sql, params![code], item_from_row).optional()?)
+}
+
+fn child_ids(db: &Connection, bucket_id: i64) -> rusqlite::Result<Vec<i64>> {
+    let mut statement = db.prepare("SELECT id FROM bucket WHERE parentId = ?1 AND deleted = 0")?;
+    let rows = statement.query_map(params![bucket_id], |row| row.get(0))?;
+    rows.collect()
+}
+
+fn soft_delete_subtree(db: &Connection, bucket_id: i64, now: i64) -> rusqlite::Result<()> {
+    for child in child_ids(db, bucket_id)? {
+        soft_delete_subtree(db, child, now)?;
+    }
+    db.execute(
+        "UPDATE mediaItem SET deleted = 1, updatedAt = ?1 WHERE bucketId = ?2 AND deleted = 0",
+        params![now, bucket_id],
+    )?;
+    db.execute("UPDATE bucket SET deleted = 1, updatedAt = ?1 WHERE id = ?2", params![now, bucket_id])?;
+    Ok(())
+}
+
+/// Post-order: each descendant's items are orphaned and tombstoned before its row is deleted, so
+/// the cascade does not take them (playlists and a later scan still find them).
+fn delete_descendants(db: &Connection, bucket_id: i64, now: i64) -> rusqlite::Result<()> {
+    let mut statement = db.prepare("SELECT id FROM bucket WHERE parentId = ?1")?;
+    let children: Vec<i64> =
+        statement.query_map(params![bucket_id], |row| row.get(0))?.collect::<rusqlite::Result<_>>()?;
+    for child in children {
+        delete_descendants(db, child, now)?;
+        db.execute(
+            "UPDATE mediaItem SET bucketId = NULL, deleted = 1, updatedAt = ?1 WHERE bucketId = ?2",
+            params![now, child],
+        )?;
+        db.execute("DELETE FROM bucket WHERE id = ?1", params![child])?;
+    }
+    Ok(())
 }
