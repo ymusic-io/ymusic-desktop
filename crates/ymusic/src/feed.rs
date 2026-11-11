@@ -217,6 +217,8 @@ pub struct FeedView {
     tabs_drag: DragRow,
     carousel_drags: std::cell::RefCell<std::collections::HashMap<usize, DragRow>>,
     offline: Entity<OfflineMarks>,
+    /// Channel items offer Subscribe / Unsubscribe only when signed in.
+    signed_in: bool,
     _offline: Subscription,
 }
 
@@ -263,6 +265,7 @@ impl FeedView {
             tabs_drag: DragRow::default(),
             carousel_drags: Default::default(),
             offline,
+            signed_in: false,
             _offline: observe_offline,
         };
         view.reload(cx);
@@ -510,7 +513,10 @@ impl FeedView {
                 view.loading_more = false;
                 match result {
                     Some(Ok(page)) if append => view.append(page),
-                    Some(Ok(page)) => view.replace(page, false),
+                    Some(Ok(page)) => {
+                        view.replace(page, false);
+                        view.check_signed_in(cx);
+                    }
                     Some(Err(error)) if append => view.more_failed = Some(error),
                     Some(Err(error)) => view.phase = Phase::Failed(error),
                     None => {}
@@ -543,6 +549,56 @@ impl FeedView {
         self.page = page;
         self.phase = Phase::Ready;
         self.more_failed = None;
+    }
+
+    /// Reads the cookie-only sign-in gate when the page has channel items to offer Subscribe on.
+    fn check_signed_in(&mut self, cx: &mut Context<Self>) {
+        let has_channels =
+            self.page.sections.iter().any(|section| section.items.iter().any(|item| item.kind == "channel"));
+        if !has_channels {
+            return;
+        }
+        let graph = cx.global::<AppGraph>();
+        let (engine, log) = (graph.engine(), graph.log.fork("feed-signed-in"));
+        let status = on_core(cx, async move {
+            let status = engine.login_status(&log).await;
+            if let Err(error) = &status {
+                log.warn("sign-in status could not be read", Some(error));
+            }
+            status
+        });
+        cx.spawn(async move |this, cx| {
+            if let Some(Ok(signed_in)) = status.await {
+                this.update(cx, |view, cx| {
+                    view.signed_in = signed_in;
+                    cx.notify();
+                })
+                .ok();
+            }
+        })
+        .detach();
+    }
+
+    /// Subscribe / Unsubscribe from a channel item's menu, reported by notification.
+    fn subscribe_channel(&mut self, channel_id: String, subscribe: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let graph = cx.global::<AppGraph>();
+        let (engine, log) = (graph.engine(), graph.log.fork("channel-subscribe"));
+        let request = on_core(cx, async move {
+            let result = engine.subscribe_channel(&channel_id, subscribe, &log).await;
+            if let Err(error) = &result {
+                log.warn("subscribe from a channel item failed", Some(error));
+            }
+            result
+        });
+        cx.spawn_in(window, async move |_, cx| {
+            let message = match request.await {
+                Some(Ok(())) => t(if subscribe { Str::Subscribed } else { Str::Unsubscribed }).to_owned(),
+                Some(Err(error)) => error_text(&error),
+                None => return,
+            };
+            cx.update(|window, cx| window.push_notification(message, cx)).ok();
+        })
+        .detach();
     }
 
     fn append(&mut self, page: YtFeedPage) {
@@ -945,6 +1001,9 @@ impl FeedView {
         let target = item.clone();
         let top_tracks = matches!(self.source, FeedSource::TopTracks);
         let downloaded = self.downloaded(item, cx);
+        let channel_id = (item.kind == "channel" && self.signed_in)
+            .then(|| item.channel_id.clone().unwrap_or_else(|| item.id.clone()))
+            .filter(|id| !id.is_empty());
         Button::new(key)
             .ghost()
             .small()
@@ -966,6 +1025,10 @@ impl FeedView {
                 }
                 if target.remove_token.is_some() {
                     actions.push((Str::MenuRemoveFromPlaylist, MenuAction::RemoveFromPlaylist));
+                }
+                if channel_id.is_some() {
+                    actions.push((Str::Subscribe, MenuAction::Subscribe(true)));
+                    actions.push((Str::Unsubscribe, MenuAction::Subscribe(false)));
                 }
                 if share_link(&target).is_some() {
                     actions.push((Str::CdShare, MenuAction::Share));
@@ -1038,6 +1101,10 @@ impl FeedView {
             }
             MenuAction::AddToPlaylist => crate::yt_playlist::AddToPlaylist::open(item.id, window, cx),
             MenuAction::RemoveFromPlaylist => self.remove_from_playlist(item, window, cx),
+            MenuAction::Subscribe(subscribe) => {
+                let channel_id = item.channel_id.clone().unwrap_or(item.id);
+                self.subscribe_channel(channel_id, subscribe, window, cx);
+            }
             MenuAction::RemoveFromTop => {
                 let history = cx.global::<AppGraph>().history.clone();
                 let id = item.id.clone();
@@ -1504,6 +1571,7 @@ enum MenuAction {
     RemoveFromTop,
     AddToPlaylist,
     RemoveFromPlaylist,
+    Subscribe(bool),
 }
 
 fn share_link(item: &YtFeedItem) -> Option<String> {
