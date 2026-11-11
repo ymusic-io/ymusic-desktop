@@ -70,6 +70,7 @@ impl LibrarySearchView {
             _subscription: subscription,
         };
         view.load(cx);
+        crate::library::on_library_change(cx, Self::load);
         view
     }
 

@@ -28,6 +28,34 @@ use crate::playback::QueueItem;
 use crate::spinner::Spinner;
 use crate::tab_row::tab_row;
 
+/// Writes that land within this window of each other cost one reload (a scan writes row by row).
+const STORE_CHANGE_COALESCE: std::time::Duration = std::time::Duration::from_millis(300);
+
+/// Runs `reload` on the view after media store writes (a finished download, a scan, a dialog), for
+/// as long as the view lives.
+pub fn on_library_change<V: 'static>(cx: &mut Context<V>, reload: impl Fn(&mut V, &mut Context<V>) + 'static) {
+    let (sender, mut receiver) = futures::channel::mpsc::unbounded::<()>();
+    let mut changes = cx.global::<AppGraph>().media.changes();
+    let forward = on_core(cx, async move {
+        while changes.changed().await.is_ok() {
+            tokio::time::sleep(STORE_CHANGE_COALESCE).await;
+            changes.borrow_and_update();
+            if sender.unbounded_send(()).is_err() {
+                return;
+            }
+        }
+    });
+    cx.background_executor().spawn(forward).detach();
+    cx.spawn(async move |this, cx| {
+        while futures::StreamExt::next(&mut receiver).await.is_some() {
+            if this.update(cx, |view, cx| reload(view, cx)).is_err() {
+                return;
+            }
+        }
+    })
+    .detach();
+}
+
 /// Play these local files in order from `index`.
 pub struct PlayLocal {
     pub items: Vec<QueueItem>,
@@ -318,6 +346,12 @@ impl LibraryView {
             location_offer: None,
         };
         view.refresh(cx);
+        on_library_change(cx, |view, cx| {
+            view.refresh(cx);
+            if view.tab != Tab::Folders {
+                view.refresh_all(cx);
+            }
+        });
         view
     }
 

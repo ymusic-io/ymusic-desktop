@@ -1,6 +1,6 @@
 //! Which YouTube videos are already saved (Library files tagged with their id, finished
 //! downloads), for the "downloaded" mark on feed items. One set per app, re-read when a download
-//! finishes or is removed, and when a surface asks (a new feed, a Library change).
+//! finishes or is removed, when the media store changes, and when a surface asks (a new feed).
 
 use std::collections::HashSet;
 
@@ -30,6 +30,7 @@ impl OfflineMarks {
         let marks = cx.new(|cx| {
             let mut marks = Self { ids: HashSet::new(), generation: 0 };
             marks.watch_downloads(cx);
+            crate::library::on_library_change(cx, Self::reload);
             marks.reload(cx);
             marks
         });
