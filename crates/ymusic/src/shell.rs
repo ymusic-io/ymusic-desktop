@@ -14,6 +14,7 @@ use gpui_kit::*;
 use ym_i18n::{Str, t, tf};
 
 use crate::a11y::{DragRow, FocusList, focusable};
+use crate::account_view::AccountView;
 use crate::download_dialog::{DownloadPicker, DownloadTarget};
 use crate::downloads_view::DownloadsView;
 use crate::feed::{FeedAction, FeedSource, FeedView, ItemAction, Navigate, Play};
@@ -252,6 +253,8 @@ pub struct Shell {
     now_playing: Entity<NowPlaying>,
     now_playing_open: bool,
     library: Option<Entity<LibraryView>>,
+    account: Option<Entity<AccountView>>,
+    music_library: Option<Entity<AccountView>>,
     play_again: Option<Entity<PlayAgainView>>,
     downloads: Option<Entity<DownloadsView>>,
     settings: Option<Entity<SettingsView>>,
@@ -304,6 +307,8 @@ impl Shell {
             now_playing,
             now_playing_open: false,
             library: None,
+            account: None,
+            music_library: None,
             play_again: None,
             downloads: None,
             settings: None,
@@ -831,7 +836,9 @@ impl Shell {
     /// The section's root surface (below its top bar).
     fn root_content(&mut self, cx: &mut Context<Self>) -> AnyElement {
         match self.section {
+            Section::Discover if self.discover_tab == DiscoverTab::Account => self.account_view(cx).into_any_element(),
             Section::Discover => self.root(self.discover_tab.source(), cx).into_any_element(),
+            Section::YtMusic if self.music_tab == MusicTab::Library => self.music_library_view(cx).into_any_element(),
             Section::YtMusic => self.root(self.music_tab.source(), cx).into_any_element(),
             Section::Library => self.library_view(cx).into_any_element(),
             Section::PlayAgain => self.play_again_view(cx).into_any_element(),
@@ -1246,10 +1253,36 @@ impl Shell {
         window.push_notification(tf(Str::SoundVolume, &[&((snapped * 100.).round() as i32)]), cx);
     }
 
-    /// Recommended and Top tracks are built from local play, so they rebuild on every visit.
+    fn account_view(&mut self, cx: &mut Context<Self>) -> Entity<AccountView> {
+        if let Some(view) = &self.account {
+            return view.clone();
+        }
+        let feed = self.root(FeedSource::Account, cx);
+        let view = cx.new(|cx| AccountView::new(feed, true, cx));
+        self.account = Some(view.clone());
+        view
+    }
+
+    fn music_library_view(&mut self, cx: &mut Context<Self>) -> Entity<AccountView> {
+        if let Some(view) = &self.music_library {
+            return view.clone();
+        }
+        let feed = self.root(FeedSource::MusicLibrary, cx);
+        let view = cx.new(|cx| AccountView::new(feed, false, cx));
+        self.music_library = Some(view.clone());
+        view
+    }
+
+    /// Recommended and Top tracks are built from local play, so they rebuild on every visit; the
+    /// Account tab re-checks who is signed in.
     fn set_discover_tab(&mut self, tab: DiscoverTab, cx: &mut Context<Self>) {
         self.discover_tab = tab;
         persist_setting(cx, LAST_DISCOVER_TAB_KEY, tab.id().to_string());
+        if tab == DiscoverTab::Account
+            && let Some(view) = &self.account
+        {
+            view.update(cx, |view, cx| view.refresh(cx));
+        }
         if matches!(tab, DiscoverTab::Recommended | DiscoverTab::TopTracks)
             && let Some(view) = self.roots.get(&tab.source())
         {

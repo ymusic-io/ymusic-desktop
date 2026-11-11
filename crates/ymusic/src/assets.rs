@@ -56,7 +56,11 @@ gpui_kit::assets::icon_assets!(
         ExternalLink,
         Gauge,
         Volume1,
-        VolumeX
+        VolumeX,
+        CircleUser,
+        Clock,
+        ThumbsUp,
+        SquarePlay
     ]
 );
 

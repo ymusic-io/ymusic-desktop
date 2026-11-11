@@ -1,4 +1,5 @@
 mod a11y;
+mod account_view;
 mod assets;
 mod audio_effects;
 mod download_dialog;

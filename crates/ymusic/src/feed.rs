@@ -181,6 +181,8 @@ pub struct FeedView {
     /// The filter chips, then the page's Show more.
     chips: FocusList,
     tabs: FocusList,
+    /// Drawn above the page, scrolling with it (the Account tab's header).
+    top: Option<AnyView>,
     chips_drag: DragRow,
     tabs_drag: DragRow,
     carousel_drags: std::cell::RefCell<std::collections::HashMap<usize, DragRow>>,
@@ -220,6 +222,7 @@ impl FeedView {
             controls: FocusList::new(Some(scroll.clone())),
             chips: FocusList::new(Some(scroll)),
             tabs: FocusList::new(None),
+            top: None,
             chips_drag: DragRow::default(),
             tabs_drag: DragRow::default(),
             carousel_drags: Default::default(),
@@ -348,6 +351,10 @@ impl FeedView {
         .detach();
     }
 
+    pub fn set_top(&mut self, top: Option<AnyView>) {
+        self.top = top;
+    }
+
     pub fn reload(&mut self, cx: &mut Context<Self>) {
         self.phase = Phase::Loading;
         self.fetch(None, false, cx);
@@ -434,7 +441,7 @@ impl FeedView {
         }
     }
 
-    fn open_link(&mut self, link: &str, title: Option<SharedString>, cx: &mut Context<Self>) {
+    pub fn open_link(&mut self, link: &str, title: Option<SharedString>, cx: &mut Context<Self>) {
         if let Some(source) = FeedSource::from_link(link) {
             cx.emit(Navigate { source, title });
         }
@@ -482,7 +489,7 @@ fn section_title(header: &YtSectionHeader) -> Option<String> {
 }
 
 /// The smallest variant at least `width` px wide, else the largest.
-fn thumb_for(thumbs: &[YtThumb], width: i32) -> Option<SharedString> {
+pub fn thumb_for(thumbs: &[YtThumb], width: i32) -> Option<SharedString> {
     thumbs
         .iter()
         .find(|thumb| thumb.w.is_some_and(|w| w >= width))
@@ -1289,7 +1296,7 @@ impl Render for FeedView {
         }
         let bands = Bands::for_width(feed_width(window));
         let theme = cx.theme().clone();
-        let mut column = v_flex().w_full().pb_4();
+        let mut column = v_flex().w_full().pb_4().children(self.top.clone());
         let tabs = self.page.page_tabs.clone();
         let selected_tab = tabs.iter().position(|tab| tab.selected).unwrap_or(0);
         let on_home_tab = tabs.get(selected_tab).is_none_or(|tab| tab.home);
