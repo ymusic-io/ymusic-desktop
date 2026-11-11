@@ -4,9 +4,8 @@ use base64::Engine as _;
 use p256::ecdsa::signature::Verifier;
 use p256::ecdsa::{Signature, VerifyingKey};
 use p256::pkcs8::DecodePublicKey;
-use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use ym_common::log::Logger;
+use ym_common::log::{Logger, now_millis};
 
 use crate::config::BundleVersion;
 
@@ -40,14 +39,29 @@ pub struct VerifiedBundle {
     pub source: String,
 }
 
-#[derive(Serialize, Deserialize)]
+/// The JVM app's `bundle.meta` (`DefaultJsSourceProvider`): the version, the time it was stored
+/// (epoch ms) and the signature, one per line, so either app boots the other's cached bundle.
 struct CachedMeta {
     version: i64,
+    stored_at: i64,
     signature: String,
 }
 
+impl CachedMeta {
+    fn parse(text: &str) -> Option<Self> {
+        let mut lines = text.lines();
+        let version = lines.next()?.parse().ok()?;
+        let stored_at = lines.next()?.parse().ok()?;
+        Some(Self { version, stored_at, signature: lines.next().unwrap_or_default().to_owned() })
+    }
+
+    fn to_text(&self) -> String {
+        format!("{}\n{}\n{}\n", self.version, self.stored_at, self.signature)
+    }
+}
+
 /// Where an updatable bundle (engine.js, player.js) comes from: the embedded copy is the floor, a
-/// cached remote copy rides above it. The disk is not trusted: the cached file is re-hashed and
+/// cached remote copy rides above it, in the JVM app's folder and format (`bundle.js` + `bundle.meta`). The disk is not trusted: the cached file is re-hashed and
 /// its signature re-checked on every load, and a torn or tampered cache reads as absent.
 pub struct BundleSource {
     /// The signed name: `engine` or `player`.
@@ -88,7 +102,7 @@ impl BundleSource {
         if self.public_key.trim().is_empty() {
             return None;
         }
-        let meta: CachedMeta = serde_json::from_slice(&std::fs::read(self.directory.join("bundle.meta")).ok()?).ok()?;
+        let meta = CachedMeta::parse(&std::fs::read_to_string(self.directory.join("bundle.meta")).ok()?)?;
         let source = std::fs::read(self.directory.join("bundle.js")).ok()?;
         let digest = hex::encode(Sha256::digest(&source));
         if !verify_signature(&self.public_key, &self.name, meta.version, &digest, &meta.signature) {
@@ -122,14 +136,14 @@ impl BundleSource {
     /// Caches a bundle that booted. Blocking.
     pub fn store(&self, bundle: &VerifiedBundle) -> Result<(), BundleError> {
         std::fs::create_dir_all(&self.directory)?;
-        let meta = serde_json::to_vec(&CachedMeta {
+        let meta = CachedMeta {
             version: bundle.remote.version,
+            stored_at: now_millis(),
             signature: bundle.remote.signature.clone(),
-        })
-        .map_err(std::io::Error::other)?;
+        };
         let staged = self.directory.join("bundle.js.tmp");
         std::fs::write(&staged, &bundle.source)?;
-        std::fs::write(self.directory.join("bundle.meta.tmp"), meta)?;
+        std::fs::write(self.directory.join("bundle.meta.tmp"), meta.to_text())?;
         std::fs::rename(&staged, self.directory.join("bundle.js"))?;
         std::fs::rename(self.directory.join("bundle.meta.tmp"), self.directory.join("bundle.meta"))?;
         Ok(())

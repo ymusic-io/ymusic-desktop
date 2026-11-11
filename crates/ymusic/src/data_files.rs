@@ -19,6 +19,8 @@ const RENAMED: [(&str, &str); 4] = [
     ("engine-cache/index.db", "engine-cache/engine-cache.db"),
 ];
 const SIDECARS: [&str; 3] = ["-wal", "-shm", "-journal"];
+/// Caches earlier builds kept where the JVM app keeps nothing; refilled under the JVM app's names.
+const OBSOLETE_DIRS: [&str; 1] = ["bundles"];
 
 /// Blocking. Runs only in the instance that holds the data dir, so nothing has the files open.
 pub fn adopt_jvm_names(data_dir: &Path, log: &Logger) {
@@ -37,6 +39,13 @@ pub fn adopt_jvm_names(data_dir: &Path, log: &Logger) {
         match outcome {
             Ok(()) => log.info(&format!("{old_name} is now {new_name}")),
             Err(error) => log.warn(&format!("R90200 {old_name} could not become {new_name}"), Some(&error)),
+        }
+    }
+    for name in OBSOLETE_DIRS {
+        match std::fs::remove_dir_all(data_dir.join(name)) {
+            Ok(()) => log.info(&format!("removed {name}, a cache the JVM app keeps elsewhere")),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => log.warn(&format!("R90404 the obsolete {name} folder could not be removed"), Some(&error)),
         }
     }
 }

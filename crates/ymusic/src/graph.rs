@@ -130,7 +130,7 @@ impl AppGraph {
                 name,
                 public_key,
                 (embedded, version.parse().unwrap_or(0)),
-                data_dir.join("bundles").join(name),
+                data_dir.join(format!("{name}-js")),
                 http.following.clone(),
                 log.clone(),
             )

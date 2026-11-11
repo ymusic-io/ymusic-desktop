@@ -101,6 +101,7 @@ R90200 - data dir: a database this app's earlier builds named differently could 
 R90201 - data dir: the window bounds kept in app.db could not move to window.properties (logged)
 R90202 - data dir: the old window.bounds setting could not be removed from app.db (logged)
 R90203 - data dir: a setting kept under an earlier build's key could not move to the JVM app's key (logged)
+R90404 - data dir: a cache folder of this app's earlier builds could not be removed (logged; retried next launch)
 R90300 - self-update: the config's update entry does not verify against the pinned update key (UpdateService.accept)
 R90301 - self-update: the downloaded installer's size or sha256 differs from the signed entry
 R90302 - self-update: the installer download failed (disk I/O other than full storage)
