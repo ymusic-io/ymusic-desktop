@@ -916,11 +916,32 @@ impl Playback {
             }
         }
         self.check_skip(cx);
+        if let Some(watch_next) = status.get("watchNext") {
+            self.harvest_watch_next(watch_next, cx);
+        }
         if let Some(gain) = status.get("gain").and_then(|gain| gain.get("value")).and_then(Value::as_f64) {
             self.gain = (gain as f32).clamp(0.0, 1.0);
             self.apply_volume();
         }
         cx.notify();
+    }
+
+    /// The playing page's related videos, handed verbatim to the engine: Recommended is built from
+    /// them. A failed hand-off is logged and never disturbs playback.
+    fn harvest_watch_next(&self, watch_next: &Value, cx: &App) {
+        let (Some(video_id), Some(contents)) = (
+            watch_next.get("videoId").and_then(Value::as_str).map(str::to_owned),
+            watch_next.get("contents").and_then(Value::as_str).map(str::to_owned),
+        ) else {
+            return;
+        };
+        let graph = cx.global::<AppGraph>();
+        let (engine, log) = (graph.engine(), graph.log.fork("watch-next-harvest"));
+        graph.tokio.spawn(async move {
+            if let Err(error) = engine.harvest_watch_next(&video_id, &contents, &log).await {
+                log.warn("watch-next harvest hand-off failed", Some(&error));
+            }
+        });
     }
 
     fn fetch_radio(&mut self, video_id: String, cx: &mut Context<Self>) {

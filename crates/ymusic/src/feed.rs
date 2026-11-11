@@ -348,7 +348,7 @@ impl FeedView {
         .detach();
     }
 
-    fn reload(&mut self, cx: &mut Context<Self>) {
+    pub fn reload(&mut self, cx: &mut Context<Self>) {
         self.phase = Phase::Loading;
         self.fetch(None, false, cx);
     }

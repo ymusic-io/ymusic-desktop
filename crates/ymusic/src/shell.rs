@@ -1005,11 +1005,7 @@ impl Shell {
                 .when(selected, |cell| {
                     cell.child(div().absolute().bottom_0().left_2().right_2().h(px(2.)).bg(theme.primary))
                 })
-                .on_click(cx.listener(move |shell, _, _, cx| {
-                    shell.discover_tab = tab;
-                    persist_setting(cx, LAST_DISCOVER_TAB_KEY, tab.id().to_string());
-                    cx.notify();
-                }));
+                .on_click(cx.listener(move |shell, _, _, cx| shell.set_discover_tab(tab, cx)));
             let cell = self.tab_focus.item(index, cell, cx);
             row = row.child(if inline { cell.w(px(88.)) } else { cell.flex_1() });
         }
@@ -1250,12 +1246,23 @@ impl Shell {
         window.push_notification(tf(Str::SoundVolume, &[&((snapped * 100.).round() as i32)]), cx);
     }
 
+    /// Recommended and Top tracks are built from local play, so they rebuild on every visit.
+    fn set_discover_tab(&mut self, tab: DiscoverTab, cx: &mut Context<Self>) {
+        self.discover_tab = tab;
+        persist_setting(cx, LAST_DISCOVER_TAB_KEY, tab.id().to_string());
+        if matches!(tab, DiscoverTab::Recommended | DiscoverTab::TopTracks)
+            && let Some(view) = self.roots.get(&tab.source())
+        {
+            view.update(cx, |view, cx| view.reload(cx));
+        }
+        cx.notify();
+    }
+
     fn select_tab(&mut self, index: usize, cx: &mut Context<Self>) {
         match self.section {
             Section::Discover => {
                 if let Some(tab) = DiscoverTab::ALL.get(index).copied() {
-                    self.discover_tab = tab;
-                    persist_setting(cx, LAST_DISCOVER_TAB_KEY, tab.id().to_string());
+                    self.set_discover_tab(tab, cx);
                 }
             }
             Section::YtMusic => {
