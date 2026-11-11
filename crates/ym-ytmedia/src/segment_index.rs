@@ -11,7 +11,22 @@ use crate::sabr::messages::MediaHeader;
 
 const RETENTION_MILLIS: i64 = 30 * 24 * 60 * 60 * 1000;
 
+/// `:yt-media`'s `SegmentDatabase` (version 3), the JVM app's `download-segments.db`: this index
+/// reads only `segment`, the rest is the player cache's and is created so either app opens the file.
+const SCHEMA_VERSION: i64 = 3;
 const SCHEMA: &str = "
+CREATE TABLE IF NOT EXISTS blob_span (
+    key       TEXT    NOT NULL,
+    start     INTEGER NOT NULL,
+    len       INTEGER NOT NULL,
+    last_used INTEGER NOT NULL,
+    PRIMARY KEY (key, start, len)
+);
+CREATE INDEX IF NOT EXISTS blob_span_lru ON blob_span(last_used);
+CREATE TABLE IF NOT EXISTS cache_stats (
+    id        INTEGER NOT NULL PRIMARY KEY,
+    hit_bytes INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS segment (
     itag          INTEGER NOT NULL,
     lmt           INTEGER NOT NULL,
@@ -27,7 +42,18 @@ CREATE TABLE IF NOT EXISTS segment (
 );
 CREATE INDEX IF NOT EXISTS segment_start_ms ON segment(itag, lmt, start_ms);
 CREATE INDEX IF NOT EXISTS segment_end_ms ON segment(itag, lmt, end_ms);
+CREATE INDEX IF NOT EXISTS segment_seg ON segment(itag, lmt, seg_index);
+CREATE TABLE IF NOT EXISTS format_init (
+    itag  INTEGER NOT NULL,
+    lmt   INTEGER NOT NULL,
+    bytes BLOB    NOT NULL,
+    PRIMARY KEY (itag, lmt)
+);
 ";
+const MIGRATIONS: [&str; 2] = [
+    "CREATE TABLE format_init (itag INTEGER NOT NULL, lmt INTEGER NOT NULL, bytes BLOB NOT NULL, PRIMARY KEY (itag, lmt));",
+    "CREATE TABLE cache_stats (id INTEGER NOT NULL PRIMARY KEY, hit_bytes INTEGER NOT NULL);",
+];
 
 /// Blocking SQLite: call from a worker, never the UI or engine thread.
 pub struct SegmentIndex {
@@ -45,7 +71,12 @@ impl SegmentIndex {
 
     fn with_connection(connection: Connection) -> rusqlite::Result<Self> {
         connection.pragma_update(None, "journal_mode", "WAL")?;
-        connection.execute_batch(SCHEMA)?;
+        ym_common::sqlite::open_schema(
+            &connection,
+            SCHEMA_VERSION,
+            |db| db.execute_batch(SCHEMA),
+            |db, found| ym_common::sqlite::run_migrations(db, found, &MIGRATIONS),
+        )?;
         Ok(Self { connection: Mutex::new(connection) })
     }
 

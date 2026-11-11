@@ -11,6 +11,8 @@ use std::sync::{Arc, Condvar, Mutex};
 use rusqlite::{Connection, params};
 use ym_common::log::{Crumb, Level, LogSink, now_millis};
 
+/// `:log-store`'s `LogDatabase` version: `Log.sq` plus `1.sqm`.
+const SCHEMA_VERSION: i64 = 2;
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS log_line (
     seq INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -22,6 +24,11 @@ CREATE TABLE IF NOT EXISTS log_line (
     state INTEGER NOT NULL DEFAULT 0
 );
 ";
+const MIGRATIONS: [&str; 1] = ["
+ALTER TABLE log_line ADD COLUMN state INTEGER NOT NULL DEFAULT 0;
+UPDATE log_line SET state = 2 WHERE seq <= (SELECT seq FROM sent_mark WHERE id = 0);
+DROP TABLE sent_mark;
+"];
 const QUEUE_CAPACITY: usize = 4_096;
 const MIN_LINES: i64 = 100;
 const STATE_SENT: i64 = 2;
@@ -65,7 +72,13 @@ impl LogStore {
             let _ = std::fs::create_dir_all(parent);
         }
         let db = Connection::open(path)?;
-        db.execute_batch(SCHEMA)?;
+        db.pragma_update(None, "journal_mode", "WAL")?;
+        ym_common::sqlite::open_schema(
+            &db,
+            SCHEMA_VERSION,
+            |db| db.execute_batch(SCHEMA),
+            |db, found| ym_common::sqlite::run_migrations(db, found, &MIGRATIONS),
+        )?;
         let launch = {
             let seed = now_millis() as u128 ^ (std::process::id() as u128) << 64;
             let hashed = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15_f39c_c060_5ced_c835);

@@ -20,6 +20,8 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::oneshot;
 use ym_common::log::{Logger, now_millis};
 
+/// `:dynamic-engine`'s `CacheDatabase` version.
+const SCHEMA_VERSION: i64 = 1;
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS cache_entry (
     scope     TEXT    NOT NULL,
@@ -108,7 +110,7 @@ impl DiskCacheStore {
         }
         std::fs::create_dir_all(&directory)?;
         let db = Connection::open(db_path)?;
-        db.execute_batch(SCHEMA)?;
+        ym_common::sqlite::open_schema(&db, SCHEMA_VERSION, |db| db.execute_batch(SCHEMA), |_, _| Ok(()))?;
         Ok(Arc::new(Self {
             db: Mutex::new(db),
             directory,

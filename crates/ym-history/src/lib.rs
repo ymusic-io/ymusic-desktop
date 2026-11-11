@@ -1,4 +1,4 @@
-//! Play history (`play_history.db`, the JVM app's schema at version 5): watch-time rankings for
+//! Play history (`play-history.db`, the JVM app's schema at version 5): watch-time rankings for
 //! local files and YouTube videos, a display snapshot per YouTube video, and "Play again": whole
 //! queues saved where they were left. Blocking SQLite: call from a worker.
 
@@ -39,6 +39,54 @@ CREATE TABLE play_again (
 );
 CREATE INDEX play_again_updated_at ON play_again(updated_at);
 ";
+
+/// The JVM app's `PlayHistorySchema.migrate`.
+fn migrate(connection: &Connection, found: i64) -> rusqlite::Result<()> {
+    if found < 2 {
+        connection.execute_batch(
+            "
+CREATE TABLE yt_video_metadata (
+    video_id TEXT PRIMARY KEY NOT NULL, title TEXT NOT NULL, artist TEXT, thumbnail_url TEXT, duration TEXT,
+    duration_ms INTEGER, last_updated INTEGER NOT NULL
+);
+CREATE INDEX yt_video_metadata_last_updated ON yt_video_metadata(last_updated);
+INSERT INTO yt_video_metadata(video_id, title, artist, thumbnail_url, duration, duration_ms, last_updated)
+SELECT video_id, title, artist, thumbnail_url, duration, duration_ms, tracked_at FROM yt_play_history WHERE live = 0;
+CREATE TABLE yt_play_history_new (video_id TEXT PRIMARY KEY NOT NULL, watch_time INTEGER NOT NULL, tracked_at INTEGER NOT NULL);
+INSERT INTO yt_play_history_new(video_id, watch_time, tracked_at) SELECT video_id, watch_time, tracked_at FROM yt_play_history;
+DROP TABLE yt_play_history;
+ALTER TABLE yt_play_history_new RENAME TO yt_play_history;
+CREATE INDEX yt_play_history_watch_time ON yt_play_history(watch_time);
+CREATE INDEX yt_play_history_tracked_at ON yt_play_history(tracked_at);
+",
+        )?;
+    }
+    if found < 3 {
+        connection.execute_batch(
+            "
+CREATE TABLE play_again (
+    queue_id TEXT PRIMARY KEY NOT NULL, title TEXT NOT NULL, thumbnail_url TEXT, queue_index INTEGER NOT NULL,
+    queue_size INTEGER NOT NULL, position_ms INTEGER NOT NULL, duration_ms INTEGER NOT NULL, items TEXT NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+CREATE INDEX play_again_updated_at ON play_again(updated_at);
+",
+        )?;
+    }
+    if found < 4 {
+        connection.execute_batch(
+            "
+ALTER TABLE play_again ADD COLUMN subtitle TEXT;
+ALTER TABLE play_again ADD COLUMN strip_start INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE play_again ADD COLUMN strip_thumbs TEXT NOT NULL DEFAULT '';
+",
+        )?;
+    }
+    if found < 5 {
+        connection.execute_batch("ALTER TABLE play_again ADD COLUMN source_token TEXT;")?;
+    }
+    Ok(())
+}
 
 /// A YouTube video as the history shows it.
 #[derive(Clone, Debug, PartialEq)]
@@ -107,11 +155,9 @@ impl PlayHistory {
 
     fn with_connection(connection: Connection) -> rusqlite::Result<Self> {
         connection.pragma_update(None, "journal_mode", "WAL")?;
-        let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
-        if version == 0 {
-            connection.execute_batch(SCHEMA)?;
-            connection.pragma_update(None, "user_version", SCHEMA_VERSION)?;
-        }
+        connection.pragma_update(None, "synchronous", "NORMAL")?;
+        connection.busy_timeout(std::time::Duration::from_secs(5))?;
+        ym_common::sqlite::open_schema(&connection, SCHEMA_VERSION, |db| db.execute_batch(SCHEMA), migrate)?;
         Ok(Self { connection: Mutex::new(connection), state: Mutex::new(CleanupState::default()) })
     }
 
