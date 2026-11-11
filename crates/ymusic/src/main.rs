@@ -25,6 +25,7 @@ mod shortcuts;
 mod signin;
 mod signin_dialog;
 mod sound_panel;
+mod spinner;
 mod sponsor_block;
 mod tab_row;
 mod telemetry;

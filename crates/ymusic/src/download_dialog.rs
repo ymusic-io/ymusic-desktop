@@ -5,7 +5,6 @@ use std::path::PathBuf;
 
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
-use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::{ActiveTheme, Disableable, Sizable, StyledExt, WindowExt, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
@@ -16,6 +15,7 @@ use ym_i18n::{Str, t, tf};
 use crate::downloads::{DOWNLOAD_LOCATION_KEY, download_folder};
 use crate::downloads_view::{size_label, task_error_text};
 use crate::graph::{AppGraph, on_core};
+use crate::spinner::Spinner;
 
 /// The video to download, as the card showed it.
 #[derive(Clone)]

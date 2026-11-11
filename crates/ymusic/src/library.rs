@@ -8,7 +8,6 @@ use std::sync::atomic::AtomicBool;
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
-use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::{ActiveTheme, Icon, IconName, Sizable, StyledExt, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
@@ -19,6 +18,7 @@ use crate::a11y::{DragRow, FocusList, KeyboardFocusable};
 use crate::graph::{AppGraph, on_core};
 use crate::mini_player::clock;
 use crate::playback::QueueItem;
+use crate::spinner::Spinner;
 use crate::tab_row::tab_row;
 
 /// Play these local files in order from `index`.

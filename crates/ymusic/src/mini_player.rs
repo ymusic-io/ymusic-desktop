@@ -5,7 +5,6 @@ use gpui_kit::base::slider::{SliderEvent, SliderState};
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::component::slider::Slider;
-use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::{ActiveTheme, Disableable, Icon, Selectable, Sizable, StyledExt, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
@@ -14,6 +13,7 @@ use ym_i18n::{Str, t, tf};
 use crate::a11y::KeyboardFocusable;
 use crate::playback::{PlayState, Playback, QueueItem};
 use crate::queue_nav::LoopMode;
+use crate::spinner::Spinner;
 
 /// The user asked to open (or close) Now Playing.
 pub struct ToggleNowPlaying;

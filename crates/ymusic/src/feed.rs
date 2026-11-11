@@ -6,7 +6,6 @@ use std::sync::Arc;
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
-use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::{
     ActiveTheme, Disableable, Icon, IconName, Selectable, Sizable, StyledExt, WindowExt, h_flex, v_flex,
 };
@@ -19,6 +18,7 @@ use ym_i18n::{Str, t, tf};
 
 use crate::a11y::{DragRow, FocusList, focusable};
 use crate::graph::{AppGraph, on_core};
+use crate::spinner::Spinner;
 use crate::tab_row::tab_row;
 
 #[derive(Debug, Clone, PartialEq)]
