@@ -241,6 +241,8 @@ pub struct Playback {
     pub quality_actual: Option<String>,
     /// The quality loads ask for while video is on.
     pub quality_preferred: String,
+    /// The last video box Now Playing reported, sent again once a session starts.
+    viewport: Option<(i32, i32)>,
     /// No view shows the picture: the engines rest their video decoders, keeping the chosen quality.
     /// True until the shell first draws.
     video_hidden: bool,
@@ -279,6 +281,7 @@ impl Playback {
             duration_ms: 0,
             loading_video: None,
             quality_options: Vec::new(),
+            viewport: None,
             quality_actual: None,
             quality_preferred: cx
                 .global::<AppGraph>()
@@ -835,7 +838,9 @@ impl Playback {
     }
 
     /// The video box in CSS pixels; YouTube's ABR picks the quality for it.
+    /// The video box in logical pixels: YouTube's Auto picks the quality from it, so loads carry it too.
     pub fn set_viewport(&mut self, width: i32, height: i32, cx: &mut Context<Self>) {
+        self.viewport = Some((width, height));
         self.command(cx, move |engine, log| async move { engine.player_set_viewport(width, height, &log).await });
     }
 
@@ -935,6 +940,7 @@ impl Playback {
     fn load_request(&mut self, video_id: &str) -> LoadRequest {
         let mut request = LoadRequest::audio(video_id);
         request.start_position_ms = std::mem::take(&mut self.start_position_ms);
+        request.viewport = self.viewport;
         request.speed = self.effects.speed;
         request.pitch = self.effects.pitch;
         if self.video {
@@ -1149,6 +1155,9 @@ impl Playback {
                 }
             }
         }));
+        if let Some((width, height)) = self.viewport {
+            self.command(cx, move |engine, log| async move { engine.player_set_viewport(width, height, &log).await });
+        }
         if self.captions {
             let selected = self.caption_selected.clone();
             self.command(cx, move |engine, log| async move {
