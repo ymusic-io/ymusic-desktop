@@ -8,8 +8,11 @@ use ym_common::log::Logger;
 
 use crate::model::{AudioQuality, DownloadFormat, DownloadState, DownloadTask, StreamId, TaskError};
 
+/// `:download`'s `DownloadDatabase` (version 10): `DownloadTask.sq` for a new file, `1.sqm`..`9.sqm`
+/// for an older one from the JVM app.
+const SCHEMA_VERSION: i64 = 10;
 const SCHEMA: &str = "
-CREATE TABLE IF NOT EXISTS download_task (
+CREATE TABLE IF NOT EXISTS downloadTask (
     id                TEXT    NOT NULL PRIMARY KEY,
     video_id          TEXT    NOT NULL,
     title             TEXT    NOT NULL,
@@ -20,17 +23,17 @@ CREATE TABLE IF NOT EXISTS download_task (
     state             TEXT    NOT NULL,
     downloaded_bytes  INTEGER NOT NULL DEFAULT 0,
     total_bytes       INTEGER NOT NULL DEFAULT 0,
-    file_uri          TEXT,
+    file_path         TEXT,
     error_message     TEXT,
-    error_code        TEXT,
     created_at        INTEGER NOT NULL,
     updated_at        INTEGER NOT NULL,
     file_name         TEXT,
     audio_track_id    TEXT,
-    -- NULL = no per-task choice; '' = explicitly none; else comma-joined caption keys.
-    caption_keys      TEXT,
+    caption_langs     TEXT,
     audio_language    TEXT,
     caption_language  TEXT,
+    error_code        TEXT,
+    mp3_source_bitrate INTEGER NOT NULL DEFAULT 0,
     audio_quality     TEXT    NOT NULL DEFAULT 'BEST',
     audio_itag        INTEGER,
     audio_lmt         INTEGER,
@@ -38,11 +41,41 @@ CREATE TABLE IF NOT EXISTS download_task (
     video_lmt         INTEGER,
     loudness_gain_db  REAL
 );
-CREATE INDEX IF NOT EXISTS download_task_created ON download_task(created_at);
+CREATE INDEX IF NOT EXISTS downloadTask_created ON downloadTask(created_at);
+";
+const MIGRATIONS: [&str; 9] = [
+    "ALTER TABLE downloadTask ADD COLUMN file_name TEXT;
+     ALTER TABLE downloadTask ADD COLUMN audio_track_id TEXT;
+     ALTER TABLE downloadTask ADD COLUMN caption_langs TEXT;",
+    "ALTER TABLE downloadTask ADD COLUMN audio_language TEXT;
+     ALTER TABLE downloadTask ADD COLUMN caption_language TEXT;",
+    "ALTER TABLE downloadTask ADD COLUMN error_code TEXT;",
+    "ALTER TABLE downloadTask ADD COLUMN mp3_source_bitrate INTEGER NOT NULL DEFAULT 0;",
+    "ALTER TABLE downloadTask ADD COLUMN audio_quality TEXT NOT NULL DEFAULT 'BEST';
+     UPDATE downloadTask SET audio_quality = 'MEDIUM' WHERE mp3_source_bitrate != 0;",
+    "UPDATE downloadTask SET audio_quality = 'BEST' WHERE mp3_source_bitrate != 0 AND format != 'MP3';",
+    "ALTER TABLE downloadTask ADD COLUMN audio_itag INTEGER;",
+    "ALTER TABLE downloadTask ADD COLUMN audio_lmt INTEGER;
+     ALTER TABLE downloadTask ADD COLUMN video_itag INTEGER;
+     ALTER TABLE downloadTask ADD COLUMN video_lmt INTEGER;",
+    "ALTER TABLE downloadTask ADD COLUMN loudness_gain_db REAL;",
+];
+/// The queue as builds before the JVM schema kept it (unversioned), moved into `downloadTask` once.
+const UNVERSIONED_MOVE: &str = "
+INSERT OR IGNORE INTO downloadTask(
+    id, video_id, title, artist, thumbnail_url, format, requested_height, state, downloaded_bytes, total_bytes,
+    file_path, error_message, created_at, updated_at, file_name, audio_track_id, caption_langs, audio_language,
+    caption_language, error_code, audio_quality, audio_itag, audio_lmt, video_itag, video_lmt, loudness_gain_db
+)
+SELECT id, video_id, title, artist, thumbnail_url, format, requested_height, state, downloaded_bytes, total_bytes,
+    file_uri, error_message, created_at, updated_at, file_name, audio_track_id, caption_keys, audio_language,
+    caption_language, error_code, audio_quality, audio_itag, audio_lmt, video_itag, video_lmt, loudness_gain_db
+FROM download_task;
+DROP TABLE download_task;
 ";
 
 const COLUMNS: &str = "id, video_id, title, artist, thumbnail_url, format, requested_height, state, downloaded_bytes,
-    total_bytes, file_uri, error_message, error_code, created_at, updated_at, file_name, audio_track_id, caption_keys,
+    total_bytes, file_path, error_message, error_code, created_at, updated_at, file_name, audio_track_id, caption_langs,
     audio_language, caption_language, audio_quality, audio_itag, audio_lmt, video_itag, video_lmt, loudness_gain_db";
 
 /// Blocking SQLite: call from a worker, never the UI thread.
@@ -62,13 +95,28 @@ impl DownloadStore {
 
     fn with_connection(connection: Connection, log: Logger) -> rusqlite::Result<Self> {
         connection.pragma_update(None, "journal_mode", "WAL")?;
-        connection.execute_batch(SCHEMA)?;
+        connection.pragma_update(None, "synchronous", "NORMAL")?;
+        connection.busy_timeout(std::time::Duration::from_secs(5))?;
+        ym_common::sqlite::open_schema(
+            &connection,
+            SCHEMA_VERSION,
+            |db| {
+                db.execute_batch(SCHEMA)?;
+                let unversioned: bool = db.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'download_task')",
+                    [],
+                    |row| row.get(0),
+                )?;
+                if unversioned { db.execute_batch(UNVERSIONED_MOVE) } else { Ok(()) }
+            },
+            |db, found| ym_common::sqlite::run_migrations(db, found, &MIGRATIONS),
+        )?;
         Ok(Self { connection: Mutex::new(connection), log: log.fork("download-store") })
     }
 
     pub fn all(&self) -> rusqlite::Result<Vec<DownloadTask>> {
         let connection = self.connection.lock().unwrap();
-        let mut statement = connection.prepare(&format!("SELECT {COLUMNS} FROM download_task ORDER BY created_at"))?;
+        let mut statement = connection.prepare(&format!("SELECT {COLUMNS} FROM downloadTask ORDER BY created_at"))?;
         statement.query_map([], |row| map_row(row, &self.log))?.collect()
     }
 
@@ -76,9 +124,7 @@ impl DownloadStore {
         self.connection
             .lock()
             .unwrap()
-            .query_row(&format!("SELECT {COLUMNS} FROM download_task WHERE id = ?"), [id], |row| {
-                map_row(row, &self.log)
-            })
+            .query_row(&format!("SELECT {COLUMNS} FROM downloadTask WHERE id = ?"), [id], |row| map_row(row, &self.log))
             .optional()
     }
 
@@ -88,7 +134,7 @@ impl DownloadStore {
             .lock()
             .unwrap()
             .query_row(
-                &format!("SELECT {COLUMNS} FROM download_task WHERE state = ? ORDER BY created_at LIMIT 1"),
+                &format!("SELECT {COLUMNS} FROM downloadTask WHERE state = ? ORDER BY created_at LIMIT 1"),
                 [DownloadState::Queued.name()],
                 |row| map_row(row, &self.log),
             )
@@ -98,7 +144,7 @@ impl DownloadStore {
     pub fn insert(&self, task: &DownloadTask) -> rusqlite::Result<()> {
         self.connection.lock().unwrap().execute(
             &format!(
-                "INSERT OR REPLACE INTO download_task({COLUMNS}) VALUES
+                "INSERT OR REPLACE INTO downloadTask({COLUMNS}) VALUES
                  (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
             ),
             params![
@@ -141,7 +187,7 @@ impl DownloadStore {
         now: i64,
     ) -> rusqlite::Result<()> {
         self.connection.lock().unwrap().execute(
-            "UPDATE download_task SET state = ?, error_message = ?, error_code = ?, updated_at = ? WHERE id = ?",
+            "UPDATE downloadTask SET state = ?, error_message = ?, error_code = ?, updated_at = ? WHERE id = ?",
             params![
                 state.name(),
                 error.and_then(|error| error.user_message.clone()),
@@ -162,7 +208,7 @@ impl DownloadStore {
         now: i64,
     ) -> rusqlite::Result<()> {
         self.connection.lock().unwrap().execute(
-            "UPDATE download_task SET format = ?, audio_itag = ?, audio_lmt = ?, video_itag = ?, video_lmt = ?,
+            "UPDATE downloadTask SET format = ?, audio_itag = ?, audio_lmt = ?, video_itag = ?, video_lmt = ?,
              updated_at = ? WHERE id = ?",
             params![
                 format.name(),
@@ -179,7 +225,7 @@ impl DownloadStore {
 
     pub fn update_progress(&self, id: &str, done: i64, total: i64, now: i64) -> rusqlite::Result<()> {
         self.connection.lock().unwrap().execute(
-            "UPDATE download_task SET downloaded_bytes = ?, total_bytes = ?, updated_at = ? WHERE id = ?",
+            "UPDATE downloadTask SET downloaded_bytes = ?, total_bytes = ?, updated_at = ? WHERE id = ?",
             params![done, total, now, id],
         )?;
         Ok(())
@@ -194,7 +240,7 @@ impl DownloadStore {
         now: i64,
     ) -> rusqlite::Result<()> {
         self.connection.lock().unwrap().execute(
-            "UPDATE download_task SET state = ?, file_uri = ?, downloaded_bytes = ?, total_bytes = ?,
+            "UPDATE downloadTask SET state = ?, file_path = ?, downloaded_bytes = ?, total_bytes = ?,
              loudness_gain_db = ?, error_message = NULL, error_code = NULL, updated_at = ? WHERE id = ?",
             params![DownloadState::Completed.name(), file_uri, bytes, bytes, loudness_gain_db, now, id],
         )?;
@@ -209,13 +255,13 @@ impl DownloadStore {
             .map(|state| format!("'{}'", state.name()))
             .collect();
         self.connection.lock().unwrap().execute(
-            &format!("UPDATE download_task SET state = ?, updated_at = ? WHERE state IN ({})", active.join(",")),
+            &format!("UPDATE downloadTask SET state = ?, updated_at = ? WHERE state IN ({})", active.join(",")),
             params![DownloadState::Paused.name(), now],
         )
     }
 
     pub fn delete(&self, id: &str) -> rusqlite::Result<()> {
-        self.connection.lock().unwrap().execute("DELETE FROM download_task WHERE id = ?", [id])?;
+        self.connection.lock().unwrap().execute("DELETE FROM downloadTask WHERE id = ?", [id])?;
         Ok(())
     }
 }

@@ -1,7 +1,7 @@
 //! The download manager: every task with its state and progress, filtered by state, with per-task
 //! and whole-queue controls. The list is the service's snapshot, kept current from its changes.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use futures::StreamExt;
 use futures::channel::mpsc;
@@ -330,8 +330,13 @@ impl DownloadsView {
     }
 }
 
+/// A `file://` URI, or the bare path older JVM app versions stored.
 fn file_path(task: &DownloadTask) -> Option<PathBuf> {
-    url::Url::parse(task.file_uri.as_deref()?).ok()?.to_file_path().ok()
+    let stored = task.file_uri.as_deref()?;
+    if Path::new(stored).is_absolute() {
+        return Some(PathBuf::from(stored));
+    }
+    url::Url::parse(stored).ok()?.to_file_path().ok()
 }
 
 enum Playability {
