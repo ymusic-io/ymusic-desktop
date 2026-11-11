@@ -31,6 +31,10 @@ use crate::settings_view::SettingsView;
 use crate::sponsor_block::SponsorBlock;
 
 const RAIL_COLLAPSED: f32 = 72.;
+const DRAWER_ICON_START: f32 = 20.;
+/// Centres the expanded rail's section icons on the collapsed rail's centre line.
+const RAIL_ICON_START: f32 = RAIL_COLLAPSED / 2. - SECTION_ICON / 2.;
+const SECTION_ICON: f32 = 16.;
 const RAIL_EXPANDED: f32 = 280.;
 const DRAWER_WIDTH: f32 = 300.;
 const WEBSITE: &str = "https://ymusic.io";
@@ -1020,8 +1024,9 @@ impl Shell {
             ))
     }
 
-    /// One section entry: an icon-only 48 square collapsed, an icon-and-label row otherwise.
-    fn section_entry(&self, section: Section, labelled: bool, square: bool, cx: &mut Context<Self>) -> AnyElement {
+    /// One section entry: an icon-only 48 square collapsed, else a full-width icon-and-label row whose
+    /// icon starts `icon_start` in.
+    fn section_entry(&self, section: Section, labelled: bool, icon_start: f32, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme();
         let selected = self.section == section;
         let entry = div()
@@ -1048,11 +1053,11 @@ impl Shell {
         }
         entry
             .w_full()
-            .when(!square, |entry| entry.rounded(px(8.)))
             .child(
                 h_flex()
                     .gap_4()
-                    .px(px(20.))
+                    .pl(px(icon_start))
+                    .pr(px(DRAWER_ICON_START))
                     .py(px(11.))
                     .items_center()
                     .child(Icon::new(section.icon()).text_color(tint))
@@ -1066,20 +1071,35 @@ impl Shell {
                     ),
             )
             .when(selected, |entry| {
-                entry.child(div().absolute().left_0().top(px(6.)).w(px(3.)).h(px(33.)).bg(theme.primary))
+                entry.child(
+                    div()
+                        .absolute()
+                        .left_0()
+                        .top_0()
+                        .bottom_0()
+                        .flex()
+                        .items_center()
+                        .child(div().w(px(3.)).h(px(33.)).rounded_r(px(3.)).bg(theme.primary)),
+                )
             })
             .into_any_element()
     }
 
-    fn section_groups(&self, labelled: bool, square: bool, cx: &mut Context<Self>) -> AnyElement {
+    fn section_groups(&self, labelled: bool, icon_start: f32, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme().clone();
         let mut list = v_flex().gap_1().items_center().w_full();
         for (index, group) in Section::GROUPS.iter().enumerate() {
             if index > 0 {
-                list = list.child(div().w_full().py_1().child(div().h(px(1.)).w_full().bg(theme.border)));
+                list = list.child(
+                    div()
+                        .w_full()
+                        .py_1()
+                        .when(!labelled, |divider| divider.px_2())
+                        .child(div().h(px(1.)).w_full().bg(theme.border)),
+                );
             }
             for section in group.iter().copied() {
-                list = list.child(self.section_entry(section, labelled, square, cx));
+                list = list.child(self.section_entry(section, labelled, icon_start, cx));
             }
         }
         list.into_any_element()
@@ -1093,25 +1113,22 @@ impl Shell {
             .accessibility_label(t(Str::CdMenu))
             .tooltip(t(Str::CdMenu))
             .on_click(cx.listener(move |shell, _, _, cx| shell.toggle_rail(expanded, cx)));
-        let header = if expanded {
-            h_flex()
-                .gap_2()
-                .min_h(px(48.))
-                .pr_4()
-                .items_center()
-                .child(toggle)
-                .child(self.brand(24., cx))
-                .into_any_element()
-        } else {
-            h_flex().justify_center().min_h(px(48.)).child(toggle).into_any_element()
-        };
+        // The toggle and every section icon share the collapsed rail's centre line, so expanding moves
+        // none of them.
+        let toggle = div().w(px(RAIL_COLLAPSED)).flex_shrink_0().flex().justify_center().child(toggle);
+        let header = h_flex()
+            .min_h(px(48.))
+            .items_center()
+            .child(toggle)
+            .when(expanded, |header| header.pr_4().child(self.brand(24., cx)))
+            .into_any_element();
         let website = expanded.then(|| {
             div()
                 .id("website")
                 .role(Role::Link)
                 .aria_label("ymusic.io")
                 .tab_stop(true)
-                .pl_2()
+                .ml(px(RAIL_ICON_START - 4.))
                 .p_1()
                 .text_xs()
                 .text_color(theme.muted_foreground)
@@ -1127,16 +1144,16 @@ impl Shell {
             .flex_shrink_0()
             .border_r_1()
             .border_color(theme.border)
-            .child(div().px_2().pt_1().child(header))
+            .child(div().pt_1().child(header))
             .child(
                 div()
                     .id("rail-scroll")
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
-                    .px_2()
+                    .when(!expanded, |list| list.px_2())
                     .py_1()
-                    .child(self.section_groups(expanded, false, cx))
+                    .child(self.section_groups(expanded, RAIL_ICON_START, cx))
                     .children(website),
             )
             .into_any_element()
@@ -1155,14 +1172,11 @@ impl Shell {
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(div().pl(px(18.)).pr(px(18.)).pt_4().pb(px(13.)).child(self.brand(46., cx)))
             .child(div().h(px(1.)).w_full().bg(theme.border))
-            .child(
-                div()
-                    .id("drawer-scroll")
-                    .flex_1()
-                    .overflow_y_scroll()
-                    .py_2()
-                    .child(self.section_groups(true, true, cx)),
-            );
+            .child(div().id("drawer-scroll").flex_1().overflow_y_scroll().py_2().child(self.section_groups(
+                true,
+                DRAWER_ICON_START,
+                cx,
+            )));
         div()
             .absolute()
             .inset_0()
