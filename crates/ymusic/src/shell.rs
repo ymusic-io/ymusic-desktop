@@ -310,6 +310,19 @@ impl Shell {
                 NowPlayingEvent::Download(target) => shell.pending_download = Some(target.clone()),
                 NowPlayingEvent::OpenSound => shell.pending_sound = true,
                 NowPlayingEvent::Details(video_id) => shell.pending_details = Some(video_id.clone()),
+                NowPlayingEvent::OpenChannel { url, title } => {
+                    let source = FeedSource::from_link(url).unwrap_or_else(|| FeedSource::Channel(url.clone()));
+                    shell.push(source, Some(SharedString::from(title.clone())), cx);
+                }
+                NowPlayingEvent::LibraryGroup { album, name } => {
+                    shell.select_section(Section::Library, cx);
+                    let view = shell.library_view(cx);
+                    let (album, name) = (*album, name.clone());
+                    view.update(cx, |library, cx| match name {
+                        Some(name) => library.open_group(album, name, cx),
+                        None => library.select_tab_index(if album { 3 } else { 2 }, cx),
+                    });
+                }
                 NowPlayingEvent::SignIn => {
                     shell.now_playing_open = false;
                     shell.pending_signin = true;
@@ -497,7 +510,7 @@ impl Shell {
     }
 
     /// Debug builds only: `YMUSIC_DEV_ROUTE` opens a surface at start (`trending`, `music`,
-    /// `search:<query>`, `open:<app link>`, `musictab:<n>`, `play:<youtube url>`, `nowplaying:<url>`, `library:<dir>`, `localplay:<dir>`, `details:<videoId>`, `addtoplaylist:<videoId>`, `signin-paste:<file>`, `devicelink`, `signout`,
+    /// `search:<query>`, `open:<app link>`, `musictab:<n>`, `play:<youtube url>`, `nowplaying:<url>`, `library:<dir>`, `localplay:<dir>`, `details:<videoId>`, `addtoplaylist:<videoId>`, `sleeptimer`, `signin-paste:<file>`, `devicelink`, `signout`,
     /// `download:<FORMAT>:<videoId>` into `YMUSIC_DEV_DOWNLOAD_DIR` or the chosen folder), for
     /// screenshots and checks without driving the UI. `YMUSIC_DEV_CAPTIONS=1|<vssId>` turns captions on (with that track), `YMUSIC_DEV_QUALITY=<token>` picks a quality.
     pub fn apply_dev_route(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -553,11 +566,15 @@ impl Shell {
             .detach();
         }
         crate::a11y::dev_dump_tree(window, cx);
-        // `YMUSIC_DEV_DRAG=x0,y,x1` presses at (x0, y) after 8 s and drags to x1, to check
-        // drag-to-scroll without driving the real mouse.
-        if let Some((from, y, to)) = std::env::var("YMUSIC_DEV_DRAG").ok().and_then(|spec| {
+        // `YMUSIC_DEV_DRAG=x0,y,x1` presses at (x0, y) after 8 s and drags to x1 (`x0,y0,x1,y1`: to
+        // (x1, y1)) and releases a second later, to check dragging without driving the real mouse.
+        if let Some((from, y, to, to_y)) = std::env::var("YMUSIC_DEV_DRAG").ok().and_then(|spec| {
             let values: Vec<f32> = spec.split(',').filter_map(|value| value.trim().parse().ok()).collect();
-            (values.len() == 3).then(|| (values[0], values[1], values[2]))
+            match values[..] {
+                [from, y, to] => Some((from, y, to, y)),
+                [from, y, to, to_y] => Some((from, y, to, to_y)),
+                _ => None,
+            }
         }) {
             let executor = cx.background_executor().clone();
             cx.spawn_in(window, async move |_, cx| {
@@ -573,15 +590,20 @@ impl Shell {
                 for step in 1..=20 {
                     executor.timer(Duration::from_millis(16)).await;
                     let motion = MouseMoveEvent {
-                        position: point(px(from + (to - from) * step as f32 / 20.), px(y)),
+                        position: point(
+                            px(from + (to - from) * step as f32 / 20.),
+                            px(y + (to_y - y) * step as f32 / 20.),
+                        ),
                         pressed_button: Some(MouseButton::Left),
                         modifiers: Modifiers::default(),
                     };
                     cx.update(|window, cx| window.dispatch_event(PlatformInput::MouseMove(motion), cx)).ok();
                 }
+                // Held a moment before the release, so edge autoscroll has time to run.
+                executor.timer(Duration::from_secs(1)).await;
                 let release = MouseUpEvent {
                     button: MouseButton::Left,
-                    position: point(px(to), px(y)),
+                    position: point(px(to), px(to_y)),
                     modifiers: Modifiers::default(),
                     click_count: 1,
                 };
@@ -654,6 +676,10 @@ impl Shell {
             _ if route == "settings" => self.section = Section::Settings,
             _ if route == "feedback" => self.section = Section::Feedback,
             _ if route == "sound" => self.pending_sound = true,
+            _ if route == "sleeptimer" => {
+                let playback = self.playback.clone();
+                window.defer(cx, move |window, cx| crate::sleep_timer::SleepTimerDialog::open(playback, window, cx));
+            }
             _ if route == "signin" => {
                 self.section = Section::Settings;
                 self.pending_signin = true;
@@ -779,6 +805,17 @@ impl Shell {
                             Err(error) => log.warn("youtube session boot failed", Some(&error)),
                         }
                     });
+                }
+                "reload" => {
+                    let seconds = value.parse().unwrap_or(0);
+                    let executor = cx.background_executor().clone();
+                    cx.spawn(async move |shell, cx| {
+                        executor.timer(std::time::Duration::from_secs(seconds)).await;
+                        shell
+                            .update(cx, |shell, cx| shell.playback.update(cx, |playback, cx| playback.reload(cx)))
+                            .ok();
+                    })
+                    .detach();
                 }
                 "sleep" => {
                     let duration = value.parse().ok().map(std::time::Duration::from_secs);

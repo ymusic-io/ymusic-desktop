@@ -97,3 +97,4 @@ R90020 - top tracks: play history could not be read
 R90021 - sponsorblock: the per-video whitelist could not be saved
 R90022 - downloads: a finished file could not be deleted from disk
 R90023 - sign-in: the device-link QR could not be drawn
+R95000 - now playing: a local queue item could not be looked up in the library to open its artist or album

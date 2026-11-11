@@ -28,6 +28,7 @@ gpui_kit::assets::icon_assets!(
         Repeat1,
         Shuffle,
         Timer,
+        GripVertical,
         RotateCcw,
         FolderOpen,
         X,

@@ -3,7 +3,7 @@
 //! Narrow: top bar, video full width, title, then the queue.
 //! The video box is painted by `video_layer`: a native view behind the window on macOS, CPU pictures elsewhere.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -19,9 +19,10 @@ use ym_i18n::{Str, t, tf};
 
 use crate::a11y::{FocusList, KeyboardFocusable};
 use crate::download_dialog::DownloadTarget;
+use crate::graph::{AppGraph, on_core};
 use crate::mini_player::clock;
 use crate::playback::{
-    AUTO_TRANSLATE_KIND, CaptionTrack, PlayState, Playback, QUALITY_AUDIO_ONLY, QUALITY_AUTO, QueueItem,
+    AUTO_TRANSLATE_KIND, CaptionTrack, PlayState, Playback, QUALITY_AUDIO_ONLY, QUALITY_AUTO, QueueItem, Source,
 };
 use crate::queue_nav::LoopMode;
 use crate::sponsor_block::SponsorBlock;
@@ -29,7 +30,20 @@ use crate::video_layer::VideoLayer;
 
 const CONTROLS_HIDE_AFTER: Duration = Duration::from_secs(3);
 const SKIP_MS: i64 = 10_000;
-const SLEEP_PRESET_MINUTES: [u64; 5] = [15, 30, 45, 60, 90];
+/// The pointer this near the queue's top or bottom edge scrolls it while dragging a row.
+const DRAG_EDGE: f32 = 32.;
+const DRAG_SCROLL_MAX: f32 = 24.;
+
+const STOP_CLOSE: usize = 0;
+const STOP_DOWNLOAD: usize = 1;
+const STOP_SPONSOR_BLOCK: usize = 2;
+const STOP_SLEEP: usize = 3;
+const STOP_QUALITY: usize = 4;
+const STOP_MORE: usize = 5;
+const STOP_REPEAT: usize = 6;
+const STOP_SHUFFLE: usize = 7;
+const STOP_CHANNEL: usize = 8;
+const STOP_CHANNEL_OVERLAY: usize = 9;
 const PLAY_BUTTON: f32 = 58.;
 
 pub enum NowPlayingEvent {
@@ -40,6 +54,38 @@ pub enum NowPlayingEvent {
     SignIn,
     /// Open the video's details and comments.
     Details(String),
+    /// Open a channel page (an app link).
+    OpenChannel {
+        url: String,
+        title: String,
+    },
+    /// Open the Library's artist (or album) `name`; its tab when the file names none.
+    LibraryGroup {
+        album: bool,
+        name: Option<String>,
+    },
+}
+
+/// A queue row being dragged by its handle; rows swap live as the pointer crosses them.
+#[derive(Default)]
+struct QueueDrag {
+    index: Cell<Option<usize>>,
+    pointer_y: Cell<Pixels>,
+    /// Each row's window bounds as last painted.
+    rows: RefCell<Vec<Bounds<Pixels>>>,
+}
+
+impl QueueDrag {
+    /// Moves the dragged row to the row under the pointer.
+    fn follow_pointer(&self, playback: &Entity<Playback>, cx: &mut App) {
+        let Some(from) = self.index.get() else { return };
+        let pointer = self.pointer_y.get();
+        let target = self.rows.borrow().iter().position(|row| pointer >= row.top() && pointer < row.bottom());
+        if let Some(to) = target.filter(|to| *to != from) {
+            playback.update(cx, |playback, cx| playback.move_item(from, to, cx));
+            self.index.set(Some(to));
+        }
+    }
 }
 
 pub struct NowPlaying {
@@ -47,6 +93,10 @@ pub struct NowPlaying {
     sponsor_block: Entity<SponsorBlock>,
     queue_scroll: ScrollHandle,
     queue_focus: FocusList,
+    /// The top bar's and queue header's buttons, for the arrow keys.
+    bar_focus: FocusList,
+    drag: Rc<QueueDrag>,
+    _autoscroll: Option<Task<()>>,
     video_layer: Option<Rc<VideoLayer>>,
     /// The video box as last painted, to report viewport changes to the player.
     video_box: Rc<Cell<(i32, i32)>>,
@@ -206,6 +256,9 @@ impl NowPlaying {
             sponsor_block,
             queue_scroll: queue_scroll.clone(),
             queue_focus: FocusList::new(Some(queue_scroll)),
+            bar_focus: FocusList::new(None),
+            drag: Rc::default(),
+            _autoscroll: None,
             video_layer: None,
             video_box: Rc::new(Cell::new((0, 0))),
             caption_strip: std::cell::RefCell::new(CaptionStrip::new()),
@@ -347,6 +400,7 @@ impl NowPlaying {
                     ),
             )
             .child(Slider::new(&self.seek).accessibility_label(t(Str::A11yPlaybackPosition)));
+        let artist = self.artist_line(STOP_CHANNEL_OVERLAY, current, cx);
         let overlay = div()
             .absolute()
             .inset_0()
@@ -361,9 +415,7 @@ impl NowPlaying {
                     .px_4()
                     .pt(px(11.))
                     .child(div().font_semibold().truncate().child(current.title.clone()))
-                    .when_some(current.artist.clone(), |column, artist| {
-                        column.child(div().text_sm().opacity(0.8).truncate().child(artist))
-                    }),
+                    .when_some(artist, |column, artist| column.child(artist.text_sm().opacity(0.8))),
             )
             .child(div().absolute().inset_0().flex().items_center().justify_center().child(transport))
             .child(div().absolute().bottom_0().left_0().right_0().child(bottom));
@@ -579,6 +631,20 @@ impl NowPlaying {
         })
     }
 
+    /// The artist line; a YouTube video's opens its channel once the player names it.
+    fn artist_line(&self, stop: usize, current: &QueueItem, cx: &mut Context<Self>) -> Option<Stateful<Div>> {
+        let details = self.playback.read(cx).current_details().cloned();
+        let text =
+            current.artist.clone().or_else(|| details.as_ref().and_then(|details| details.channel_title.clone()))?;
+        let line = div().id(("np-channel", stop)).truncate().child(text.clone());
+        let Some(url) = details.and_then(|details| details.channel_url) else { return Some(line) };
+        Some(self.bar_focus.item(stop, line.role(Role::Link).aria_label(text.clone()), cx).cursor_pointer().on_click(
+            cx.listener(move |_, _, _, cx| {
+                cx.emit(NowPlayingEvent::OpenChannel { url: url.clone(), title: text.clone() })
+            }),
+        ))
+    }
+
     /// Close, then download · sleep · quality · ⋮ on the right.
     fn render_top_bar(&self, current: &QueueItem, cx: &mut Context<Self>) -> AnyElement {
         let playback = self.playback.read(cx);
@@ -599,36 +665,19 @@ impl NowPlaying {
             None if sleep_after_current => t(Str::SleepPausingAfterTrack).to_owned(),
             None => t(Str::CdSleepTimer).to_owned(),
         };
-        let sleep_playback = self.playback.clone();
-        let sleep = Button::new("np-sleep")
-            .ghost()
-            .icon(Lucide::Timer)
-            .selected(sleep_armed)
-            .accessibility_label(t(Str::CdSleepTimer))
-            .tooltip(sleep_tooltip)
-            .dropdown_menu_with_anchor(Anchor::TopRight, move |mut menu, _, _| {
-                for minutes in SLEEP_PRESET_MINUTES {
-                    let playback = sleep_playback.clone();
-                    menu =
-                        menu.item(PopupMenuItem::new(tf(Str::SleepMinutes, &[&minutes])).on_click(move |_, _, cx| {
-                            playback.update(cx, |playback, cx| {
-                                playback.set_sleep_timer(Some(Duration::from_secs(minutes * 60)), cx)
-                            })
-                        }));
-                }
-                let end = sleep_playback.clone();
-                menu = menu.item(PopupMenuItem::new(t(Str::SleepEndOfTrack)).checked(sleep_after_current).on_click(
-                    move |_, _, cx| end.update(cx, |playback, cx| playback.set_sleep_after_current(true, cx)),
-                ));
-                if sleep_armed {
-                    let off = sleep_playback.clone();
-                    menu =
-                        menu.separator().item(PopupMenuItem::new(t(Str::SleepTurnOff)).on_click(move |_, _, cx| {
-                            off.update(cx, |playback, cx| playback.set_sleep_timer(None, cx))
-                        }));
-                }
-                menu
-            });
+        let sleep = self.bar_focus.button(
+            STOP_SLEEP,
+            Button::new("np-sleep")
+                .ghost()
+                .icon(Lucide::Timer)
+                .selected(sleep_armed)
+                .accessibility_label(t(Str::CdSleepTimer))
+                .tooltip(sleep_tooltip)
+                .on_click(cx.listener(|view, _, window, cx| {
+                    crate::sleep_timer::SleepTimerDialog::open(view.playback.clone(), window, cx)
+                })),
+            cx,
+        );
 
         let quality_playback = self.playback.clone();
         let (choices, selected, current) = {
@@ -642,18 +691,25 @@ impl NowPlaying {
             if playback.quality_options.is_empty() {
                 choices.push((QUALITY_AUTO.to_owned(), t(Str::VideoQualityAuto).to_owned()));
             } else {
-                choices.extend(playback.quality_options.iter().map(|(quality, text)| (quality.clone(), label(quality, text))));
+                choices.extend(
+                    playback.quality_options.iter().map(|(quality, text)| (quality.clone(), label(quality, text))),
+                );
             }
             let selected = if video { playback.quality_preferred.clone() } else { QUALITY_AUDIO_ONLY.to_owned() };
             let current = if !video {
                 t(Str::AudioOnly).to_owned()
             } else {
                 let actual = playback.quality_actual.clone().unwrap_or_else(|| QUALITY_AUTO.to_owned());
-                choices.iter().find(|(quality, _)| *quality == actual).map(|(_, text)| text.clone()).unwrap_or_else(|| label(&actual, &actual))
+                choices
+                    .iter()
+                    .find(|(quality, _)| *quality == actual)
+                    .map(|(_, text)| text.clone())
+                    .unwrap_or_else(|| label(&actual, &actual))
             };
             (choices, selected, current)
         };
         let quality = Button::new("np-quality")
+            .track_focus(&self.bar_focus.handle(STOP_QUALITY, cx))
             .outline()
             .xsmall()
             .label(current.clone())
@@ -661,11 +717,9 @@ impl NowPlaying {
             .dropdown_menu_with_anchor(Anchor::TopRight, move |mut menu, _, _| {
                 for (quality, text) in &choices {
                     let (playback, pick) = (quality_playback.clone(), quality.clone());
-                    menu = menu.item(
-                        PopupMenuItem::new(text.clone())
-                            .checked(*quality == selected)
-                            .on_click(move |_, _, cx| playback.update(cx, |playback, cx| playback.set_quality(pick.clone(), cx))),
-                    );
+                    menu = menu.item(PopupMenuItem::new(text.clone()).checked(*quality == selected).on_click(
+                        move |_, _, cx| playback.update(cx, |playback, cx| playback.set_quality(pick.clone(), cx)),
+                    ));
                 }
                 menu
             });
@@ -673,9 +727,9 @@ impl NowPlaying {
         let view = cx.entity().downgrade();
         let more_target = target.clone();
         let queue_playback = self.playback.clone();
-        let more = icon_button("np-more", IconName::EllipsisVertical, t(Str::CdMore)).dropdown_menu_with_anchor(
-            Anchor::TopRight,
-            move |mut menu, _, _| {
+        let more = icon_button("np-more", IconName::EllipsisVertical, t(Str::CdMore))
+            .track_focus(&self.bar_focus.handle(STOP_MORE, cx))
+            .dropdown_menu_with_anchor(Anchor::TopRight, move |mut menu, _, _| {
                 if let Some(target) = &more_target {
                     let (details, video_id) = (view.clone(), target.video_id.clone());
                     menu = menu.item(PopupMenuItem::new(t(Str::MenuDetailsComments)).on_click(move |_, _, cx| {
@@ -708,11 +762,15 @@ impl NowPlaying {
                     }
                 }));
                 let sound = view.clone();
-                menu.item(PopupMenuItem::new(t(Str::MenuSpeedPitch)).on_click(move |_, _, cx| {
+                menu = menu.item(PopupMenuItem::new(t(Str::MenuSpeedPitch)).on_click(move |_, _, cx| {
                     sound.update(cx, |_, cx| cx.emit(NowPlayingEvent::OpenSound)).ok();
-                }))
-            },
-        );
+                }));
+                let reload = queue_playback.clone();
+                menu.separator().item(
+                    PopupMenuItem::new(t(Str::MenuReloadPlayer))
+                        .on_click(move |_, _, cx| reload.update(cx, |playback, cx| playback.reload(cx))),
+                )
+            });
 
         h_flex()
             .px_2()
@@ -720,33 +778,46 @@ impl NowPlaying {
             .gap(px(5.))
             .items_center()
             .child(
-                icon_button("np-close", IconName::ChevronDown, t(Str::CdMinimize))
-                    .on_click(cx.listener(|_, _, _, cx| cx.emit(NowPlayingEvent::Close))),
+                self.bar_focus.button(
+                    STOP_CLOSE,
+                    icon_button("np-close", IconName::ChevronDown, t(Str::CdMinimize))
+                        .on_click(cx.listener(|_, _, _, cx| cx.emit(NowPlayingEvent::Close))),
+                    cx,
+                ),
             )
             .child(div().flex_1())
             .when_some(target, |bar, target| {
                 bar.child(
-                    icon_button("np-download", Lucide::Download, t(Str::CdDownload))
-                        .on_click(cx.listener(move |_, _, _, cx| cx.emit(NowPlayingEvent::Download(target.clone())))),
+                    self.bar_focus.button(
+                        STOP_DOWNLOAD,
+                        icon_button("np-download", Lucide::Download, t(Str::CdDownload)).on_click(
+                            cx.listener(move |_, _, _, cx| cx.emit(NowPlayingEvent::Download(target.clone()))),
+                        ),
+                        cx,
+                    ),
                 )
             })
             .when_some(sponsor_whitelisted, |bar, whitelisted| {
                 let state = t(if whitelisted { Str::SponsorBlockExcluded } else { Str::SponsorBlockIncluded });
                 bar.child(
-                    Button::new("np-sponsorblock")
-                        .ghost()
-                        .icon(if whitelisted { Lucide::ShieldOff } else { Lucide::ShieldCheck })
-                        .selected(!whitelisted)
-                        .accessibility_label(t(Str::SettingsSponsorBlock))
-                        .tooltip(state)
-                        .on_click(cx.listener(move |view, _, _, cx| {
-                            view.sponsor_block.update(cx, |sponsor, cx| sponsor.set_whitelisted(!whitelisted, cx))
-                        })),
+                    self.bar_focus.button(
+                        STOP_SPONSOR_BLOCK,
+                        Button::new("np-sponsorblock")
+                            .ghost()
+                            .icon(if whitelisted { Lucide::ShieldOff } else { Lucide::ShieldCheck })
+                            .selected(!whitelisted)
+                            .accessibility_label(t(Str::SettingsSponsorBlock))
+                            .tooltip(state)
+                            .on_click(cx.listener(move |view, _, _, cx| {
+                                view.sponsor_block.update(cx, |sponsor, cx| sponsor.set_whitelisted(!whitelisted, cx))
+                            })),
+                        cx,
+                    ),
                 )
             })
             .child(sleep)
-            .child(quality)
-            .child(more)
+            .child(self.bar_focus.wrap(STOP_QUALITY, quality, cx))
+            .child(self.bar_focus.wrap(STOP_MORE, more, cx))
             .into_any_element()
     }
 
@@ -767,26 +838,216 @@ impl NowPlaying {
             .child(div().text_sm().text_color(theme.muted_foreground).child(position))
             .child(div().flex_1())
             .child(
-                icon_button(
-                    "np-repeat",
-                    if loop_mode == LoopMode::One { Lucide::Repeat1 } else { Lucide::Repeat },
-                    t(match loop_mode {
-                        LoopMode::None => Str::CdRepeatOff,
-                        LoopMode::All => Str::CdRepeatAll,
-                        LoopMode::One => Str::CdRepeatOne,
-                    }),
-                )
-                .selected(loop_mode != LoopMode::None)
-                .on_click(cx.listener(move |view, _, _, cx| {
-                    view.playback.update(cx, |playback, cx| playback.set_loop_mode(loop_mode.cycled(), cx))
-                })),
+                self.bar_focus.button(
+                    STOP_REPEAT,
+                    icon_button(
+                        "np-repeat",
+                        if loop_mode == LoopMode::One { Lucide::Repeat1 } else { Lucide::Repeat },
+                        t(match loop_mode {
+                            LoopMode::None => Str::CdRepeatOff,
+                            LoopMode::All => Str::CdRepeatAll,
+                            LoopMode::One => Str::CdRepeatOne,
+                        }),
+                    )
+                    .selected(loop_mode != LoopMode::None)
+                    .on_click(cx.listener(move |view, _, _, cx| {
+                        view.playback.update(cx, |playback, cx| playback.set_loop_mode(loop_mode.cycled(), cx))
+                    })),
+                    cx,
+                ),
             )
-            .child(icon_button("np-shuffle", Lucide::Shuffle, t(Str::CdShuffle)).selected(shuffle).on_click(
-                cx.listener(move |view, _, _, cx| {
-                    view.playback.update(cx, |playback, cx| playback.set_shuffle(!shuffle, cx))
-                }),
+            .child(self.bar_focus.button(
+                STOP_SHUFFLE,
+                icon_button("np-shuffle", Lucide::Shuffle, t(Str::CdShuffle)).selected(shuffle).on_click(cx.listener(
+                    move |view, _, _, cx| view.playback.update(cx, |playback, cx| playback.set_shuffle(!shuffle, cx)),
+                )),
+                cx,
             ))
             .into_any_element()
+    }
+
+    /// A queue row's ⋮ menu: radio, play next, the video's or the local file's actions, remove.
+    fn queue_item_menu(
+        &self,
+        position: usize,
+        active: bool,
+        item: &QueueItem,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let (playback, view, item) = (self.playback.clone(), cx.entity().downgrade(), item.clone());
+        icon_button(("np-queue-more", position), IconName::EllipsisVertical, t(Str::CdMore))
+            .small()
+            .dropdown_menu_with_anchor(Anchor::TopRight, move |mut menu, _, _| {
+                let video_id = item.video_id().map(str::to_owned);
+                if video_id.is_some() {
+                    let (radio, item) = (playback.clone(), item.clone());
+                    menu = menu.item(PopupMenuItem::new(t(Str::MenuStartRadio)).on_click(move |_, _, cx| {
+                        radio.update(cx, |playback, cx| playback.start_radio(item.clone(), cx))
+                    }));
+                }
+                if !active {
+                    let (next, item) = (playback.clone(), item.clone());
+                    menu = menu.item(PopupMenuItem::new(t(Str::QueueNext)).on_click(move |_, _, cx| {
+                        next.update(cx, |playback, cx| {
+                            playback.remove_at(position, cx);
+                            playback.queue_next(item.clone(), cx);
+                        })
+                    }));
+                }
+                match (&video_id, &item.source) {
+                    (Some(video_id), _) => {
+                        let id = video_id.clone();
+                        menu =
+                            menu.item(PopupMenuItem::new(t(Str::MenuAddToPlaylist)).on_click(move |_, window, cx| {
+                                crate::yt_playlist::AddToPlaylist::open(id.clone(), window, cx)
+                            }));
+                        let target = DownloadTarget {
+                            video_id: video_id.clone(),
+                            title: item.title.clone(),
+                            artist: item.artist.clone(),
+                            thumbnail_url: item.thumb(640).map(|url| url.to_string()),
+                        };
+                        let download = view.clone();
+                        menu = menu.item(PopupMenuItem::new(t(Str::CdDownload)).on_click(move |_, _, cx| {
+                            download.update(cx, |_, cx| cx.emit(NowPlayingEvent::Download(target.clone()))).ok();
+                        }));
+                        let link = format!("https://youtu.be/{video_id}");
+                        menu = menu.item(PopupMenuItem::new(t(Str::CdShare)).on_click(move |_, window, cx| {
+                            cx.write_to_clipboard(ClipboardItem::new_string(link.clone()));
+                            window.push_notification(t(Str::LinkCopied), cx);
+                        }));
+                    }
+                    (None, Source::Local(path)) => {
+                        let uri = path.to_string_lossy().into_owned();
+                        for (album, label) in [(false, Str::MenuGoToArtist), (true, Str::MenuGoToAlbum)] {
+                            let (group, uri) = (view.clone(), uri.clone());
+                            menu = menu.item(PopupMenuItem::new(t(label)).on_click(move |_, window, cx| {
+                                group.update(cx, |view, cx| view.go_to_group(album, uri.clone(), window, cx)).ok();
+                            }));
+                        }
+                    }
+                    (None, Source::YouTube(_)) => {}
+                }
+                let remove = playback.clone();
+                menu.item(
+                    PopupMenuItem::new(t(Str::RemoveFromQueue))
+                        .on_click(move |_, _, cx| remove.update(cx, |playback, cx| playback.remove_at(position, cx))),
+                )
+            })
+    }
+
+    /// Looks up the local file at `uri` and opens its artist (or album) in the Library.
+    fn go_to_group(&mut self, album: bool, uri: String, window: &mut Window, cx: &mut Context<Self>) {
+        let media = cx.global::<AppGraph>().media.clone();
+        let lookup =
+            on_core(cx, async move { tokio::task::spawn_blocking(move || media.find_item_by_uri(&uri)).await });
+        cx.spawn_in(window, async move |this, cx| {
+            let result = lookup.await;
+            this.update_in(cx, |_, window, cx| {
+                let error: Box<dyn std::error::Error> = match result {
+                    Some(Ok(Ok(found))) => {
+                        let name = found
+                            .and_then(|(item, _)| if album { item.album } else { item.artist })
+                            .filter(|name| !name.trim().is_empty());
+                        cx.emit(NowPlayingEvent::LibraryGroup { album, name });
+                        return;
+                    }
+                    Some(Ok(Err(error))) => Box::new(error),
+                    Some(Err(error)) => Box::new(error),
+                    None => return,
+                };
+                cx.global::<AppGraph>()
+                    .log
+                    .fork("now-playing")
+                    .warn("R95000 queue item lookup failed", Some(error.as_ref()));
+                window.push_notification(tf(Str::ErrorGeneric, &[&"R95000"]), cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Scrolls the queue while a dragged row is held near its top or bottom edge, until the drag ends.
+    fn start_autoscroll(&mut self, cx: &mut Context<Self>) {
+        let executor = cx.background_executor().clone();
+        self._autoscroll = Some(cx.spawn(async move |this, cx| {
+            loop {
+                executor.timer(Duration::from_millis(16)).await;
+                let dragging = this.update(cx, |view, cx| view.autoscroll_step(cx));
+                if !matches!(dragging, Ok(true)) {
+                    return;
+                }
+            }
+        }));
+    }
+
+    fn autoscroll_step(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.drag.index.get().is_none() {
+            return false;
+        }
+        let viewport = self.queue_scroll.bounds();
+        let pointer = f32::from(self.drag.pointer_y.get());
+        let (top, bottom) = (f32::from(viewport.top()), f32::from(viewport.bottom()));
+        let overhang = if pointer > bottom - DRAG_EDGE {
+            pointer - (bottom - DRAG_EDGE)
+        } else if pointer < top + DRAG_EDGE {
+            pointer - (top + DRAG_EDGE)
+        } else {
+            return true;
+        };
+        let step = (overhang * 0.5).clamp(-DRAG_SCROLL_MAX, DRAG_SCROLL_MAX);
+        let offset = self.queue_scroll.offset();
+        let max = self.queue_scroll.max_offset().y;
+        let scrolled = (offset.y - px(step)).clamp(-max, px(0.));
+        if scrolled == offset.y {
+            return true;
+        }
+        self.queue_scroll.set_offset(point(offset.x, scrolled));
+        for row in self.drag.rows.borrow_mut().iter_mut() {
+            row.origin.y += scrolled - offset.y;
+        }
+        self.drag.follow_pointer(&self.playback, cx);
+        cx.notify();
+        true
+    }
+
+    /// Follows the pointer while a row is dragged: its moves reorder, its release drops.
+    fn drag_tracker(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let (drag, playback, view) = (self.drag.clone(), self.playback.clone(), cx.entity().downgrade());
+        canvas(
+            |_, _, _| {},
+            move |_, _, window, _| {
+                if drag.index.get().is_none() {
+                    return;
+                }
+                let (moved, moved_playback, moved_view) = (drag.clone(), playback.clone(), view.clone());
+                window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
+                    if phase != DispatchPhase::Capture || moved.index.get().is_none() {
+                        return;
+                    }
+                    if event.pressed_button != Some(MouseButton::Left) {
+                        moved.index.set(None);
+                    } else {
+                        moved.pointer_y.set(event.position.y);
+                        moved.follow_pointer(&moved_playback, cx);
+                    }
+                    moved_view.update(cx, |_, cx| cx.notify()).ok();
+                    cx.stop_propagation();
+                });
+                let (released, released_view) = (drag.clone(), view.clone());
+                window.on_mouse_event(move |_: &MouseUpEvent, phase, _, cx| {
+                    if phase != DispatchPhase::Capture || released.index.take().is_none() {
+                        return;
+                    }
+                    released_view.update(cx, |_, cx| cx.notify()).ok();
+                    cx.stop_propagation();
+                });
+            },
+        )
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_0()
     }
 
     fn render_queue(&self, large: bool, cx: &mut Context<Self>) -> AnyElement {
@@ -794,6 +1055,8 @@ impl NowPlaying {
         let (queue, index) = (playback.queue.clone(), playback.index);
         let theme = cx.theme().clone();
         let thumb = if large { 60. } else { 48. };
+        let dragging = self.drag.index.get();
+        self.drag.rows.borrow_mut().resize(queue.len(), Bounds::default());
         let mut list = v_flex();
         for (position, item) in queue.iter().enumerate() {
             let active = position == index;
@@ -807,38 +1070,60 @@ impl NowPlaying {
                 .flatten()
                 .collect::<Vec<_>>()
                 .join(" · ");
-            let menu_playback = self.playback.clone();
-            let menu_item = item.clone();
-            let more =
-                icon_button(("np-queue-more", position), IconName::EllipsisVertical, t(Str::CdMore))
-                    .small()
-                    .dropdown_menu_with_anchor(Anchor::TopRight, move |mut menu, _, _| {
-                        if !active {
-                            let (next, item) = (menu_playback.clone(), menu_item.clone());
-                            menu = menu.item(PopupMenuItem::new(t(Str::QueueNext)).on_click(move |_, _, cx| {
-                                next.update(cx, |playback, cx| {
-                                    playback.remove_at(position, cx);
-                                    playback.queue_next(item.clone(), cx);
-                                })
-                            }));
-                        }
-                        let remove = menu_playback.clone();
-                        menu.item(PopupMenuItem::new(t(Str::RemoveFromQueue)).on_click(move |_, _, cx| {
-                            remove.update(cx, |playback, cx| playback.remove_at(position, cx))
-                        }))
-                    });
+            let rows = self.drag.clone();
+            let bounds = canvas(
+                |_, _, _| {},
+                move |bounds, _, _, _| {
+                    if let Some(row) = rows.rows.borrow_mut().get_mut(position) {
+                        *row = bounds;
+                    }
+                },
+            )
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full();
+            let handle = div()
+                .id(("np-queue-handle", position))
+                .flex_shrink_0()
+                .cursor_grab()
+                .text_color(if active { theme.primary } else { theme.muted_foreground })
+                .child(Icon::new(Lucide::GripVertical).small())
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |view, event: &MouseDownEvent, _, cx| {
+                        cx.stop_propagation();
+                        view.drag.index.set(Some(position));
+                        view.drag.pointer_y.set(event.position.y);
+                        view.start_autoscroll(cx);
+                        cx.notify();
+                    }),
+                );
             let row =
                 h_flex().id(("np-queue-item", position)).role(Role::ListItem).aria_label(label).aria_selected(active);
+            let queue_len = queue.len();
             list = list.child(
                 self.queue_focus
                     .item(position, row, cx)
-                    .px_4()
+                    .pl_2()
+                    .pr_4()
                     .py(px(if large { 10. } else { 8. }))
                     .gap(px(if large { 12. } else { 8. }))
                     .items_center()
                     .cursor_pointer()
                     .when(active, |row| row.bg(theme.secondary))
                     .hover(|style| style.bg(theme.secondary))
+                    .when(dragging == Some(position), |row| {
+                        row.bg(theme.popover).shadow(vec![BoxShadow {
+                            color: black().opacity(0.25),
+                            offset: point(px(0.), px(2.)),
+                            blur_radius: px(8.),
+                            spread_radius: px(0.),
+                            inset: false,
+                        }])
+                    })
+                    .child(bounds)
+                    .child(handle)
                     .child(
                         div()
                             .size(px(thumb))
@@ -866,7 +1151,22 @@ impl NowPlaying {
                                     .child(div().text_xs().text_color(theme.muted_foreground).truncate().child(detail))
                             }),
                     )
-                    .child(more)
+                    .child(self.queue_item_menu(position, active, item, cx))
+                    .on_key_down(cx.listener(move |view, event: &KeyDownEvent, window, cx| {
+                        let modifiers = &event.keystroke.modifiers;
+                        if !modifiers.alt || modifiers.platform || modifiers.control || modifiers.shift {
+                            return;
+                        }
+                        let target = match event.keystroke.key.as_str() {
+                            "up" => position.checked_sub(1),
+                            "down" => Some(position + 1).filter(|target| *target < queue_len),
+                            _ => return,
+                        };
+                        cx.stop_propagation();
+                        let Some(target) = target else { return };
+                        view.playback.update(cx, |playback, cx| playback.move_item(position, target, cx));
+                        window.focus(&view.queue_focus.handle(target, cx), cx);
+                    }))
                     .on_click(cx.listener(move |view, _, _, cx| {
                         view.playback.update(cx, |playback, cx| playback.jump_to(position, cx))
                     })),
@@ -880,6 +1180,7 @@ impl NowPlaying {
             .overflow_y_scroll()
             .track_scroll(&self.queue_scroll)
             .child(list)
+            .child(self.drag_tracker(cx))
             .into_any_element()
     }
 }
@@ -934,6 +1235,7 @@ impl Render for NowPlaying {
         }
         let video = self.render_video(&current, false, cx);
         let queue = self.render_queue(false, cx);
+        let artist = self.artist_line(STOP_CHANNEL, &current, cx);
         v_flex()
             .size_full()
             .child(div().bg(theme.background).child(top_bar))
@@ -950,8 +1252,8 @@ impl Render for NowPlaying {
                             .pt(px(18.))
                             .pb_1()
                             .child(div().font_semibold().truncate().child(current.title.clone()))
-                            .when_some(current.artist.clone(), |column, artist| {
-                                column.child(div().pt_1().text_sm().text_color(theme.muted_foreground).child(artist))
+                            .when_some(artist, |column, artist| {
+                                column.child(artist.pt_1().text_sm().text_color(theme.muted_foreground))
                             }),
                     )
                     .child(header)
