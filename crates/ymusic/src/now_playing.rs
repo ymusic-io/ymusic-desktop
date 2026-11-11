@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::base::slider::{SliderEvent, SliderState};
-use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::button::{Button, ButtonCustomVariant, ButtonVariants};
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::component::slider::Slider;
 use gpui_kit::component::{ActiveTheme, Icon, IconName, Selectable, Sizable, StyledExt, WindowExt, h_flex, v_flex};
@@ -193,6 +193,17 @@ const CAPTION_TWO_ROWS: f32 = 56.;
 /// The picture's shape until the stream reports its own.
 const VIDEO_RATIO: f32 = 16. / 9.;
 
+/// A control drawn over the video: white whatever the theme, since the picture is behind it.
+fn on_video(button: Button, cx: &App) -> Button {
+    button.custom(
+        ButtonCustomVariant::new(cx)
+            .color(transparent_black())
+            .foreground(white())
+            .hover(white().opacity(0.15))
+            .active(white().opacity(0.25)),
+    )
+}
+
 fn icon_button(id: impl Into<ElementId>, icon: impl Into<Icon>, label: &'static str) -> Button {
     Button::new(id).ghost().icon(icon).accessibility_label(label).tooltip(label)
 }
@@ -335,8 +346,8 @@ impl NowPlaying {
             .items_center()
             .justify_center()
             .cursor_pointer()
-            .bg(theme.primary)
-            .text_color(theme.primary_foreground)
+            .bg(white())
+            .text_color(black())
             .opacity(if buffering { 0.6 } else { 1. })
             .child(Icon::new(if playing { Lucide::Pause } else { Lucide::Play }).large())
             .on_click(cx.listener(|view, _, _, cx| view.playback.update(cx, |playback, cx| playback.toggle(cx))))
@@ -357,20 +368,20 @@ impl NowPlaying {
         let transport = h_flex()
             .gap_6()
             .items_center()
-            .child(icon_button("np-rewind", Lucide::RotateCcw, t(Str::CdRewind10)).on_click(
+            .child(on_video(icon_button("np-rewind", Lucide::RotateCcw, t(Str::CdRewind10)), cx).on_click(
                 cx.listener(|view, _, _, cx| view.playback.update(cx, |playback, cx| playback.seek_by(-SKIP_MS, cx))),
             ))
             .child(
-                icon_button("np-previous", Lucide::SkipBack, t(Str::CdPrevious)).on_click(
+                on_video(icon_button("np-previous", Lucide::SkipBack, t(Str::CdPrevious)), cx).on_click(
                     cx.listener(|view, _, _, cx| view.playback.update(cx, |playback, cx| playback.previous(cx))),
                 ),
             )
             .child(self.render_play_button(playing, buffering, cx))
             .child(
-                icon_button("np-next", Lucide::SkipForward, t(Str::CdNext))
+                on_video(icon_button("np-next", Lucide::SkipForward, t(Str::CdNext)), cx)
                     .on_click(cx.listener(|view, _, _, cx| view.playback.update(cx, |playback, cx| playback.next(cx)))),
             )
-            .child(icon_button("np-forward", Lucide::RotateCw, t(Str::CdForward10)).on_click(
+            .child(on_video(icon_button("np-forward", Lucide::RotateCw, t(Str::CdForward10)), cx).on_click(
                 cx.listener(|view, _, _, cx| view.playback.update(cx, |playback, cx| playback.seek_by(SKIP_MS, cx))),
             ));
         let bottom = v_flex()
@@ -385,10 +396,13 @@ impl NowPlaying {
                     .child(div().flex_1())
                     .when_some(self.caption_button(cx), |row, button| row.child(button))
                     .child(
-                        icon_button(
-                            "np-fullscreen",
-                            if fullscreen { Lucide::Minimize } else { Lucide::Maximize },
-                            t(if fullscreen { Str::CdExitFullscreen } else { Str::CdFullscreen }),
+                        on_video(
+                            icon_button(
+                                "np-fullscreen",
+                                if fullscreen { Lucide::Minimize } else { Lucide::Maximize },
+                                t(if fullscreen { Str::CdExitFullscreen } else { Str::CdFullscreen }),
+                            ),
+                            cx,
                         )
                         .on_click(cx.listener(|view, _, window, cx| {
                             view.fullscreen = !view.fullscreen;
@@ -472,10 +486,9 @@ impl NowPlaying {
         let label = format!("{}, {state}", t(Str::CdCaptions));
         let target = self.playback.clone();
         Some(
-            Button::new("np-captions")
-                .ghost()
+            on_video(Button::new("np-captions"), cx)
                 .icon(Lucide::Captions)
-                .selected(visible)
+                .when(visible, |button| button.text_color(cx.theme().primary))
                 .accessibility_label(label.clone())
                 .tooltip(label)
                 .dropdown_menu_with_anchor(Anchor::BottomRight, move |mut menu, window, cx| {
