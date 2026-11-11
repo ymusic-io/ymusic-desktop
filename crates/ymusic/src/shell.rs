@@ -29,7 +29,7 @@ use crate::play_history::HistoryRecorder;
 use crate::playback::{Playback, QueueItem};
 use crate::library_search::{LibrarySearchEvent, LibrarySearchView};
 use crate::search_view::{SearchEvent, SearchMode, SearchView};
-use crate::settings_view::SettingsView;
+use crate::settings_view::{LocaleChanged, SettingsView};
 use crate::signin_dialog::{SignInEvent, SignInView};
 use crate::sponsor_block::SponsorBlock;
 use crate::tab_row::tab_row;
@@ -674,6 +674,18 @@ impl Shell {
             _ if route == "playagain" => self.section = Section::PlayAgain,
             _ if route == "downloads" => self.section = Section::Downloads,
             _ if route == "settings" => self.section = Section::Settings,
+            Some(("settings", dialog)) => {
+                self.section = Section::Settings;
+                let view = self.settings_view(cx);
+                let dialog = dialog.to_owned();
+                window.defer(cx, move |window, cx| match dialog.as_str() {
+                    "accent" => crate::accent::AccentPicker::open("", |_, _| {}, window, cx),
+                    "captions" => crate::caption_style::CaptionStyleDialog::open(window, cx),
+                    "region" => crate::settings_lists::RegionPicker::open(view, window, cx),
+                    "licenses" => crate::settings_lists::Licenses::open(window, cx),
+                    _ => view.read(cx).scroll_to_end(),
+                });
+            }
             _ if route == "shortcuts" => window.defer(cx, crate::shortcuts_help::ShortcutsHelp::open),
             _ if route == "feedback" => self.section = Section::Feedback,
             _ if route == "sound" => self.pending_sound = true,
@@ -692,6 +704,22 @@ impl Shell {
             }
             _ => {}
         }
+    }
+
+    fn settings_view(&mut self, cx: &mut Context<Self>) -> Entity<SettingsView> {
+        if let Some(view) = &self.settings {
+            return view.clone();
+        }
+        let playback = self.playback.clone();
+        let view = cx.new(|cx| SettingsView::new(playback, cx));
+        let locale = cx.subscribe(&view, |shell, _, _: &LocaleChanged, cx| {
+            for root in shell.roots.values() {
+                root.update(cx, |root, cx| root.reload(cx));
+            }
+        });
+        self._subscriptions.push(locale);
+        self.settings = Some(view.clone());
+        view
     }
 
     fn downloads_view(&mut self, cx: &mut Context<Self>) -> Entity<DownloadsView> {
@@ -1136,13 +1164,7 @@ impl Shell {
             Section::Feedback => {
                 self.feedback.get_or_insert_with(|| cx.new(|_| FeedbackView::new())).clone().into_any_element()
             }
-            Section::Settings => {
-                let playback = self.playback.clone();
-                self.settings
-                    .get_or_insert_with(|| cx.new(|cx| SettingsView::new(playback, cx)))
-                    .clone()
-                    .into_any_element()
-            }
+            Section::Settings => self.settings_view(cx).into_any_element(),
             Section::Donate | Section::Telegram => div().into_any_element(),
         }
     }

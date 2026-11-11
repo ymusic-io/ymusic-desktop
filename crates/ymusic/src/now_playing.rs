@@ -186,8 +186,6 @@ impl CaptionStrip {
         entries
     }
 }
-/// The JVM caption style's default box opacity.
-const CAPTION_BACKGROUND_OPACITY: f32 = 0.55;
 /// Clears the video controls' bottom strip.
 const CAPTION_ABOVE_CONTROLS: f32 = 72.;
 /// Two caption rows: 24 line height plus the box's 2 + 2 padding, each.
@@ -569,6 +567,8 @@ impl NowPlaying {
         if !playback.captions || playback.caption_lines.is_empty() {
             return None;
         }
+        let look = crate::caption_style::CaptionLook::load(cx.global::<crate::graph::AppGraph>().settings.as_ref());
+        let row = CAPTION_ROW * look.scale;
         let (width, height) = self.video_box.get();
         let (width, height) = (width as f32, height as f32);
         let inset = if width.min(height) < 600. {
@@ -581,38 +581,27 @@ impl NowPlaying {
         let (picture_width, picture_height) =
             if width / height.max(1.) <= VIDEO_RATIO { (width, width / VIDEO_RATIO) } else { (height * VIDEO_RATIO, height) };
         let bar = (height - picture_height) / 2.;
-        let under_picture = bar >= CAPTION_TWO_ROWS + CAPTION_ABOVE_CONTROLS + 8.;
+        let under_picture = bar >= CAPTION_TWO_ROWS * look.scale + CAPTION_ABOVE_CONTROLS + 8.;
         let side = (width - picture_width) / 2. + picture_width * inset;
         let cue_width = (width - side * 2.).max(1.);
         let mut strip = self.caption_strip.borrow_mut();
         let entries = strip.advance(&playback.caption_lines);
         // Cue heights are estimated from the text (gpui lays text out later), with a box per cue.
-        let heights: Vec<f32> = entries.iter().map(|(_, text)| cue_height(text, cue_width)).collect();
+        let heights: Vec<f32> =
+            entries.iter().map(|(_, text)| cue_height(text, cue_width / look.scale) * look.scale).collect();
         let total: f32 = heights.iter().sum();
         let newest = heights.last().copied().unwrap_or(0.);
-        let box_height = total.min((CAPTION_ROW * 2.).max(newest));
+        let box_height = total.min((row * 2.).max(newest));
         let tail: f32 = heights.iter().rev().take(strip.tail_count).sum();
         // A single row joining the window scrolls in; anything taller swaps.
-        let roll_up = if tail < CAPTION_ROW * 1.5 { tail } else { 0. };
+        let roll_up = if tail < row * 1.5 { tail } else { 0. };
         let progress = (strip.changed_at.elapsed().as_secs_f32() / CAPTION_SCROLL.as_secs_f32()).min(1.);
         let eased = 1. - (1. - progress).powi(3);
         let offset = (1. - eased) * roll_up;
         let animating = roll_up > 0. && progress < 1.;
         let mut column = v_flex().items_start().absolute().left_0().right_0().bottom(px(-offset));
         for (_, text) in &entries {
-            column = column.child(
-                div().pb(px(CAPTION_GAP)).child(
-                    div()
-                        .px_2()
-                        .py(px(2.))
-                        .rounded(px(4.))
-                        .bg(black().opacity(CAPTION_BACKGROUND_OPACITY))
-                        .text_color(white())
-                        .text_size(px(16.))
-                        .line_height(px(CAPTION_LINE))
-                        .child(text.clone()),
-                ),
-            );
+            column = column.child(div().pb(px(CAPTION_GAP)).child(crate::caption_style::cue(text.clone(), look)));
         }
         let frames = canvas(|_, _, _| {}, move |_, _, window, _| {
             if animating {

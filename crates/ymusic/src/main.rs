@@ -1,7 +1,9 @@
 mod a11y;
+mod accent;
 mod account_view;
 mod assets;
 mod audio_effects;
+mod caption_style;
 mod desktop;
 mod download_dialog;
 mod downloads;
@@ -22,6 +24,7 @@ mod play_history;
 mod playback;
 mod queue_nav;
 mod search_view;
+mod settings_lists;
 mod settings_view;
 mod shell;
 mod shortcuts;
@@ -91,8 +94,7 @@ fn main() {
         crate::a11y::init(cx);
         // No enter/exit animations anywhere: dialogs, popovers, menus and tabs change in one frame.
         cx.set_reduce_motion(true);
-        let theme = graph.settings.get_raw(crate::settings_view::THEME_KEY).ok().flatten().unwrap_or_default();
-        crate::settings_view::apply_theme(&theme, cx);
+        crate::settings_view::apply_saved_theme(graph.settings.as_ref(), cx);
         crate::desktop::set_dock_icon(&graph.log);
         #[cfg(target_os = "linux")]
         {
