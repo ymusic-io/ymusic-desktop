@@ -322,6 +322,7 @@ impl LibraryView {
 
     /// Reloads the open folder, and the other tabs' data when one of them shows.
     fn reload(&mut self, cx: &mut Context<Self>) {
+        crate::offline::OfflineMarks::refresh(cx);
         self.refresh(cx);
         if self.tab != Tab::Folders {
             self.refresh_all(cx);

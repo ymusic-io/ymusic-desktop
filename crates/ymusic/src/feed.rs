@@ -20,6 +20,7 @@ use crate::a11y::{DragRow, FocusList, focusable};
 use crate::download_dialog::DownloadTarget;
 use crate::graph::{AppGraph, on_core};
 use crate::local_playlist::LocalPlaylistFromDownloads;
+use crate::offline::{OfflineMarks, offline_mark};
 use crate::playlist_download::PlaylistDownload;
 use crate::quick_download::saved_preset;
 use crate::spinner::{BusyButton, Spinner};
@@ -215,6 +216,8 @@ pub struct FeedView {
     chips_drag: DragRow,
     tabs_drag: DragRow,
     carousel_drags: std::cell::RefCell<std::collections::HashMap<usize, DragRow>>,
+    offline: Entity<OfflineMarks>,
+    _offline: Subscription,
 }
 
 /// Which page header a detail page shows.
@@ -236,6 +239,9 @@ impl EventEmitter<ItemAction> for FeedView {}
 impl FeedView {
     pub fn new(source: FeedSource, title: Option<SharedString>, cx: &mut Context<Self>) -> Self {
         let scroll = ScrollHandle::new();
+        OfflineMarks::refresh(cx);
+        let offline = OfflineMarks::shared(cx);
+        let observe_offline = cx.observe(&offline, |_, _, cx| cx.notify());
         let mut view = Self {
             source,
             title,
@@ -256,6 +262,8 @@ impl FeedView {
             chips_drag: DragRow::default(),
             tabs_drag: DragRow::default(),
             carousel_drags: Default::default(),
+            offline,
+            _offline: observe_offline,
         };
         view.reload(cx);
         view
@@ -888,7 +896,7 @@ pub fn feed_width(window: &Window) -> f32 {
 }
 
 /// What a screen reader says for a card or row.
-fn item_label(item: &YtFeedItem) -> String {
+fn item_label(item: &YtFeedItem, downloaded: bool) -> String {
     let kind = match item.kind.as_str() {
         "playlist" if item.album => t(Str::A11yKindAlbum),
         "playlist" => t(Str::A11yKindPlaylist),
@@ -903,6 +911,7 @@ fn item_label(item: &YtFeedItem) -> String {
         item.subtitle_line2.clone(),
         item.duration.clone(),
         Some(kind.to_owned()),
+        downloaded.then(|| t(Str::A11yDownloaded).to_owned()),
     ]
     .into_iter()
     .flatten()
@@ -927,10 +936,15 @@ fn badge(item: &YtFeedItem) -> Option<String> {
 }
 
 impl FeedView {
+    fn downloaded(&self, item: &YtFeedItem, cx: &App) -> bool {
+        item.kind == "video" && self.offline.read(cx).contains(&item.id)
+    }
+
     fn more_menu(&self, item: &YtFeedItem, key: (&'static str, usize), cx: &mut Context<Self>) -> AnyElement {
         let view = cx.entity().downgrade();
         let target = item.clone();
         let top_tracks = matches!(self.source, FeedSource::TopTracks);
+        let downloaded = self.downloaded(item, cx);
         Button::new(key)
             .ghost()
             .small()
@@ -972,6 +986,14 @@ impl FeedView {
                             crate::quick_download::launch(DownloadTarget::from_feed(&item), window, cx);
                         }));
                     }
+                }
+                if video && downloaded {
+                    let video_id = target.id.clone();
+                    menu = menu.separator().label(t(Str::SectionLibrary)).item(
+                        PopupMenuItem::new(t(Str::CdAddToPlaylist)).on_click(move |_, window, cx| {
+                            crate::library_playlist::AddToLocalPlaylist::open(vec![video_id.clone()], None, window, cx);
+                        }),
+                    );
                 }
                 menu
             })
@@ -1048,7 +1070,7 @@ impl FeedView {
         let element = div()
             .id(id)
             .role(Role::Button)
-            .aria_label(item_label(item))
+            .aria_label(item_label(item, self.downloaded(item, cx)))
             .cursor_pointer()
             .rounded(px(12.))
             .hover(|style| style.bg(theme.secondary))
@@ -1108,6 +1130,7 @@ impl FeedView {
                 .when_some(thumb_for(&item.thumbs, 640), |frame, url| {
                     frame.child(img(url).size_full().object_fit(ObjectFit::Cover))
                 })
+                .when(self.downloaded(item, cx), |frame| frame.child(offline_mark(theme.primary)))
                 .when_some(badge(item), |frame, text| {
                     frame.child(
                         div()
@@ -1181,6 +1204,7 @@ impl FeedView {
                             .when_some(thumb_for(&item.thumbs, (width * 2.) as i32), |frame, url| {
                                 frame.child(img(url).size_full().object_fit(ObjectFit::Cover))
                             })
+                            .when(self.downloaded(item, cx), |frame| frame.child(offline_mark(theme.primary)))
                             .when_some(badge(item).filter(|_| !round), |frame, text| {
                                 frame.child(
                                     div()

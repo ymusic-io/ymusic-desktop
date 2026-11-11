@@ -23,6 +23,7 @@ mod local_playlist;
 mod media_session;
 mod mini_player;
 mod now_playing;
+mod offline;
 mod play_again;
 mod play_history;
 mod playback;
