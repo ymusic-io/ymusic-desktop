@@ -8,6 +8,7 @@ mod caption_style;
 mod cookie_guide;
 mod cookie_lock;
 mod cookie_session;
+mod data_files;
 mod desktop;
 mod download_dialog;
 mod downloads;
@@ -82,10 +83,13 @@ pub fn boot_failed(log: &ym_common::log::Logger, error: &ym_engine::EngineError)
 fn main() {
     ym_i18n::use_system_locale();
     // Debug runs can be pointed at a throwaway data dir for automated checks.
-    let data_dir = std::env::var_os("YMUSIC_DATA_DIR")
-        .filter(|_| cfg!(debug_assertions))
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| dirs::data_local_dir().unwrap_or_else(std::env::temp_dir).join("YMusicRust"));
+    let data_dir = if cfg!(debug_assertions) {
+        std::env::var_os("YMUSIC_DATA_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| dirs::data_local_dir().unwrap_or_else(std::env::temp_dir).join("YMusicRust"))
+    } else {
+        crate::data_files::release_data_dir()
+    };
     let log_setup = crate::telemetry::logger(&data_dir);
     let log = log_setup.log.clone();
     let launch = crate::instance::Request::from_args(std::env::args_os().skip(1));
@@ -102,6 +106,7 @@ fn main() {
         }
         Err(error) => instance_log.warn("single-instance setup failed, starting without it", Some(&error)),
     }
+    crate::data_files::adopt_jvm_names(&data_dir, &log);
     if !launch.is_empty() {
         let _ = inbox_sender.unbounded_send(launch);
     }
@@ -113,6 +118,10 @@ fn main() {
     let opened = crate::cookie_session::open(app_db.clone(), &data_dir, &log).unwrap_or_else(|error| {
         boot_failed(&log, &ym_engine::EngineError::site("R98000", format!("cookie store: {error}")))
     });
+    let window_prefs = data_dir.join(crate::desktop::WINDOW_PREFS_FILE);
+    crate::data_files::adopt_jvm_settings(&app_db, &log);
+    crate::desktop::adopt_saved_bounds(&app_db, &window_prefs, &log.fork("window"));
+    let saved_window = crate::desktop::load_window_prefs(&window_prefs);
     crate::settings_view::apply_language(app_db.as_ref());
     let inputs = crate::launch::BootInputs {
         tokio: tokio.handle().clone(),
@@ -173,6 +182,7 @@ fn main() {
         })
         .detach();
         crate::settings_view::apply_saved_theme(app_db.as_ref(), cx);
+        cx.set_global(crate::desktop::WindowPrefs(window_prefs.clone()));
         crate::desktop::set_dock_icon(&log);
         #[cfg(target_os = "linux")]
         {
@@ -186,7 +196,7 @@ fn main() {
         let window_icon = crate::desktop::window_icon(&log);
         let window_bounds = match dev_window_size() {
             Some(dev) => WindowBounds::centered(dev, cx),
-            None => crate::desktop::initial_bounds(app_db.as_ref(), size(px(1180.), px(780.)), cx),
+            None => crate::desktop::initial_bounds(saved_window, size(px(1180.), px(780.)), cx),
         };
         let locked = match start {
             Start::Ready(graph, reporting) => {

@@ -88,14 +88,18 @@ R70035 - download: the download run panicked
 R70036 - download: the download store (SQLite) failed (not disk full)
 R70037 - download: the video scratch file could not be opened
 R90015 - app boot: the download stores (downloads.db / download-segments.db) could not be opened
-R90016 - app boot: play_history.db could not be opened
+R90016 - app boot: play-history.db could not be opened
 R90017 - play again: the saved queues could not be read or decoded
-R90018 - app boot: sponsor_block.db could not be opened
+R90018 - app boot: sponsor-block.db could not be opened
 R90019 - sign-in: the cookies could not be stored or the link failed for a reason other than rejection
 R90020 - top tracks: play history could not be read
 R90021 - sponsorblock: the per-video whitelist could not be saved
 R90022 - downloads: a finished file could not be deleted from disk
 R90023 - sign-in: the device-link QR could not be drawn
+R90200 - data dir: a database this app's earlier builds named differently could not take the JVM app's name (logged; retried next launch)
+R90201 - data dir: the window bounds kept in app.db could not move to window.properties (logged)
+R90202 - data dir: the old window.bounds setting could not be removed from app.db (logged)
+R90203 - data dir: a setting kept under an earlier build's key could not move to the JVM app's key (logged)
 R90300 - self-update: the config's update entry does not verify against the pinned update key (UpdateService.accept)
 R90301 - self-update: the downloaded installer's size or sha256 differs from the signed entry
 R90302 - self-update: the installer download failed (disk I/O other than full storage)

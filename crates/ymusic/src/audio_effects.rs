@@ -59,11 +59,12 @@ impl AudioEffects {
     /// The settings rows this state saves as.
     pub fn rows(&self) -> [(&'static str, String); 3] {
         let tone = &self.tone;
-        let bands = tone.eq_db.iter().map(f32::to_string).collect::<Vec<_>>().join(",");
+        let float = |value: f32| ym_settings::kotlin_float(value);
+        let bands = tone.eq_db.iter().copied().map(float).collect::<Vec<_>>().join(",");
         [
-            (SPEED_KEY, self.speed.to_string()),
-            (PITCH_KEY, self.pitch.to_string()),
-            (EQ_KEY, format!("{},{},{bands},{}", tone.bass_db, tone.virtualizer, tone.preamp_db)),
+            (SPEED_KEY, float(self.speed)),
+            (PITCH_KEY, float(self.pitch)),
+            (EQ_KEY, format!("{},{},{bands},{}", float(tone.bass_db), float(tone.virtualizer), float(tone.preamp_db))),
         ]
     }
 }

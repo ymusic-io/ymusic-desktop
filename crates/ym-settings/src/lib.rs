@@ -28,6 +28,12 @@ impl SettingValue {
     }
 }
 
+/// `value` as Kotlin's `Float.toString` writes it (`1.0`, not `1`), the JVM app's float settings.
+pub fn kotlin_float(value: f32) -> String {
+    let text = value.to_string();
+    if text.contains(['.', 'e', 'N', 'i']) { text } else { format!("{text}.0") }
+}
+
 /// Reads answer from memory; writes may block on disk, so call `put` off the UI and engine threads.
 pub trait SettingsStore: Send + Sync {
     fn get_raw(&self, key: &str) -> Result<Option<String>, SettingsError>;

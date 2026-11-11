@@ -396,12 +396,11 @@ impl Shell {
             cx.notify();
         });
         let bounds = cx.observe_window_bounds(window, |shell, window, cx| {
-            let graph = cx.global::<AppGraph>();
-            let (settings, log) = (graph.settings.clone(), graph.log.fork("window"));
+            let log = cx.global::<AppGraph>().log.fork("window");
             let executor = cx.background_executor().clone();
             shell._save_bounds = Some(cx.spawn_in(window, async move |_, cx| {
                 executor.timer(crate::desktop::BOUNDS_SAVE_DELAY).await;
-                cx.update(|window, cx| crate::desktop::save_bounds(window, settings, log, cx)).ok();
+                cx.update(|window, cx| crate::desktop::save_bounds(window, log, cx)).ok();
             }));
         });
         let shell_handle = cx.entity().downgrade();
@@ -576,9 +575,8 @@ impl Shell {
     }
 
     fn quit(window: &Window, cx: &mut App) {
-        let graph = cx.global::<AppGraph>();
-        let (settings, log) = (graph.settings.clone(), graph.log.fork("window"));
-        crate::desktop::save_bounds(window, settings, log, cx);
+        let log = cx.global::<AppGraph>().log.fork("window");
+        crate::desktop::save_bounds(window, log, cx);
         cx.quit();
     }
 
@@ -1036,8 +1034,10 @@ impl Shell {
         let video_id = video_id.to_owned();
         graph.tokio.spawn(async move {
             if let Some(dir) = std::env::var_os("YMUSIC_DEV_DOWNLOAD_DIR")
-                && let Ok(uri) = url::Url::from_directory_path(std::path::PathBuf::from(dir))
-                && let Err(error) = settings.put_raw(crate::downloads::DOWNLOAD_LOCATION_KEY, uri.to_string())
+                && let Err(error) = settings.put_raw(
+                    crate::downloads::DOWNLOAD_LOCATION_KEY,
+                    crate::downloads::folder_uri(std::path::Path::new(&dir)),
+                )
             {
                 log.warn(&format!("the dev download folder could not be saved: {error}"), None);
             }

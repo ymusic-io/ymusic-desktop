@@ -79,7 +79,7 @@ impl AppGraph {
         let cache_dir = session.cache_root.join(ENGINE_CACHE_DIR);
         let cache_log = log.clone();
         let cache = tokio::task::spawn_blocking(move || {
-            DiskCacheStore::open(&cache_dir.join("index.db"), cache_dir.join("blobs"), cache_log)
+            DiskCacheStore::open(&cache_dir.join("engine-cache.db"), cache_dir.join("blobs"), cache_log)
         })
         .await
         .map_err(|error| boot_error("R90001", "engine cache")(error.to_string()))?
@@ -94,7 +94,7 @@ impl AppGraph {
             }
         };
         let settings: Arc<dyn SettingsStore> = app_db;
-        let media_path = data_dir.join("media_store.db");
+        let media_path = data_dir.join("media-store.db");
         let media = tokio::task::spawn_blocking(move || MediaStore::open(&media_path))
             .await
             .map_err(|error| boot_error("R90010", "media store")(error.to_string()))?
@@ -187,14 +187,14 @@ impl AppGraph {
             .map_err(|error| boot_error("R90015", "downloads")(error.to_string()))?
             .map_err(boot_error("R90015", "downloads"))?;
 
-        let history_path = data_dir.join("play_history.db");
+        let history_path = data_dir.join("play-history.db");
         let history = Arc::new(
             tokio::task::spawn_blocking(move || ym_history::PlayHistory::open(&history_path))
                 .await
                 .map_err(|error| boot_error("R90016", "play history")(error.to_string()))?
                 .map_err(|error| boot_error("R90016", "play history")(error.to_string()))?,
         );
-        let sponsor_path = data_dir.join("sponsor_block.db");
+        let sponsor_path = data_dir.join("sponsor-block.db");
         let sponsor_block = Arc::new(
             tokio::task::spawn_blocking(move || ym_history::sponsor::SponsorBlockStore::open(&sponsor_path))
                 .await

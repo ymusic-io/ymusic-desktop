@@ -1,6 +1,7 @@
 //! The desktop shell around the window: its remembered size and position, the Dock icon, and the
 //! tray icon that controls playback and brings a window closed to the tray back.
 
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use gpui_kit::*;
@@ -8,19 +9,33 @@ use ym_common::log::Logger;
 use ym_i18n::{Str, t};
 use ym_settings::SettingsStore;
 
-const BOUNDS_KEY: &str = "window.bounds";
+/// The JVM app's window prefs: a Java properties file of `width`, `height`, `x`, `y` in points.
+pub const WINDOW_PREFS_FILE: &str = "window.properties";
 const MIN_WIDTH: f32 = 360.;
 const MIN_HEIGHT: f32 = 480.;
 /// Resizes settle this long before the bounds are written.
 pub const BOUNDS_SAVE_DELAY: Duration = Duration::from_millis(500);
 
+/// Where the window's bounds are kept.
+pub struct WindowPrefs(pub PathBuf);
+
+impl Global for WindowPrefs {}
+
+/// The window's top-left and content size from the last run, if it saved one. Blocking.
+pub fn load_window_prefs(path: &Path) -> Option<Bounds<Pixels>> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let value = |key: &str| {
+        text.lines()
+            .filter_map(|line| line.split_once('='))
+            .find(|(name, _)| name.trim() == key)
+            .and_then(|(_, value)| value.trim().parse::<f32>().ok())
+    };
+    let (width, height, x, y) = (value("width")?, value("height")?, value("x")?, value("y")?);
+    (width >= MIN_WIDTH && height >= MIN_HEIGHT).then(|| bounds(point(px(x), px(y)), size(px(width), px(height))))
+}
+
 /// The saved window bounds when they still fit a connected display, else `fallback` centered.
-pub fn initial_bounds(settings: &dyn SettingsStore, fallback: Size<Pixels>, cx: &App) -> WindowBounds {
-    let saved = settings.string(BOUNDS_KEY, "").ok().and_then(|raw| {
-        let parts: Vec<f32> = raw.split(',').filter_map(|part| part.parse().ok()).collect();
-        let [x, y, width, height] = parts[..] else { return None };
-        (width >= MIN_WIDTH && height >= MIN_HEIGHT).then(|| bounds(point(px(x), px(y)), size(px(width), px(height))))
-    });
+pub fn initial_bounds(saved: Option<Bounds<Pixels>>, fallback: Size<Pixels>, cx: &App) -> WindowBounds {
     // A title bar that lands on no screen (a monitor unplugged since) could never be grabbed back.
     let on_screen = |saved: &Bounds<Pixels>| {
         let grip = point(saved.origin.x + px(100.), saved.origin.y + px(20.));
@@ -34,22 +49,44 @@ pub fn initial_bounds(settings: &dyn SettingsStore, fallback: Size<Pixels>, cx: 
 
 /// Writes the window's position and size while it floats; a maximized or fullscreen window keeps
 /// the last floating ones.
-pub fn save_bounds(window: &Window, settings: std::sync::Arc<dyn SettingsStore>, log: Logger, cx: &App) {
+pub fn save_bounds(window: &Window, log: Logger, cx: &App) {
     let WindowBounds::Windowed(frame) = window.window_bounds() else { return };
     // The window opens at a content size; its frame adds the title bar.
     let content = window.viewport_size();
-    let raw = format!(
-        "{},{},{},{}",
+    let path = cx.global::<WindowPrefs>().0.clone();
+    let text = prefs_text(
         f32::from(frame.origin.x),
         f32::from(frame.origin.y),
         f32::from(content.width),
-        f32::from(content.height)
+        f32::from(content.height),
     );
     cx.global::<crate::graph::AppGraph>().tokio.spawn_blocking(move || {
-        if let Err(error) = settings.put_raw(BOUNDS_KEY, raw) {
-            log.warn(&format!("window bounds could not be saved: {error}"), None);
+        if let Err(error) = std::fs::write(&path, text) {
+            log.warn("window bounds could not be saved", Some(&error));
         }
     });
+}
+
+fn prefs_text(x: f32, y: f32, width: f32, height: f32) -> String {
+    let float = ym_settings::kotlin_float;
+    format!("#YMusic window\nheight={}\nwidth={}\nx={}\ny={}\n", float(height), float(width), float(x), float(y))
+}
+
+/// Moves the bounds earlier builds kept in app.db (`x,y,width,height`) into the JVM app's file.
+/// Blocking.
+pub fn adopt_saved_bounds(app_db: &ym_settings::AppDb, path: &Path, log: &Logger) {
+    const LEGACY_KEY: &str = "window.bounds";
+    let Ok(Some(raw)) = app_db.get_raw(LEGACY_KEY) else { return };
+    let parts: Vec<f32> = raw.split(',').filter_map(|part| part.parse().ok()).collect();
+    if let ([x, y, width, height], false) = (parts.as_slice(), path.exists())
+        && let Err(error) = std::fs::write(path, prefs_text(*x, *y, *width, *height))
+    {
+        log.warn("R90201 saved window bounds could not move to window.properties", Some(&error));
+        return;
+    }
+    if let Err(error) = app_db.delete_setting(LEGACY_KEY) {
+        log.warn("R90202 the old window.bounds setting could not be removed", Some(&error));
+    }
 }
 
 #[cfg_attr(target_os = "windows", allow(dead_code))]
@@ -517,7 +554,14 @@ impl Tray {
         let stop = MenuItem::new(t(Str::TrayStop), true, None);
         let quit = MenuItem::new(t(Str::TrayQuit), true, None);
         let menu = Menu::new();
-        menu.append_items(&[&open, &PredefinedMenuItem::separator(), &toggle, &stop, &PredefinedMenuItem::separator(), &quit])?;
+        menu.append_items(&[
+            &open,
+            &PredefinedMenuItem::separator(),
+            &toggle,
+            &stop,
+            &PredefinedMenuItem::separator(),
+            &quit,
+        ])?;
         let tray = TrayIconBuilder::new()
             .with_icon(icon)
             .with_tooltip(t(Str::AppName))
@@ -526,12 +570,7 @@ impl Tray {
             .build()?;
         tray.set_visible(false)?;
         let (sender, receiver) = futures::channel::mpsc::unbounded();
-        let ids = [
-            (open.id().clone(), 0u8),
-            (toggle.id().clone(), 1),
-            (stop.id().clone(), 2),
-            (quit.id().clone(), 3),
-        ];
+        let ids = [(open.id().clone(), 0u8), (toggle.id().clone(), 1), (stop.id().clone(), 2), (quit.id().clone(), 3)];
         let menu_sender = sender.clone();
         MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
             let command = match ids.iter().find(|(id, _)| *id == event.id).map(|(_, which)| *which) {

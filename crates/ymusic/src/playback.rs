@@ -22,8 +22,10 @@ use crate::local_engine::{LocalCommand, LocalEngine};
 use crate::queue_nav::{LoopMode, QueueNav, moved_index};
 use crate::youtube_session::YoutubeSession;
 
-const VOLUME_KEY: &str = "playback.volume";
 /// The JVM app's keys.
+const VOLUME_KEY: &str = "player.volume";
+/// `"1"` audio only, `"0"` video.
+const AUDIO_ONLY_KEY: &str = "player.audioOnly";
 const LOOP_MODE_KEY: &str = "player.loopMode";
 const SHUFFLE_KEY: &str = "player.shuffle";
 const QUALITY_KEY: &str = "player.preferVideoQuality";
@@ -326,7 +328,7 @@ impl Playback {
             caption_stream: None,
             _catalog: None,
             _sleep: None,
-            video: true,
+            video: cx.global::<AppGraph>().settings.string(AUDIO_ONLY_KEY, "0").is_ok_and(|raw| raw != "1"),
             video_hidden: true,
             demoted: false,
             presenter: None,
@@ -875,11 +877,13 @@ impl Playback {
 
     /// A quality from the menu: audio only, or video at that quality (remembered for next time).
     pub fn set_quality(&mut self, quality: String, cx: &mut Context<Self>) {
-        self.save_setting(QUALITY_KEY, quality.clone(), cx);
         if quality == QUALITY_AUDIO_ONLY {
+            self.save_setting(AUDIO_ONLY_KEY, "1".to_owned(), cx);
             self.set_video(false, cx);
             return;
         }
+        self.save_setting(QUALITY_KEY, quality.clone(), cx);
+        self.save_setting(AUDIO_ONLY_KEY, "0".to_owned(), cx);
         self.quality_preferred = quality;
         if !self.video {
             self.set_video(true, cx);
@@ -935,7 +939,7 @@ impl Playback {
         self.volume = volume.clamp(0.0, 1.0);
         self.apply_volume();
         let settings = cx.global::<AppGraph>().settings.clone();
-        let raw = format!("{:.2}", self.volume);
+        let raw = ym_settings::kotlin_float(self.volume);
         let saved =
             on_core(cx, async move { tokio::task::spawn_blocking(move || settings.put_raw(VOLUME_KEY, raw)).await });
         cx.background_executor().spawn(saved).detach();
