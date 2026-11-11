@@ -30,13 +30,14 @@ pub struct MediaSession {
 }
 
 impl MediaSession {
-    pub fn new(playback: Entity<Playback>, cx: &mut Context<Self>) -> Self {
+    pub fn new(playback: Entity<Playback>, window: &Window, cx: &mut Context<Self>) -> Self {
         let (sender, mut receiver) = mpsc::unbounded::<MediaControlEvent>();
         // MPRIS bus names are unique per bus; souvlaki's service thread panics when one is taken
         // (by a second instance or the JVM app), so each process gets the spec's instance suffix.
         let dbus_name = format!("ymusic.instance{}", std::process::id());
-        let controls = PlatformConfig { display_name: t(Str::AppName), dbus_name: &dbus_name, hwnd: None };
-        let controls = match MediaControls::new(controls) {
+        let controls =
+            PlatformConfig { display_name: t(Str::AppName), dbus_name: &dbus_name, hwnd: window_hwnd(window) };
+        let controls = match open_controls(controls) {
             Ok(mut controls) => match controls.attach(move |event| {
                 let _ = sender.unbounded_send(event);
             }) {
@@ -47,7 +48,7 @@ impl MediaSession {
                 }
             },
             Err(error) => {
-                cx.global::<AppGraph>().log.warn(&format!("R90004 media controls unavailable: {error:?}"), None);
+                cx.global::<AppGraph>().log.warn(&format!("R90004 media controls unavailable: {error}"), None);
                 None
             }
         };
@@ -109,7 +110,7 @@ impl MediaSession {
                     return Some(url.to_string());
                 }
                 let art = cx.try_global::<crate::local_art::SharedLocalArt>()?;
-                art.0.cached_file(&url).and_then(|file| url::Url::from_file_path(file).ok()).map(String::from)
+                art.0.cached_file(&url).and_then(|file| cover_file_url(&file))
             });
             let artist = item.artist.clone();
             let duration = (playback.duration_ms > 0).then(|| Duration::from_millis(playback.duration_ms as u64));
@@ -146,4 +147,34 @@ impl MediaSession {
         self.announced_position = playback.position_ms;
         self.announced_at = Instant::now();
     }
+}
+
+/// souvlaki panics on Windows without an HWND: there that is an unavailable session instead.
+fn open_controls(config: PlatformConfig) -> Result<MediaControls, String> {
+    if cfg!(target_os = "windows") && config.hwnd.is_none() {
+        return Err("no window handle".to_owned());
+    }
+    MediaControls::new(config).map_err(|error| format!("{error:?}"))
+}
+
+#[cfg(target_os = "windows")]
+fn window_hwnd(window: &Window) -> Option<*mut std::ffi::c_void> {
+    crate::desktop::window_hwnd(window)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn window_hwnd(_: &Window) -> Option<*mut std::ffi::c_void> {
+    None
+}
+
+/// Hack: souvlaki's SMTC strips `file://` and opens the rest as a path, so Windows gets the
+/// native path behind the prefix rather than a file URL.
+#[cfg(target_os = "windows")]
+fn cover_file_url(file: &std::path::Path) -> Option<String> {
+    Some(format!("file://{}", file.display()))
+}
+
+#[cfg(not(target_os = "windows"))]
+fn cover_file_url(file: &std::path::Path) -> Option<String> {
+    url::Url::from_file_path(file).ok().map(String::from)
 }

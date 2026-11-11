@@ -123,6 +123,24 @@ pub fn set_dock_icon(log: &Logger) {
 #[cfg(not(target_os = "macos"))]
 pub fn set_dock_icon(_log: &Logger) {}
 
+/// The app's AppUserModelID, which the installer's shortcuts carry too: the taskbar and the media
+/// flyout find the name and icon through it, and a pin merges with the running window only when they
+/// match. Debug builds take their own, so they never touch the installed app's taskbar button.
+#[cfg(target_os = "windows")]
+pub fn claim_app_user_model_id(log: &Logger) {
+    #[link(name = "shell32")]
+    unsafe extern "system" {
+        fn SetCurrentProcessExplicitAppUserModelID(id: *const u16) -> i32;
+    }
+    let id = if cfg!(debug_assertions) { "io.ymusic.windows.dev" } else { "io.ymusic.windows" };
+    let wide: Vec<u16> = id.encode_utf16().chain([0]).collect();
+    // SAFETY: a NUL-terminated UTF-16 string that outlives the call.
+    let result = unsafe { SetCurrentProcessExplicitAppUserModelID(wide.as_ptr()) };
+    if result < 0 {
+        log.warn(&format!("SetCurrentProcessExplicitAppUserModelID failed: HRESULT {result:#010x}"), None);
+    }
+}
+
 /// The Wayland app_id and X11 WM_CLASS of the window; GNOME takes its icon from the desktop entry
 /// of the same name.
 pub const APP_ID: &str = "io.ymusic.YMusic";
@@ -445,8 +463,19 @@ impl DockMenu {
         cx.set_dock_menu(items);
     }
 
-    /// gpui turns a dock menu into Jump List tasks on Windows, which this app does not handle.
-    #[cfg(not(target_os = "macos"))]
+    /// Windows: the taskbar Jump List (gpui's dock menu tasks carry arguments this app does not take).
+    #[cfg(target_os = "windows")]
+    pub fn update(&mut self, has_queue: bool, playing: bool, cx: &App) {
+        if self.shown == Some((has_queue, playing)) {
+            return;
+        }
+        self.shown = Some((has_queue, playing));
+        if let Some(jump_list) = cx.try_global::<crate::jump_list::JumpList>() {
+            jump_list.update(has_queue, playing);
+        }
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     pub fn update(&mut self, has_queue: bool, playing: bool, _cx: &App) {
         self.shown = Some((has_queue, playing));
     }
@@ -474,7 +503,32 @@ pub fn remember_main_window(window: &Window) {
     MAIN_WINDOW.with(|main| *main.borrow_mut() = ns_window);
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
+thread_local! {
+    static MAIN_HWND: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+}
+
+/// The window's HWND, for Win32 calls gpui has no API for.
+#[cfg(target_os = "windows")]
+pub fn window_hwnd(window: &Window) -> Option<*mut std::ffi::c_void> {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    let handle = HasWindowHandle::window_handle(window).ok()?;
+    let RawWindowHandle::Win32(win32) = handle.as_raw() else { return None };
+    Some(win32.hwnd.get() as *mut std::ffi::c_void)
+}
+
+/// Keeps the main window's HWND: gpui's app hide and activate do nothing on Windows.
+#[cfg(target_os = "windows")]
+pub fn remember_main_window(window: &Window) {
+    MAIN_HWND.with(|main| main.set(window_hwnd(window).map(|hwnd| hwnd as usize)));
+}
+
+#[cfg(target_os = "windows")]
+fn main_hwnd() -> Option<windows::Win32::Foundation::HWND> {
+    MAIN_HWND.with(|main| main.get()).map(|hwnd| windows::Win32::Foundation::HWND(hwnd as *mut std::ffi::c_void))
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn remember_main_window(_window: &Window) {}
 
 /// Takes the main window off screen. On macOS only that window goes (an app hide would take the
@@ -496,11 +550,27 @@ pub fn hide_main_window(cx: &mut App) {
             return;
         }
     }
+    #[cfg(target_os = "windows")]
+    if let Some(hwnd) = main_hwnd() {
+        use windows::Win32::UI::WindowsAndMessaging::{SW_HIDE, ShowWindow};
+        // SAFETY: the main window's live HWND, on its thread.
+        let _ = unsafe { ShowWindow(hwnd, SW_HIDE) };
+        return;
+    }
     cx.hide();
 }
 
 /// Brings the main window back after [`hide_main_window`]; the caller activates the app.
 pub fn show_main_window() {
+    #[cfg(target_os = "windows")]
+    if let Some(hwnd) = main_hwnd() {
+        use windows::Win32::UI::WindowsAndMessaging::{IsIconic, SW_RESTORE, SW_SHOW, SetForegroundWindow, ShowWindow};
+        // SAFETY: the main window's live HWND, on its thread.
+        unsafe {
+            let _ = ShowWindow(hwnd, if IsIconic(hwnd).as_bool() { SW_RESTORE } else { SW_SHOW });
+            let _ = SetForegroundWindow(hwnd);
+        }
+    }
     #[cfg(target_os = "macos")]
     MAIN_WINDOW.with(|main| {
         use objc2::msg_send;

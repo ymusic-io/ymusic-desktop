@@ -55,6 +55,13 @@ impl Command {
         Self::ALL.iter().find(|(_, known, _)| *known == arg).map(|(command, _, _)| *command)
     }
 
+    /// The launch argument that asks a running app for this command.
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+    pub fn player_arg(self) -> String {
+        let name = Self::ALL.iter().find(|(command, _, _)| *command == self).map_or("show", |(_, arg, _)| arg);
+        format!("--player={name}")
+    }
+
     fn wire_name(self) -> &'static str {
         Self::ALL.iter().find(|(command, _, _)| *command == self).map_or("Show", |(_, _, name)| name)
     }

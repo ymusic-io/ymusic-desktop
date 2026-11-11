@@ -236,7 +236,16 @@ pub fn window_out_of_sight(window: &Window) -> bool {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
+pub fn window_out_of_sight(window: &Window) -> bool {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{IsIconic, IsWindowVisible};
+    let Some(hwnd) = crate::desktop::window_hwnd(window) else { return false };
+    // SAFETY: gpui's live HWND; state queries on its thread.
+    unsafe { IsIconic(HWND(hwnd)).as_bool() || !IsWindowVisible(HWND(hwnd)).as_bool() }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn window_out_of_sight(_: &Window) -> bool {
     true
 }

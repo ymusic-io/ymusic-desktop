@@ -22,6 +22,8 @@ mod fps_badge;
 mod graph;
 mod http_client;
 mod instance;
+#[cfg(target_os = "windows")]
+mod jump_list;
 mod launch;
 mod library;
 mod library_playlist;
@@ -96,6 +98,9 @@ fn main() {
     };
     let log_setup = crate::telemetry::logger(&data_dir);
     let log = log_setup.log.clone();
+    // Before any window or Jump List: they take the process's ID from then on.
+    #[cfg(target_os = "windows")]
+    crate::desktop::claim_app_user_model_id(&log.fork("app-id"));
     let launch = crate::instance::Request::from_args(std::env::args_os().skip(1));
     let (inbox_sender, inbox) = futures::channel::mpsc::unbounded();
     let instance_log = log.fork("instance");
@@ -124,6 +129,8 @@ fn main() {
         boot_failed(&log, &ym_engine::EngineError::site("R98000", format!("cookie store: {error}")))
     });
     let window_prefs = data_dir.join(crate::desktop::WINDOW_PREFS_FILE);
+    #[cfg(target_os = "windows")]
+    let jump_list_dir = data_dir.clone();
     crate::data_files::adopt_jvm_settings(&app_db, &log);
     crate::desktop::adopt_saved_bounds(&app_db, &window_prefs, &log.fork("window"));
     let saved_window = crate::desktop::load_window_prefs(&window_prefs);
@@ -189,6 +196,8 @@ fn main() {
         crate::settings_view::apply_saved_theme(app_db.as_ref(), cx);
         cx.set_global(crate::desktop::WindowPrefs(window_prefs.clone()));
         crate::desktop::set_dock_icon(&log);
+        #[cfg(target_os = "windows")]
+        crate::jump_list::JumpList::install(&jump_list_dir, log.fork("jump-list"), cx);
         #[cfg(target_os = "linux")]
         {
             let log = log.fork("desktop-entry");
