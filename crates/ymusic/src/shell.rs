@@ -233,6 +233,11 @@ struct Stack {
     pushed: Vec<Layer>,
 }
 
+/// The shell, for app-level callbacks (the Dock's reopen) that have no window context.
+pub struct ShellHandle(pub WeakEntity<Shell>);
+
+impl Global for ShellHandle {}
+
 pub struct Shell {
     section: Section,
     discover_tab: DiscoverTab,
@@ -269,6 +274,11 @@ pub struct Shell {
     pending_sound: bool,
     /// A download dialog to open on the next frame (opening needs the window).
     pending_download: Option<DownloadTarget>,
+    tray: Option<crate::desktop::Tray>,
+    /// The window was closed with a queue: only the tray icon is left.
+    hidden_to_tray: bool,
+    /// The pending write of the window's bounds; replaced on every resize or move.
+    _save_bounds: Option<Task<()>>,
     _media_session: Entity<MediaSession>,
     _history: Entity<HistoryRecorder>,
     _sponsor_block: Entity<SponsorBlock>,
@@ -295,6 +305,45 @@ impl Shell {
             }
             cx.notify();
         });
+        let bounds = cx.observe_window_bounds(window, |shell, window, cx| {
+            let graph = cx.global::<AppGraph>();
+            let (settings, log) = (graph.settings.clone(), graph.log.fork("window"));
+            let executor = cx.background_executor().clone();
+            shell._save_bounds = Some(cx.spawn_in(window, async move |_, cx| {
+                executor.timer(crate::desktop::BOUNDS_SAVE_DELAY).await;
+                cx.update(|window, cx| crate::desktop::save_bounds(window, settings, log, cx)).ok();
+            }));
+        });
+        let shell_handle = cx.entity().downgrade();
+        window.on_window_should_close(cx, move |window, cx| {
+            let Some(shell) = shell_handle.upgrade() else { return true };
+            if shell.read(cx).playback.read(cx).queue.is_empty() {
+                Self::quit(window, cx);
+                return true;
+            }
+            shell.update(cx, |shell, cx| shell.hide_to_tray(cx));
+            false
+        });
+        cx.set_global(ShellHandle(cx.entity().downgrade()));
+        let tray = match crate::desktop::Tray::new() {
+            Ok((tray, mut commands)) => {
+                cx.spawn_in(window, async move |this, cx| {
+                    use futures::StreamExt;
+                    while let Some(command) = commands.next().await {
+                        if this.update_in(cx, |shell, window, cx| shell.tray_command(command, window, cx)).is_err() {
+                            break;
+                        }
+                    }
+                })
+                .detach();
+                Some(tray)
+            }
+            Err(error) => {
+                cx.global::<AppGraph>().log.warn("tray icon could not be created", Some(error.as_ref()));
+                None
+            }
+        };
+        let tray_state = cx.observe(&playback, |shell, _, cx| shell.update_tray(cx));
         crate::video_layer::forward_accessibility_focus(window);
         window.on_next_frame(|window, _| crate::video_layer::sync_accessibility_focus(window));
         let visibility = cx.observe_window_visibility(window, |shell, visibility, window, cx| {
@@ -337,7 +386,59 @@ impl Shell {
             music_tab_focus: FocusList::new(None),
             music_tab_drag: DragRow::default(),
             idle_escape_at: None,
-            _subscriptions: vec![toggle, now_playing_events, visibility],
+            tray,
+            hidden_to_tray: false,
+            _save_bounds: None,
+            _subscriptions: vec![toggle, now_playing_events, visibility, bounds, tray_state],
+        }
+    }
+
+    /// The window was closed with music still queued: it goes away, playback and the tray icon stay.
+    fn hide_to_tray(&mut self, cx: &mut Context<Self>) {
+        self.hidden_to_tray = true;
+        crate::desktop::set_dock_visible(false);
+        cx.hide();
+        self.update_tray(cx);
+    }
+
+    pub fn show_window(&mut self, cx: &mut Context<Self>) {
+        if self.hidden_to_tray {
+            self.hidden_to_tray = false;
+            crate::desktop::set_dock_visible(true);
+        }
+        cx.activate(true);
+        self.update_tray(cx);
+    }
+
+    fn update_tray(&mut self, cx: &mut Context<Self>) {
+        let Some(tray) = self.tray.as_mut() else { return };
+        let playback = self.playback.read(cx);
+        let (has_queue, playing) = (!playback.queue.is_empty(), playback.is_playing());
+        if let Err(error) = tray.update(has_queue, playing, self.hidden_to_tray) {
+            cx.global::<AppGraph>().log.warn("tray icon could not be updated", Some(error.as_ref()));
+        }
+    }
+
+    fn quit(window: &Window, cx: &mut App) {
+        let graph = cx.global::<AppGraph>();
+        let (settings, log) = (graph.settings.clone(), graph.log.fork("window"));
+        crate::desktop::save_bounds(window, settings, log, cx);
+        cx.quit();
+    }
+
+    fn tray_command(&mut self, command: crate::desktop::TrayCommand, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::desktop::TrayCommand;
+        match command {
+            TrayCommand::Open => self.show_window(cx),
+            TrayCommand::TogglePlay => self.playback.update(cx, |playback, cx| playback.toggle(cx)),
+            TrayCommand::Stop => {
+                self.playback.update(cx, |playback, cx| playback.clear_queue(cx));
+                // Nothing left to play and no window: the listening session is over.
+                if self.hidden_to_tray {
+                    Self::quit(window, cx);
+                }
+            }
+            TrayCommand::Quit => Self::quit(window, cx),
         }
     }
 
@@ -1140,11 +1241,8 @@ impl Shell {
                     .size(px(logo))
                     .flex_shrink_0()
                     .rounded_full()
-                    .bg(theme.primary)
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(Icon::new(Lucide::Music).size(px(logo * 0.6)).text_color(theme.primary_foreground)),
+                    .overflow_hidden()
+                    .child(img(crate::assets::LOGO_SVG_PATH).size_full()),
             )
             .child(v_flex().min_w_0().child(div().font_semibold().child(t(Str::AppName))).child(
                 div().text_xs().text_color(theme.muted_foreground).child(format!("v{}", env!("CARGO_PKG_VERSION"))),

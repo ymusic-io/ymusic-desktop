@@ -300,6 +300,21 @@ impl Playback {
         cx.notify();
     }
 
+    /// Stops playback and empties the queue.
+    pub fn clear_queue(&mut self, cx: &mut Context<Self>) {
+        if self.queue.is_empty() {
+            return;
+        }
+        self.queue.clear();
+        self.queue_revision += 1;
+        self.index = 0;
+        self.send_local(LocalCommand::Stop);
+        self.command(cx, |engine, log| async move { engine.player_stop(&log).await });
+        self.state = PlayState::Idle;
+        self.nav.reset(self.index);
+        cx.notify();
+    }
+
     /// Takes the item at `index` out of the queue; removing the playing one moves on.
     pub fn remove_at(&mut self, index: usize, cx: &mut Context<Self>) {
         if index >= self.queue.len() {

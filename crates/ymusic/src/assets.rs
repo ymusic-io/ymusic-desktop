@@ -68,6 +68,9 @@ gpui_kit::assets::icon_assets!(
     ]
 );
 
+/// The app logo, full color, for `img()`.
+pub const LOGO_SVG_PATH: &str = "brand/ymusic-logo.svg";
+
 pub struct AppAssets {
     pub local_art: Arc<LocalArt>,
 }
@@ -76,6 +79,9 @@ impl AssetSource for AppAssets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
         if LocalArt::handles(path) {
             return self.local_art.load(path).map(Some);
+        }
+        if path == LOGO_SVG_PATH {
+            return Ok(Some(Cow::Borrowed(include_bytes!("../assets/ymusic-logo.svg"))));
         }
         match ShellIcons.load(path) {
             Ok(Some(bytes)) => Ok(Some(bytes)),

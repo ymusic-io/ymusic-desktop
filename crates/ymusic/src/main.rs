@@ -2,6 +2,7 @@ mod a11y;
 mod account_view;
 mod assets;
 mod audio_effects;
+mod desktop;
 mod download_dialog;
 mod downloads;
 mod downloads_view;
@@ -72,7 +73,14 @@ fn main() {
 
     crate::a11y::install_debug_log();
     let assets = crate::assets::AppAssets { local_art: local_art.clone() };
-    application().with_assets(assets).with_http_client(images).run(move |cx| {
+    let app = application().with_assets(assets).with_http_client(images);
+    // Opening the app again (Finder, Spotlight, the Dock) brings a window closed to the tray back.
+    app.on_reopen(|cx| {
+        if let Some(shell) = cx.try_global::<crate::shell::ShellHandle>().and_then(|handle| handle.0.upgrade()) {
+            shell.update(cx, |shell, cx| shell.show_window(cx));
+        }
+    });
+    app.run(move |cx| {
         init(cx);
         cx.set_global(crate::local_art::SharedLocalArt(local_art));
         crate::shortcuts::bind(cx);
@@ -81,9 +89,14 @@ fn main() {
         cx.set_reduce_motion(true);
         let theme = graph.settings.get_raw(crate::settings_view::THEME_KEY).ok().flatten().unwrap_or_default();
         crate::settings_view::apply_theme(&theme, cx);
+        crate::desktop::set_dock_icon(&graph.log);
+        let window_bounds = match dev_window_size() {
+            Some(dev) => WindowBounds::centered(dev, cx),
+            None => crate::desktop::initial_bounds(graph.settings.as_ref(), size(px(1180.), px(780.)), cx),
+        };
         cx.set_global(graph);
         let options = WindowOptions {
-            window_bounds: Some(WindowBounds::centered(dev_window_size().unwrap_or(size(px(1180.), px(780.))), cx)),
+            window_bounds: Some(window_bounds),
             titlebar: Some(TitlebarOptions { title: Some(t(Str::AppName).into()), ..Default::default() }),
             // Debug dev-route runs float, so a window launched from a terminal still draws frames
             // (a covered window gets none) for screenshots.
