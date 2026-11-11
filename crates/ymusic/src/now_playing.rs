@@ -46,6 +46,11 @@ const STOP_SHUFFLE: usize = 7;
 const STOP_CHANNEL: usize = 8;
 const STOP_CHANNEL_OVERLAY: usize = 9;
 const MENU_CAPTIONS: u8 = 1;
+const MENU_QUALITY: u8 = 2;
+const MENU_MORE: u8 = 4;
+/// The overlay's light ink for its time, chip and labels, and the artist line's.
+const OVERLAY_INK: u32 = 0xEEEEEE;
+const OVERLAY_ARTIST: u32 = 0xDADADA;
 /// `ActionIcon`'s glyph and hit target.
 const ICON: f32 = 24.;
 const HIT: f32 = 40.;
@@ -117,11 +122,16 @@ pub struct NowPlaying {
     reported_box: (i32, i32),
     seek: Entity<SliderState>,
     dragging_seek: bool,
-    touched_at: Rc<Cell<Instant>>,
+    /// The video controls are up: a click on the picture toggles them, a key or the seek bar shows
+    /// them, and they hide `CONTROLS_HIDE_AFTER` past `shown_at` while playing.
+    controls_shown: bool,
+    shown_at: Rc<Cell<Instant>>,
     /// The overlay's open menus, a bit each: hiding the controls would close them.
     held_menus: Rc<Cell<u8>>,
+    /// A press on the bare picture, toggling the controls on its release.
+    picture_pressed: bool,
     caption_focus: FocusHandle,
-    controls_were_visible: bool,
+    play_focus: FocusHandle,
     fullscreen: bool,
     _subscriptions: Vec<Subscription>,
     _controls_timer: Task<()>,
@@ -238,22 +248,25 @@ impl CaptionStrip {
         entries
     }
 }
-/// Clears the video controls' bottom strip.
+/// Clears the video controls' bottom strip, at 1× overlay scale.
 const CAPTION_ABOVE_CONTROLS: f32 = 72.;
 /// Two caption rows: 24 line height plus the box's 2 + 2 padding, each.
 const CAPTION_TWO_ROWS: f32 = 56.;
 /// The picture's shape until the stream reports its own.
 const VIDEO_RATIO: f32 = 16. / 9.;
 
-/// A control drawn over the video: white whatever the theme, since the picture is behind it.
+/// A control drawn over the video: white whatever the theme, since the picture is behind it. A
+/// press on it never reaches the picture under it, which toggles the controls.
 fn on_video(button: Button, cx: &App) -> Button {
-    button.custom(
-        ButtonCustomVariant::new(cx)
-            .color(transparent_black())
-            .foreground(white())
-            .hover(white().opacity(0.15))
-            .active(white().opacity(0.25)),
-    )
+    button
+        .custom(
+            ButtonCustomVariant::new(cx)
+                .color(transparent_black())
+                .foreground(white())
+                .hover(white().opacity(0.15))
+                .active(white().opacity(0.25)),
+        )
+        .block_mouse_except_scroll()
 }
 
 /// The JVM app's `ActionIcon`: a `glyph` px icon centered in a round `hit` px target.
@@ -312,7 +325,7 @@ impl NowPlaying {
             cx.subscribe(&seek, |view, _, event: &SliderEvent, cx| match event {
                 SliderEvent::Change(_) => {
                     view.dragging_seek = true;
-                    view.touch(cx);
+                    view.show_controls(cx);
                 }
                 SliderEvent::Release(value) => {
                     view.dragging_seek = false;
@@ -328,12 +341,7 @@ impl NowPlaying {
         let controls_timer = cx.spawn(async move |this, cx| {
             loop {
                 executor.timer(Duration::from_millis(500)).await;
-                let alive = this.update(cx, |view, cx| {
-                    if view.controls_visible(cx) != view.controls_were_visible {
-                        cx.notify();
-                    }
-                });
-                if alive.is_err() {
+                if this.update(cx, |view, cx| view.auto_hide(cx)).is_err() {
                     return;
                 }
             }
@@ -359,10 +367,12 @@ impl NowPlaying {
             reported_box: (0, 0),
             seek,
             dragging_seek: false,
-            touched_at: Rc::new(Cell::new(Instant::now())),
+            controls_shown: true,
+            shown_at: Rc::new(Cell::new(Instant::now())),
             held_menus: Rc::default(),
+            picture_pressed: false,
             caption_focus: cx.focus_handle(),
-            controls_were_visible: true,
+            play_focus: cx.focus_handle(),
             fullscreen: false,
             _subscriptions: subscriptions,
             _controls_timer: controls_timer,
@@ -370,16 +380,19 @@ impl NowPlaying {
     }
 
     /// Debug: `YMUSIC_DEV_NOWPLAYING=captions[:key,key*n,…]` opens the caption picker once the video's
-    /// tracks are known, then presses those keys (`*n`: n times) through the window's key dispatch.
+    /// tracks are known, `fullscreen[:…]` enters full screen once it plays; then those keys are
+    /// pressed (`*n`: n times) through the window's key dispatch.
     fn dev_hook(window: &mut Window, cx: &mut Context<Self>) {
         let Some(spec) = std::env::var("YMUSIC_DEV_NOWPLAYING").ok().filter(|_| cfg!(debug_assertions)) else {
             return;
         };
         let (surface, keys) = spec.split_once(':').unwrap_or((spec.as_str(), ""));
-        if surface != "captions" {
-            return;
-        }
-        let mut presses: Vec<&'static str> = vec!["enter"];
+        let captions = match surface {
+            "captions" => true,
+            "fullscreen" => false,
+            _ => return,
+        };
+        let mut presses: Vec<&'static str> = if captions { vec!["enter"] } else { Vec::new() };
         for key in keys.split(',').filter(|key| !key.is_empty()) {
             let (key, times) = key.split_once('*').unwrap_or((key, "1"));
             let key: &'static str = Box::leak(key.trim().to_owned().into_boxed_str());
@@ -390,8 +403,9 @@ impl NowPlaying {
             loop {
                 executor.timer(Duration::from_millis(500)).await;
                 let ready = this.update(cx, |view, cx| {
-                    view.touch(cx);
-                    !view.playback.read(cx).caption_tracks.is_empty()
+                    view.show_controls(cx);
+                    let playback = view.playback.read(cx);
+                    if captions { !playback.caption_tracks.is_empty() } else { playback.is_playing() }
                 });
                 match ready {
                     Ok(true) => break,
@@ -399,8 +413,14 @@ impl NowPlaying {
                     Err(_) => return,
                 }
             }
+            if !captions && this.update_in(cx, |view, window, cx| view.toggle_fullscreen(window, cx)).is_err() {
+                return;
+            }
             executor.timer(Duration::from_millis(500)).await;
-            if this.update_in(cx, |view, window, cx| window.focus(&view.caption_focus, cx)).is_err() {
+            let focused = this.update_in(cx, |view, window, cx| {
+                window.focus(if captions { &view.caption_focus } else { &view.play_focus }, cx)
+            });
+            if focused.is_err() {
                 return;
             }
             for key in presses {
@@ -459,27 +479,55 @@ impl NowPlaying {
         self.video_layer = Some(layer);
     }
 
-    fn touch(&mut self, cx: &mut Context<Self>) {
-        self.touched_at.set(Instant::now());
+    /// Shows the video controls and restarts their hide delay.
+    fn show_controls(&mut self, cx: &mut Context<Self>) {
+        self.controls_shown = true;
+        self.shown_at.set(Instant::now());
         cx.notify();
     }
 
-    /// Shown while paused, seeking or a menu of theirs is open, and for a few seconds after the last
-    /// pointer move.
-    fn controls_visible(&self, cx: &App) -> bool {
-        !self.playback.read(cx).is_playing()
-            || self.dragging_seek
-            || self.held_menus.get() != 0
-            || self.touched_at.get().elapsed() < CONTROLS_HIDE_AFTER
+    /// A click on the bare picture: hides the controls when they show, else shows them.
+    fn toggle_controls(&mut self, cx: &mut Context<Self>) {
+        if self.controls_shown {
+            self.controls_shown = false;
+            cx.notify();
+        } else {
+            self.show_controls(cx);
+        }
+    }
+
+    /// Hides the controls once they have shown for `CONTROLS_HIDE_AFTER` while playing, unless the
+    /// seek bar is held or a menu of theirs is open.
+    fn auto_hide(&mut self, cx: &mut Context<Self>) {
+        if self.controls_shown
+            && self.playback.read(cx).is_playing()
+            && !self.dragging_seek
+            && self.held_menus.get() == 0
+            && self.shown_at.get().elapsed() >= CONTROLS_HIDE_AFTER
+        {
+            self.controls_shown = false;
+            cx.notify();
+        }
+    }
+
+    /// Any key brings hidden controls back, so Tab can reach them again.
+    fn key_shows_controls(&mut self, _: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+        self.show_controls(cx);
     }
 
     /// Keeps the controls up while the menu `bit` is open, and for the usual delay after it closes.
     fn hold_while_open(&self, bit: u8) -> impl Fn(&bool, &mut Window, &mut App) + 'static {
-        let (held, touched_at) = (self.held_menus.clone(), self.touched_at.clone());
+        let (held, shown_at) = (self.held_menus.clone(), self.shown_at.clone());
         move |open, _, _| {
             held.set(if *open { held.get() | bit } else { held.get() & !bit });
-            touched_at.set(Instant::now());
+            shown_at.set(Instant::now());
         }
+    }
+
+    fn toggle_fullscreen(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.fullscreen = !self.fullscreen;
+        window.toggle_fullscreen();
+        self.show_controls(cx);
     }
 
     fn render_play_button(
@@ -495,7 +543,9 @@ impl NowPlaying {
             .id("np-play")
             .role(Role::Button)
             .aria_label(label)
+            .track_focus(&self.play_focus)
             .keyboard_focusable(theme.ring)
+            .block_mouse_except_scroll()
             .size(px(even(PLAY_BUTTON * scale)))
             .flex_shrink_0()
             .rounded_full()
@@ -503,8 +553,8 @@ impl NowPlaying {
             .items_center()
             .justify_center()
             .cursor_pointer()
-            .bg(white())
-            .text_color(black())
+            .bg(black().opacity(0.42))
+            .text_color(white())
             .opacity(if buffering { 0.6 } else { 1. })
             .child(Icon::new(if playing { Lucide::Pause } else { Lucide::Play }).with_size(px(even(PLAY_ICON * scale))))
             .on_click(cx.listener(|view, _, _, cx| view.playback.update(cx, |playback, cx| playback.toggle(cx))))
@@ -528,83 +578,8 @@ impl NowPlaying {
         let layer = self.video_layer.clone();
         let video_box = self.video_box.clone();
         let show_video = !audio_only && layer.is_some();
-        let controls = self.controls_visible(cx);
-        self.controls_were_visible = controls;
-        let fullscreen = self.fullscreen;
-        let scale = overlay_scale(self.video_box.get());
-        let (glyph, hit) = (ICON * scale, HIT * scale);
-        let transport_icon = |id: &'static str, icon: Lucide, label: &'static str, cx: &App| {
-            on_video(action_icon(id, icon, label, even(glyph), even(hit)), cx)
-        };
-
-        let transport = h_flex()
-            .gap_6()
-            .items_center()
-            .child(transport_icon("np-rewind", Lucide::RotateCcw, t(Str::CdRewind10), cx).on_click(
-                cx.listener(|view, _, _, cx| view.playback.update(cx, |playback, cx| playback.seek_by(-SKIP_MS, cx))),
-            ))
-            .child(
-                transport_icon("np-previous", Lucide::SkipBack, t(Str::CdPrevious), cx).on_click(
-                    cx.listener(|view, _, _, cx| view.playback.update(cx, |playback, cx| playback.previous(cx))),
-                ),
-            )
-            .child(self.render_play_button(playing, buffering, scale, cx))
-            .child(
-                transport_icon("np-next", Lucide::SkipForward, t(Str::CdNext), cx)
-                    .on_click(cx.listener(|view, _, _, cx| view.playback.update(cx, |playback, cx| playback.next(cx)))),
-            )
-            .child(transport_icon("np-forward", Lucide::RotateCw, t(Str::CdForward10), cx).on_click(
-                cx.listener(|view, _, _, cx| view.playback.update(cx, |playback, cx| playback.seek_by(SKIP_MS, cx))),
-            ));
-        let bottom = v_flex()
-            .px(px(11.))
-            .pb_2()
-            .gap_1()
-            .child(
-                h_flex()
-                    .gap_1()
-                    .items_center()
-                    .child(div().text_sm().child(format!("{} / {}", clock(position), clock(duration))))
-                    .child(div().flex_1())
-                    .when_some(self.caption_button(glyph, hit, cx), |row, button| row.child(button))
-                    .child(
-                        on_video(
-                            action_icon(
-                                "np-fullscreen",
-                                if fullscreen { Lucide::Minimize } else { Lucide::Maximize },
-                                t(if fullscreen { Str::CdExitFullscreen } else { Str::CdFullscreen }),
-                                glyph,
-                                hit,
-                            ),
-                            cx,
-                        )
-                        .on_click(cx.listener(|view, _, window, cx| {
-                            view.fullscreen = !view.fullscreen;
-                            window.toggle_fullscreen();
-                            cx.notify();
-                        })),
-                    ),
-            )
-            .child(Slider::new(&self.seek).accessibility_label(t(Str::A11yPlaybackPosition)));
-        let artist = self.artist_line(STOP_CHANNEL_OVERLAY, current, cx);
-        let overlay = div()
-            .absolute()
-            .inset_0()
-            .bg(black().opacity(0.35))
-            .text_color(white())
-            .child(
-                v_flex()
-                    .absolute()
-                    .top_0()
-                    .left_0()
-                    .right_0()
-                    .px_4()
-                    .pt(px(11.))
-                    .child(div().font_semibold().truncate().child(current.title.clone()))
-                    .when_some(artist, |column, artist| column.child(artist.text_sm().opacity(0.8))),
-            )
-            .child(div().absolute().inset_0().flex().items_center().justify_center().child(transport))
-            .child(div().absolute().bottom_0().left_0().right_0().child(bottom));
+        let controls = self.controls_shown;
+        let overlay = controls.then(|| self.render_overlay(current, playing, buffering, (position, duration), cx));
 
         div()
             .id("video-area")
@@ -613,7 +588,6 @@ impl NowPlaying {
             .map(|frame| if fill { frame.size_full() } else { frame.w_full().aspect_ratio(16. / 9.) })
             .when_some(layer.clone().filter(|_| show_video), |frame, layer| layer.underlay(frame))
             .when(!show_video, |frame| frame.bg(black()).child(self.audio_only_art.clone()))
-            .on_mouse_move(cx.listener(|view, _, _, cx| view.touch(cx)))
             .child(
                 canvas(
                     |_, _, _| {},
@@ -633,9 +607,126 @@ impl NowPlaying {
             )
             .when_some(self.caption_overlay(controls, audio_only, cx), |frame, captions| frame.child(captions))
             .when(!audio_only, |frame| frame.children(crate::fps_badge::badge(&self.playback, cx)))
-            .when(controls, |frame| frame.child(overlay))
+            .child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .on_mouse_down(MouseButton::Left, cx.listener(|view, _, _, _| view.picture_pressed = true))
+                    .on_mouse_up_out(MouseButton::Left, cx.listener(|view, _, _, _| view.picture_pressed = false))
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(|view, _, _, cx| {
+                            if std::mem::take(&mut view.picture_pressed) {
+                                view.toggle_controls(cx);
+                            }
+                        }),
+                    ),
+            )
+            .children(overlay)
             .when_some(self.failure_panel(controls, cx), |frame, panel| frame.child(panel))
             .into_any_element()
+    }
+
+    /// `VideoOverlayControls`: a scrim, the title top left, the transport centered, and the time,
+    /// actions and seek bar along the bottom, all growing with the video box.
+    fn render_overlay(
+        &self,
+        current: &QueueItem,
+        playing: bool,
+        buffering: bool,
+        (position, duration): (i64, i64),
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let fullscreen = self.fullscreen;
+        let scale = overlay_scale(self.video_box.get());
+        let (glyph, hit) = (ICON * scale, HIT * scale);
+        let transport_icon = |id: &'static str, icon: Lucide, label: &'static str, cx: &App| {
+            on_video(action_icon(id, icon, label, even(glyph), even(hit)), cx)
+        };
+        let transport = h_flex()
+            .w_full()
+            .max_w(px(480. * scale))
+            .px(px(20.))
+            .py(px(14.))
+            .justify_evenly()
+            .items_center()
+            .child(transport_icon("np-rewind", Lucide::RotateCcw, t(Str::CdRewind10), cx).on_click(
+                cx.listener(|view, _, _, cx| view.playback.update(cx, |playback, cx| playback.seek_by(-SKIP_MS, cx))),
+            ))
+            .child(
+                transport_icon("np-previous", Lucide::SkipBack, t(Str::CdPrevious), cx).on_click(
+                    cx.listener(|view, _, _, cx| view.playback.update(cx, |playback, cx| playback.previous(cx))),
+                ),
+            )
+            .child(self.render_play_button(playing, buffering, scale, cx))
+            .child(
+                transport_icon("np-next", Lucide::SkipForward, t(Str::CdNext), cx)
+                    .on_click(cx.listener(|view, _, _, cx| view.playback.update(cx, |playback, cx| playback.next(cx)))),
+            )
+            .child(transport_icon("np-forward", Lucide::RotateCw, t(Str::CdForward10), cx).on_click(
+                cx.listener(|view, _, _, cx| view.playback.update(cx, |playback, cx| playback.seek_by(SKIP_MS, cx))),
+            ));
+
+        let actions = if fullscreen { self.overlay_player_actions(current, scale, cx) } else { Vec::new() };
+        let time = format!("{} / {}", clock(position), clock(duration));
+        let bottom_row = h_flex()
+            .gap(px(4.))
+            .items_center()
+            .child(div().text_size(px(10. * scale)).font_bold().text_color(rgb(OVERLAY_INK)).child(time))
+            .child(div().flex_1())
+            .children(actions)
+            .when_some(self.caption_button(glyph, hit, cx), |row, button| row.child(button))
+            .child(
+                on_video(
+                    action_icon(
+                        "np-fullscreen",
+                        if fullscreen { Lucide::Minimize } else { Lucide::Maximize },
+                        t(if fullscreen { Str::CdExitFullscreen } else { Str::CdFullscreen }),
+                        glyph,
+                        hit,
+                    ),
+                    cx,
+                )
+                .on_click(cx.listener(|view, _, window, cx| view.toggle_fullscreen(window, cx))),
+            );
+        let seek = div()
+            .block_mouse_except_scroll()
+            .child(Slider::new(&self.seek).h(px(20.)).accessibility_label(t(Str::A11yPlaybackPosition)));
+
+        let artist = self.artist_line(STOP_CHANNEL_OVERLAY, current, cx);
+        let title = v_flex()
+            .absolute()
+            .top_0()
+            .left_0()
+            .right_0()
+            .items_start()
+            .px(px(16. * scale))
+            .pt(px(11. * scale))
+            .child(div().max_w_full().text_size(px(13.5 * scale)).font_bold().truncate().child(current.title.clone()))
+            .when_some(artist, |column, artist| {
+                column.child(
+                    artist.max_w_full().pt(px(3. * scale)).text_size(px(11. * scale)).text_color(rgb(OVERLAY_ARTIST)),
+                )
+            });
+
+        div()
+            .absolute()
+            .inset_0()
+            .bg(black().opacity(0.24))
+            .text_color(white())
+            .child(title)
+            .child(div().absolute().inset_0().flex().items_center().justify_center().child(transport))
+            .child(
+                v_flex()
+                    .absolute()
+                    .bottom_0()
+                    .left_0()
+                    .right_0()
+                    .px(px(11. * scale))
+                    .pb(px(8. * scale))
+                    .child(bottom_row)
+                    .child(seek),
+            )
     }
 
     /// The CC control, absent when the video has no caption tracks: Off, each track, and YouTube's
@@ -704,8 +795,9 @@ impl NowPlaying {
         let failure = failure.clone();
         let accent = cx.theme().primary;
         let action = |id: &'static str, label: &'static str| {
-            Button::new(id).ghost().small().label(label).text_color(accent).font_semibold()
+            Button::new(id).ghost().small().label(label).text_color(accent).font_semibold().block_mouse_except_scroll()
         };
+        let strip = CAPTION_ABOVE_CONTROLS * overlay_scale(self.video_box.get());
         let mut actions = h_flex().gap_1().items_center();
         if failure.needs_sign_in() {
             actions = actions.child(
@@ -719,7 +811,7 @@ impl NowPlaying {
             ));
         }
         Some(
-            div().absolute().left_0().right_0().bottom(px(if controls { CAPTION_ABOVE_CONTROLS } else { 44. })).flex().justify_center().px_4().child(
+            div().absolute().left_0().right_0().bottom(px(if controls { strip } else { 44. })).flex().justify_center().px_4().child(
                 v_flex()
                     .items_center()
                     .max_w(px(560.))
@@ -769,7 +861,8 @@ impl NowPlaying {
             (height * VIDEO_RATIO, height)
         };
         let bar = (height - picture_height) / 2.;
-        let under_picture = bar >= CAPTION_TWO_ROWS * look.scale + CAPTION_ABOVE_CONTROLS + 8.;
+        let controls_strip = CAPTION_ABOVE_CONTROLS * overlay_scale(self.video_box.get());
+        let under_picture = bar >= CAPTION_TWO_ROWS * look.scale + controls_strip + 8.;
         let side = (width - picture_width) / 2. + picture_width * inset;
         let cue_width = (width - side * 2.).max(1.);
         let mut strip = self.caption_strip.borrow_mut();
@@ -803,7 +896,7 @@ impl NowPlaying {
         Some(if under_picture {
             placed.top(px(bar + picture_height + 8.)).child(window_box)
         } else {
-            let bottom = (bar + 12.).max(if controls { CAPTION_ABOVE_CONTROLS } else { 12. });
+            let bottom = (bar + 12.).max(if controls { controls_strip } else { 12. });
             placed.bottom(px(bottom)).child(window_box)
         })
     }
@@ -815,11 +908,112 @@ impl NowPlaying {
             current.artist.clone().or_else(|| details.as_ref().and_then(|details| details.channel_title.clone()))?;
         let line = div().id(("np-channel", stop)).truncate().child(text.clone());
         let Some(url) = details.and_then(|details| details.channel_url) else { return Some(line) };
-        Some(self.bar_focus.item(stop, line.role(Role::Link).aria_label(text.clone()), cx).cursor_pointer().on_click(
-            cx.listener(move |_, _, _, cx| {
-                cx.emit(NowPlayingEvent::OpenChannel { url: url.clone(), title: text.clone() })
-            }),
-        ))
+        Some(
+            self.bar_focus
+                .item(stop, line.role(Role::Link).aria_label(text.clone()), cx)
+                .cursor_pointer()
+                .block_mouse_except_scroll()
+                .on_click(cx.listener(move |_, _, _, cx| {
+                    cx.emit(NowPlayingEvent::OpenChannel { url: url.clone(), title: text.clone() })
+                })),
+        )
+    }
+
+    /// The quality menu's choices (token, label), the preferred token and the playing quality's label.
+    fn quality_choices(&self, cx: &App) -> (Vec<(String, String)>, String, String) {
+        let playback = self.playback.read(cx);
+        let label = |quality: &str, fallback: &str| match quality {
+            QUALITY_AUTO => t(Str::VideoQualityAuto).to_owned(),
+            QUALITY_AUDIO_ONLY => t(Str::AudioOnly).to_owned(),
+            _ => fallback.to_owned(),
+        };
+        let mut choices = vec![(QUALITY_AUDIO_ONLY.to_owned(), t(Str::AudioOnly).to_owned())];
+        if playback.quality_options.is_empty() {
+            choices.push((QUALITY_AUTO.to_owned(), t(Str::VideoQualityAuto).to_owned()));
+        } else {
+            choices
+                .extend(playback.quality_options.iter().map(|(quality, text)| (quality.clone(), label(quality, text))));
+        }
+        let selected = if playback.video { playback.quality_preferred.clone() } else { QUALITY_AUDIO_ONLY.to_owned() };
+        let current = if !playback.video {
+            t(Str::AudioOnly).to_owned()
+        } else {
+            let actual = playback.quality_actual.clone().unwrap_or_else(|| QUALITY_AUTO.to_owned());
+            choices
+                .iter()
+                .find(|(quality, _)| *quality == actual)
+                .map(|(_, text)| text.clone())
+                .unwrap_or_else(|| label(&actual, &actual))
+        };
+        (choices, selected, current)
+    }
+
+    /// The quality chip and its menu; over the video (`Some(scale)`) it is drawn in the overlay's ink at
+    /// the overlay's scale.
+    fn quality_chip(&self, focus: Option<FocusHandle>, over_video: Option<f32>, cx: &App) -> AnyElement {
+        let (choices, selected, current) = self.quality_choices(cx);
+        let playback = self.playback.clone();
+        let ink: Hsla = rgb(OVERLAY_INK).into();
+        Button::new(if over_video.is_some() { "np-quality-overlay" } else { "np-quality" })
+            .when_some(focus, |chip, focus| chip.track_focus(&focus))
+            .outline()
+            .xsmall()
+            .rounded(px(6.))
+            .h_auto()
+            .px(px(8.))
+            .py(px(2.))
+            .when(over_video.is_some(), |chip| on_video(chip, cx).border_color(ink.opacity(0.6)).text_color(ink))
+            .child(div().text_size(px(11. * over_video.unwrap_or(1.))).font_bold().child(current.clone()))
+            .accessibility_label(format!("{}, {current}", t(Str::DownloadQuality)))
+            .dropdown_menu_with_anchor(
+                if over_video.is_some() { Anchor::BottomRight } else { Anchor::TopRight },
+                move |mut menu, _, _| {
+                    for (quality, text) in &choices {
+                        let (playback, pick) = (playback.clone(), quality.clone());
+                        menu = menu.item(PopupMenuItem::new(text.clone()).checked(*quality == selected).on_click(
+                            move |_, _, cx| playback.update(cx, |playback, cx| playback.set_quality(pick.clone(), cx)),
+                        ));
+                    }
+                    menu
+                },
+            )
+            .on_open_change(self.hold_while_open(MENU_QUALITY))
+            .into_any_element()
+    }
+
+    /// Full screen has no top bar, so its quality chip, details and speed come onto the controls.
+    fn overlay_player_actions(&self, current: &QueueItem, scale: f32, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let (glyph, hit) = (ICON * scale, HIT * scale);
+        let mut actions = vec![self.quality_chip(None, Some(scale), cx)];
+        if let Some(video_id) = current.video_id().map(str::to_owned) {
+            actions.push(
+                on_video(action_icon("np-details", Lucide::Info, t(Str::MenuDetailsComments), glyph, hit), cx)
+                    .on_click(cx.listener(move |_, _, _, cx| cx.emit(NowPlayingEvent::Details(video_id.clone()))))
+                    .into_any_element(),
+            );
+        }
+        let speed = self.playback.read(cx).effects.speed;
+        let speed_value = (speed != 1.).then(|| format!("{}×", (speed * 100.).round() / 100.));
+        let label = match &speed_value {
+            Some(value) => format!("{}, {value}", t(Str::MenuSpeedPitch)),
+            None => t(Str::MenuSpeedPitch).to_owned(),
+        };
+        actions.push(
+            on_video(action_icon("np-speed", Lucide::Gauge, label, glyph, hit), cx)
+                .on_click(cx.listener(|_, _, _, cx| cx.emit(NowPlayingEvent::OpenSound)))
+                .into_any_element(),
+        );
+        if let Some(value) = speed_value {
+            actions.push(
+                div()
+                    .text_size(px(10. * scale))
+                    .font_bold()
+                    .text_color(rgb(OVERLAY_INK))
+                    .child(value)
+                    .into_any_element(),
+            );
+        }
+        actions
     }
 
     /// Close, then download · SponsorBlock · sleep · quality · ⋮ on the right.
@@ -828,7 +1022,6 @@ impl NowPlaying {
         let sleep_remaining = playback.sleep_remaining();
         let sleep_after_current = playback.sleep_after_current;
         let sleep_armed = sleep_remaining.is_some() || sleep_after_current;
-        let video = playback.video;
         let sponsor_whitelisted = self.sponsor_block.read(cx).current.as_ref().map(|(_, whitelisted)| *whitelisted);
         let target = current.video_id().map(|video_id| DownloadTarget {
             video_id: video_id.to_owned(),
@@ -855,52 +1048,7 @@ impl NowPlaying {
             cx,
         );
 
-        let quality_playback = self.playback.clone();
-        let (choices, selected, current) = {
-            let playback = self.playback.read(cx);
-            let label = |quality: &str, fallback: &str| match quality {
-                QUALITY_AUTO => t(Str::VideoQualityAuto).to_owned(),
-                QUALITY_AUDIO_ONLY => t(Str::AudioOnly).to_owned(),
-                _ => fallback.to_owned(),
-            };
-            let mut choices = vec![(QUALITY_AUDIO_ONLY.to_owned(), t(Str::AudioOnly).to_owned())];
-            if playback.quality_options.is_empty() {
-                choices.push((QUALITY_AUTO.to_owned(), t(Str::VideoQualityAuto).to_owned()));
-            } else {
-                choices.extend(
-                    playback.quality_options.iter().map(|(quality, text)| (quality.clone(), label(quality, text))),
-                );
-            }
-            let selected = if video { playback.quality_preferred.clone() } else { QUALITY_AUDIO_ONLY.to_owned() };
-            let current = if !video {
-                t(Str::AudioOnly).to_owned()
-            } else {
-                let actual = playback.quality_actual.clone().unwrap_or_else(|| QUALITY_AUTO.to_owned());
-                choices
-                    .iter()
-                    .find(|(quality, _)| *quality == actual)
-                    .map(|(_, text)| text.clone())
-                    .unwrap_or_else(|| label(&actual, &actual))
-            };
-            (choices, selected, current)
-        };
-        let quality = Button::new("np-quality")
-            .track_focus(&self.bar_focus.handle(STOP_QUALITY, cx))
-            .outline()
-            .xsmall()
-            .rounded(px(6.))
-            .px(px(8.))
-            .child(div().text_size(px(11.)).font_bold().child(current.clone()))
-            .accessibility_label(format!("{}, {current}", t(Str::DownloadQuality)))
-            .dropdown_menu_with_anchor(Anchor::TopRight, move |mut menu, _, _| {
-                for (quality, text) in &choices {
-                    let (playback, pick) = (quality_playback.clone(), quality.clone());
-                    menu = menu.item(PopupMenuItem::new(text.clone()).checked(*quality == selected).on_click(
-                        move |_, _, cx| playback.update(cx, |playback, cx| playback.set_quality(pick.clone(), cx)),
-                    ));
-                }
-                menu
-            });
+        let quality = self.quality_chip(Some(self.bar_focus.handle(STOP_QUALITY, cx)), None, cx);
 
         let view = cx.entity().downgrade();
         let more_target = target.clone();
@@ -948,7 +1096,8 @@ impl NowPlaying {
                     PopupMenuItem::new(t(Str::MenuReloadPlayer))
                         .on_click(move |_, _, cx| reload.update(cx, |playback, cx| playback.reload(cx))),
                 )
-            });
+            })
+            .on_open_change(self.hold_while_open(MENU_MORE));
 
         h_flex()
             .w_full()
@@ -1446,7 +1595,11 @@ impl Render for NowPlaying {
             self.fullscreen = false;
         }
         if self.fullscreen {
-            return div().size_full().child(self.render_video(&current, true, cx)).into_any_element();
+            return div()
+                .size_full()
+                .capture_key_down(cx.listener(Self::key_shows_controls))
+                .child(self.render_video(&current, true, cx))
+                .into_any_element();
         }
         let viewport = window.viewport_size();
         let (width, height) = (f32::from(viewport.width), f32::from(viewport.height));
@@ -1458,6 +1611,7 @@ impl Render for NowPlaying {
             let video = self.render_video(&current, true, cx);
             return h_flex()
                 .size_full()
+                .capture_key_down(cx.listener(Self::key_shows_controls))
                 .child(div().flex_1().min_w_0().h_full().child(video))
                 .child(
                     v_flex()
@@ -1477,6 +1631,7 @@ impl Render for NowPlaying {
         let artist = self.artist_line(STOP_CHANNEL, &current, cx);
         v_flex()
             .size_full()
+            .capture_key_down(cx.listener(Self::key_shows_controls))
             .child(div().bg(theme.background).child(top_bar))
             .child(video)
             .child(
