@@ -21,7 +21,7 @@ pub struct SponsorBlock {
     playback: Entity<Playback>,
     armed_for: Option<String>,
     /// The current item's YouTube id and whether it is whitelisted; None while SponsorBlock is
-    /// off or the item has no YouTube id.
+    /// off, the item has no YouTube id, or SponsorBlock has no segments for it (nothing to toggle).
     pub current: Option<(String, bool)>,
     _observe: Subscription,
 }
@@ -62,7 +62,7 @@ impl SponsorBlock {
             target.update(cx, |playback, _| playback.set_skip_segments(key.clone(), spans)).ok();
             this.update(cx, |sponsor, cx| {
                 if sponsor.armed_for.as_deref() == Some(key.as_str()) {
-                    sponsor.current = Some((video_id, whitelisted));
+                    sponsor.current = (whitelisted || !segments.is_empty()).then_some((video_id, whitelisted));
                     cx.notify();
                 }
             })
