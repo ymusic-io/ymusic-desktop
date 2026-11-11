@@ -53,7 +53,10 @@ gpui_kit::assets::icon_assets!(
         RefreshCw,
         ArrowUpDown,
         Tag,
-        ExternalLink
+        ExternalLink,
+        Gauge,
+        Volume1,
+        VolumeX
     ]
 );
 

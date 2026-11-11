@@ -11,7 +11,7 @@ use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use ym_i18n::{Str, t, tf};
 
-use crate::playback::{PlayState, Playback};
+use crate::playback::{PlayState, Playback, QueueItem};
 use crate::queue_nav::LoopMode;
 
 /// The user asked to open (or close) Now Playing.
@@ -116,202 +116,350 @@ pub fn clock(ms: i64) -> String {
     if hours > 0 { format!("{hours}:{minutes:02}:{seconds:02}") } else { format!("{minutes}:{seconds:02}") }
 }
 
-impl Render for MiniPlayer {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let playback = self.playback.read(cx);
-        let Some(item) = playback.current().cloned() else { return div().into_any_element() };
+/// The track info takes this share of the bar once that beats `BAR_INFO_MIN`.
+const BAR_INFO_SHARE: f32 = 0.3;
+const BAR_INFO_MIN: f32 = 300.;
+const BAR_SEEK_MAX: f32 = 560.;
+const BAR_VOLUME_WIDTH: f32 = 120.;
+/// Below this the side controls drop out; Now Playing still has them.
+const BAR_SIDE_MIN: f32 = 900.;
+/// The sleep timer joins the side controls from this width.
+const BAR_SLEEP_MIN: f32 = 1100.;
+const BAR_PLAY: f32 = 36.;
+
+impl MiniPlayer {
+    fn now_playing_label(item: &QueueItem) -> String {
+        [Some(t(Str::A11yNowPlaying).to_owned()), Some(item.title.clone()), item.artist.clone()]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
+    /// The artist, or the failure in its place.
+    fn subtitle(item: &QueueItem, state: &PlayState, cx: &App) -> Option<(String, Hsla)> {
         let theme = cx.theme();
+        match state {
+            PlayState::Failed(message) => Some((message.clone(), theme.danger)),
+            _ => item.artist.clone().map(|artist| (artist, theme.muted_foreground)),
+        }
+    }
+
+    fn cover(item: &QueueItem, cx: &App) -> Div {
+        div()
+            .overflow_hidden()
+            .bg(cx.theme().secondary)
+            .flex_shrink_0()
+            .when_some(item.thumb(320), |frame, url| frame.child(img(url).size_full().object_fit(ObjectFit::Cover)))
+    }
+
+    fn play_label(state: &PlayState) -> &'static str {
+        t(if matches!(state, PlayState::Playing | PlayState::Buffering) { Str::CdPause } else { Str::CdPlay })
+    }
+
+    /// The bar's filled play circle.
+    fn play_circle(&self, state: &PlayState, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme();
+        let playing = matches!(state, PlayState::Playing | PlayState::Buffering);
+        div()
+            .id("play-pause")
+            .role(Role::Button)
+            .aria_label(Self::play_label(state))
+            .tab_stop(true)
+            .size(px(BAR_PLAY))
+            .flex_shrink_0()
+            .rounded_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .cursor_pointer()
+            .bg(theme.foreground)
+            .text_color(theme.background)
+            .child(if *state == PlayState::Buffering {
+                Spinner::new().small().into_any_element()
+            } else {
+                Icon::new(if playing { Lucide::Pause } else { Lucide::Play }).small().into_any_element()
+            })
+            .on_click(cx.listener(|player, _, _, cx| {
+                cx.stop_propagation();
+                player.playback.update(cx, |playback, cx| playback.toggle(cx));
+            }))
+    }
+
+    /// Rail windows: a full-width bar under the rail and the content. What is playing on the left
+    /// (opens Now Playing), transport over the seek bar in the middle, sound · speed · sleep · volume
+    /// on the right; a click on the bar's background opens Now Playing too.
+    fn render_bar(&mut self, item: QueueItem, width: f32, cx: &mut Context<Self>) -> AnyElement {
+        let playback = self.playback.read(cx);
+        let theme = cx.theme().clone();
         let state = playback.state.clone();
         let (position, duration) = (playback.position_ms, playback.duration_ms);
         let has_next = playback.has_next();
         let (loop_mode, shuffle) = (playback.nav.loop_mode, playback.nav.shuffle);
         let sleep_remaining = playback.sleep_remaining();
         let sleep_after_current = playback.sleep_after_current;
-        let thumb = item.thumb(120);
         let volume = playback.volume;
-        let now_playing_label =
-            [Some(t(Str::A11yNowPlaying).to_owned()), Some(item.title.clone()), item.artist.clone()]
-                .into_iter()
-                .flatten()
-                .collect::<Vec<_>>()
-                .join(", ");
-        let artist = item.artist.clone();
-        let failure = match &state {
-            PlayState::Failed(message) => Some(message.clone()),
-            _ => None,
-        };
-        let play_pause: AnyElement = match state {
-            PlayState::Buffering => {
-                div().size(px(36.)).flex().items_center().justify_center().child(Spinner::new()).into_any_element()
-            }
-            PlayState::Playing => Button::new("pause")
-                .icon(Icon::new(Lucide::Pause))
-                .rounded_full()
-                .tooltip(t(Str::CdPause))
-                .accessibility_label(t(Str::CdPause))
-                .on_click(
-                    cx.listener(|player, _, _, cx| player.playback.update(cx, |playback, cx| playback.toggle(cx))),
-                )
-                .into_any_element(),
-            _ => Button::new("play")
-                .icon(Icon::new(Lucide::Play))
-                .rounded_full()
-                .tooltip(t(Str::CdPlay))
-                .accessibility_label(t(Str::CdPlay))
-                .on_click(
-                    cx.listener(|player, _, _, cx| player.playback.update(cx, |playback, cx| playback.toggle(cx))),
-                )
-                .into_any_element(),
-        };
-        h_flex()
-            .gap_4()
-            .px_4()
-            .py_2()
-            .border_t_1()
-            .border_color(theme.border)
-            .bg(theme.sidebar)
-            .child(
-                h_flex()
-                    .id("now-playing-toggle")
-                    .role(Role::Button)
-                    .tab_stop(true)
-                    .aria_label(now_playing_label)
-                    .w(px(300.))
-                    .gap_3()
-                    .min_w_0()
-                    .cursor_pointer()
-                    .on_click(cx.listener(|_, _, _, cx| cx.emit(ToggleNowPlaying)))
-                    .child(
-                        div()
-                            .size(px(48.))
-                            .flex_shrink_0()
-                            .rounded_md()
-                            .overflow_hidden()
-                            .bg(theme.secondary)
-                            .when_some(thumb, |frame, url| {
-                                frame.child(img(url).size_full().object_fit(ObjectFit::Cover))
-                            }),
-                    )
-                    .child(
-                        v_flex()
-                            .min_w_0()
-                            .child(div().text_sm().font_medium().truncate().child(item.title.clone()))
-                            .when_some(failure.clone().or(artist), |column, line| {
-                                let color = if failure.is_some() { theme.danger } else { theme.muted_foreground };
-                                column.child(div().text_xs().text_color(color).truncate().child(line))
-                            }),
-                    ),
-            )
+        let tuned = (playback.effects.speed, playback.effects.pitch) != (1.0, 1.0);
+        let subtitle = Self::subtitle(&item, &state, cx);
+        let side = width >= BAR_SIDE_MIN;
+        let sleep = width >= BAR_SLEEP_MIN;
+        let info_width = (width * BAR_INFO_SHARE).max(BAR_INFO_MIN);
+        let repeat_label = t(match loop_mode {
+            LoopMode::None => Str::CdRepeatOff,
+            LoopMode::All => Str::CdRepeatAll,
+            LoopMode::One => Str::CdRepeatOne,
+        });
+        let info = h_flex()
+            .id("now-playing-toggle")
+            .role(Role::Button)
+            .tab_stop(true)
+            .aria_label(Self::now_playing_label(&item))
+            .w(px(info_width))
+            .flex_shrink_0()
+            .gap_2()
+            .min_w_0()
+            .rounded(px(4.))
+            .cursor_pointer()
+            .on_click(cx.listener(|_, _, _, cx| {
+                cx.stop_propagation();
+                cx.emit(ToggleNowPlaying);
+            }))
+            .child(Self::cover(&item, cx).size(px(48.)).rounded(px(4.)))
             .child(
                 v_flex()
                     .flex_1()
-                    .gap_1()
+                    .min_w_0()
+                    .child(div().text_sm().font_semibold().truncate().child(item.title.clone()))
+                    .when_some(subtitle, |column, (line, color)| {
+                        column.child(div().text_xs().text_color(color).truncate().child(line))
+                    }),
+            );
+        let transport = v_flex()
+            .flex_1()
+            .min_w_0()
+            .items_center()
+            .child(
+                h_flex()
+                    .gap_2()
                     .items_center()
                     .child(
+                        Button::new("shuffle")
+                            .ghost()
+                            .small()
+                            .icon(Icon::new(Lucide::Shuffle))
+                            .selected(shuffle)
+                            .tooltip(t(Str::CdShuffle))
+                            .accessibility_label(t(Str::CdShuffle))
+                            .on_click(cx.listener(move |player, _, _, cx| {
+                                player.playback.update(cx, |playback, cx| playback.set_shuffle(!shuffle, cx))
+                            })),
+                    )
+                    .child(
+                        Button::new("previous")
+                            .ghost()
+                            .icon(Icon::new(Lucide::SkipBack))
+                            .tooltip(t(Str::CdPrevious))
+                            .accessibility_label(t(Str::CdPrevious))
+                            .on_click(cx.listener(|player, _, _, cx| {
+                                player.playback.update(cx, |playback, cx| playback.previous(cx))
+                            })),
+                    )
+                    .child(self.play_circle(&state, cx))
+                    .child(
+                        Button::new("next")
+                            .ghost()
+                            .icon(Icon::new(Lucide::SkipForward))
+                            .tooltip(t(Str::CdNext))
+                            .accessibility_label(t(Str::CdNext))
+                            .disabled(!has_next)
+                            .on_click(cx.listener(|player, _, _, cx| {
+                                player.playback.update(cx, |playback, cx| playback.next(cx))
+                            })),
+                    )
+                    .child(
+                        Button::new("repeat")
+                            .ghost()
+                            .small()
+                            .icon(Icon::new(if loop_mode == LoopMode::One { Lucide::Repeat1 } else { Lucide::Repeat }))
+                            .selected(loop_mode != LoopMode::None)
+                            .accessibility_label(repeat_label)
+                            .tooltip(repeat_label)
+                            .on_click(cx.listener(move |player, _, _, cx| {
+                                player
+                                    .playback
+                                    .update(cx, |playback, cx| playback.set_loop_mode(loop_mode.cycled(), cx))
+                            })),
+                    ),
+            )
+            .child(
+                h_flex()
+                    .w_full()
+                    .max_w(px(BAR_SEEK_MAX))
+                    .gap_2()
+                    .items_center()
+                    .child(div().text_xs().font_semibold().text_color(theme.muted_foreground).child(clock(position)))
+                    .child(
+                        div().flex_1().child(Slider::new(&self.seek).accessibility_label(t(Str::A11yPlaybackPosition))),
+                    )
+                    .child(div().text_xs().font_semibold().text_color(theme.muted_foreground).child(clock(duration))),
+            );
+        let side_controls = side.then(|| {
+            h_flex()
+                .flex_shrink_0()
+                .items_center()
+                .child(
+                    Button::new("equalizer")
+                        .ghost()
+                        .small()
+                        .icon(Icon::new(Lucide::SlidersHorizontal))
+                        .tooltip(t(Str::SoundEq))
+                        .accessibility_label(t(Str::SoundEq))
+                        .on_click(cx.listener(|player, _, window, cx| {
+                            crate::sound_panel::SoundPanel::open(player.playback.clone(), window, cx)
+                        })),
+                )
+                .child(
+                    Button::new("speed-pitch")
+                        .ghost()
+                        .small()
+                        .icon(Icon::new(Lucide::Gauge))
+                        .selected(tuned)
+                        .tooltip(t(Str::MenuSpeedPitch))
+                        .accessibility_label(t(Str::MenuSpeedPitch))
+                        .on_click(cx.listener(|player, _, window, cx| {
+                            crate::sound_panel::SoundPanel::open(player.playback.clone(), window, cx)
+                        })),
+                )
+                .when(sleep, |row| row.child(self.sleep_button(sleep_remaining, sleep_after_current)))
+                .child(
+                    div().px_1().child(
+                        Icon::new(if volume <= 0. {
+                            Lucide::VolumeX
+                        } else if volume < 0.5 {
+                            Lucide::Volume1
+                        } else {
+                            Lucide::Volume2
+                        })
+                        .small()
+                        .text_color(theme.muted_foreground),
+                    ),
+                )
+                .child(div().w(px(BAR_VOLUME_WIDTH)).child(
+                    Slider::new(&self.volume).accessibility_label(tf(Str::SoundVolume, &[&((volume * 100.0) as i32)])),
+                ))
+        });
+        h_flex()
+            .id("player-bar")
+            .w_full()
+            .gap_4()
+            .px_4()
+            .py_2()
+            .items_center()
+            .border_t_1()
+            .border_color(theme.border)
+            .bg(theme.sidebar)
+            .on_click(cx.listener(|_, _, _, cx| cx.emit(ToggleNowPlaying)))
+            .child(info)
+            .child(transport)
+            .children(side_controls)
+            .into_any_element()
+    }
+
+    /// Drawer windows: the phone mini player. The 16:9 cover, then a thin progress line over the
+    /// title with play/pause and next; a click anywhere else opens Now Playing.
+    fn render_phone(&mut self, item: QueueItem, cx: &mut Context<Self>) -> AnyElement {
+        let playback = self.playback.read(cx);
+        let theme = cx.theme().clone();
+        let state = playback.state.clone();
+        let fraction = if playback.duration_ms > 0 {
+            (playback.position_ms as f32 / playback.duration_ms as f32).clamp(0., 1.)
+        } else {
+            0.
+        };
+        let has_next = playback.has_next();
+        let playing = matches!(state, PlayState::Playing | PlayState::Buffering);
+        let subtitle = Self::subtitle(&item, &state, cx);
+        h_flex()
+            .id("now-playing-toggle")
+            .role(Role::Button)
+            .tab_stop(true)
+            .aria_label(Self::now_playing_label(&item))
+            .w_full()
+            .h(px(56.))
+            .border_t_1()
+            .border_color(theme.border)
+            .cursor_pointer()
+            .on_click(cx.listener(|_, _, _, cx| cx.emit(ToggleNowPlaying)))
+            .child(Self::cover(&item, cx).h_full().aspect_ratio(16. / 9.))
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .h_full()
+                    .bg(theme.sidebar)
+                    .child(
+                        div()
+                            .w_full()
+                            .h(px(4.))
+                            .bg(theme.border)
+                            .child(div().h_full().w(relative(fraction)).bg(theme.primary)),
+                    )
+                    .child(
                         h_flex()
-                            .gap_2()
+                            .flex_1()
+                            .pl_3()
+                            .pr_2()
                             .items_center()
                             .child(
-                                Button::new("shuffle")
-                                    .ghost()
-                                    .small()
-                                    .icon(Icon::new(Lucide::Shuffle))
-                                    .selected(shuffle)
-                                    .tooltip(t(Str::CdShuffle))
-                                    .accessibility_label(t(Str::CdShuffle))
-                                    .on_click(cx.listener(move |player, _, _, cx| {
-                                        player.playback.update(cx, |playback, cx| playback.set_shuffle(!shuffle, cx))
-                                    })),
+                                v_flex()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .child(div().text_sm().font_semibold().truncate().child(item.title.clone()))
+                                    .when_some(subtitle, |column, (line, color)| {
+                                        column.child(div().text_xs().text_color(color).truncate().child(line))
+                                    }),
                             )
-                            .child(
-                                Button::new("previous")
+                            .child(if state == PlayState::Buffering {
+                                div()
+                                    .size(px(36.))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(Spinner::new())
+                                    .into_any_element()
+                            } else {
+                                Button::new("play-pause")
                                     .ghost()
-                                    .icon(Icon::new(Lucide::SkipBack))
-                                    .tooltip(t(Str::CdPrevious))
-                                    .accessibility_label(t(Str::CdPrevious))
+                                    .icon(Icon::new(if playing { Lucide::Pause } else { Lucide::Play }))
+                                    .accessibility_label(Self::play_label(&state))
+                                    .tooltip(Self::play_label(&state))
                                     .on_click(cx.listener(|player, _, _, cx| {
-                                        player.playback.update(cx, |playback, cx| playback.previous(cx))
-                                    })),
-                            )
-                            .child(play_pause)
+                                        player.playback.update(cx, |playback, cx| playback.toggle(cx))
+                                    }))
+                                    .into_any_element()
+                            })
                             .child(
                                 Button::new("next")
                                     .ghost()
                                     .icon(Icon::new(Lucide::SkipForward))
-                                    .tooltip(t(Str::CdNext))
                                     .accessibility_label(t(Str::CdNext))
+                                    .tooltip(t(Str::CdNext))
                                     .disabled(!has_next)
                                     .on_click(cx.listener(|player, _, _, cx| {
                                         player.playback.update(cx, |playback, cx| playback.next(cx))
                                     })),
-                            )
-                            .child(
-                                Button::new("repeat")
-                                    .ghost()
-                                    .small()
-                                    .icon(Icon::new(if loop_mode == LoopMode::One {
-                                        Lucide::Repeat1
-                                    } else {
-                                        Lucide::Repeat
-                                    }))
-                                    .selected(loop_mode != LoopMode::None)
-                                    .accessibility_label(t(match loop_mode {
-                                        LoopMode::None => Str::CdRepeatOff,
-                                        LoopMode::All => Str::CdRepeatAll,
-                                        LoopMode::One => Str::CdRepeatOne,
-                                    }))
-                                    .tooltip(t(match loop_mode {
-                                        LoopMode::None => Str::CdRepeatOff,
-                                        LoopMode::All => Str::CdRepeatAll,
-                                        LoopMode::One => Str::CdRepeatOne,
-                                    }))
-                                    .on_click(cx.listener(move |player, _, _, cx| {
-                                        player
-                                            .playback
-                                            .update(cx, |playback, cx| playback.set_loop_mode(loop_mode.cycled(), cx))
-                                    })),
                             ),
-                    )
-                    .child(
-                        h_flex()
-                            .w_full()
-                            .max_w(px(560.))
-                            .gap_2()
-                            .items_center()
-                            .child(div().text_xs().text_color(theme.muted_foreground).child(clock(position)))
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .child(Slider::new(&self.seek).accessibility_label(t(Str::A11yPlaybackPosition))),
-                            )
-                            .child(div().text_xs().text_color(theme.muted_foreground).child(clock(duration))),
-                    ),
-            )
-            .child(
-                h_flex()
-                    .w(px(232.))
-                    .gap_2()
-                    .items_center()
-                    .child(
-                        Button::new("sound")
-                            .ghost()
-                            .small()
-                            .icon(Icon::new(Lucide::SlidersHorizontal))
-                            .tooltip(t(Str::SoundTitle))
-                            .accessibility_label(t(Str::SoundTitle))
-                            .on_click(cx.listener(|player, _, window, cx| {
-                                crate::sound_panel::SoundPanel::open(player.playback.clone(), window, cx)
-                            })),
-                    )
-                    .child(self.sleep_button(sleep_remaining, sleep_after_current))
-                    .child(Icon::new(Lucide::Volume2).small().text_color(theme.muted_foreground))
-                    .child(
-                        div().flex_1().child(
-                            Slider::new(&self.volume)
-                                .accessibility_label(tf(Str::SoundVolume, &[&((volume * 100.0) as i32)])),
-                        ),
                     ),
             )
             .into_any_element()
+    }
+}
+
+impl Render for MiniPlayer {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let Some(item) = self.playback.read(cx).current().cloned() else { return div().into_any_element() };
+        let viewport = window.viewport_size();
+        let (width, height) = (f32::from(viewport.width), f32::from(viewport.height));
+        if width >= 750. && height >= 480. { self.render_bar(item, width, cx) } else { self.render_phone(item, cx) }
     }
 }
