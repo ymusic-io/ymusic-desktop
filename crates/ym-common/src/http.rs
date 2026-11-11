@@ -11,6 +11,9 @@ const READ_TIMEOUT: Duration = Duration::from_secs(10);
 pub struct HttpClients {
     pub following: reqwest::Client,
     pub not_following: reqwest::Client,
+    /// No redirects and no transparent gzip, with TLS details on each response: the engine's HTTP
+    /// cache stores bodies as they arrive and follows redirects hop by hop itself.
+    pub raw: reqwest::Client,
 }
 
 impl HttpClients {
@@ -19,6 +22,7 @@ impl HttpClients {
         Ok(Self {
             following: builder().redirect(reqwest::redirect::Policy::limited(20)).build()?,
             not_following: builder().redirect(reqwest::redirect::Policy::none()).build()?,
+            raw: builder().redirect(reqwest::redirect::Policy::none()).no_gzip().tls_info(true).build()?,
         })
     }
 
