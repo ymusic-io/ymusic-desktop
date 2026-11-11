@@ -733,11 +733,21 @@ impl Playback {
     ///
     /// # Safety
     /// `layer` must be a live `AVSampleBufferDisplayLayer` that outlives this `Playback`.
+    #[cfg(target_os = "macos")]
     pub unsafe fn attach_video_layer(&mut self, layer: *mut std::ffi::c_void) {
         if self.presenter.is_some() {
             return;
         }
-        self.presenter = unsafe { Presenter::on_layer(layer) }.map(Arc::new);
+        if let Some(presenter) = unsafe { Presenter::on_layer(layer) } {
+            self.attach_presenter(Arc::new(presenter));
+        }
+    }
+
+    pub fn attach_presenter(&mut self, presenter: Arc<Presenter>) {
+        if self.presenter.is_some() {
+            return;
+        }
+        self.presenter = Some(presenter);
         self.bind_presenter();
     }
 

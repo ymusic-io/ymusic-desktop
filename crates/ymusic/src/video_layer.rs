@@ -1,10 +1,24 @@
-//! The surface YouTube video presents into: an `AVSampleBufferDisplayLayer` hosted by a native
-//! view placed BEHIND the gpui view, inside the transparent window. gpui leaves the video box
-//! unpainted (a hole), so its controls, captions and dialogs draw over the video.
+//! The surface video presents into. macOS: an `AVSampleBufferDisplayLayer` hosted by a native
+//! view placed BEHIND the gpui view, inside the transparent window; gpui leaves the video box
+//! unpainted (a hole), so its controls, captions and dialogs draw over the video. Elsewhere: CPU
+//! pictures painted by gpui as the box's background image.
 
+#[cfg(not(target_os = "macos"))]
+use std::cell::{Cell, RefCell};
+#[cfg(target_os = "macos")]
 use std::ffi::c_void;
+#[cfg(not(target_os = "macos"))]
+use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(not(target_os = "macos"))]
+use std::sync::{Arc, Mutex, PoisonError};
 
+#[cfg(not(target_os = "macos"))]
+use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{Bounds, Pixels, Window};
+#[cfg(not(target_os = "macos"))]
+use gpui_kit::{Div, ObjectFit, ParentElement, RenderImage, Stateful, Styled, StyledImage, black, img};
+#[cfg(not(target_os = "macos"))]
+use ym_mse::Presenter;
 
 #[cfg(target_os = "macos")]
 #[repr(C)]
@@ -65,6 +79,11 @@ impl VideoLayer {
         objc2::rc::Retained::as_ptr(&self.layer) as *mut c_void
     }
 
+    /// The native view shows through the unpainted box.
+    pub fn underlay(&self, frame: gpui_kit::Stateful<gpui_kit::Div>) -> gpui_kit::Stateful<gpui_kit::Div> {
+        frame
+    }
+
     /// Window-relative logical bounds (top-left origin); hidden when `visible` is false.
     pub fn place(&self, bounds: Bounds<Pixels>, visible: bool) {
         use objc2::msg_send;
@@ -110,6 +129,90 @@ impl Drop for VideoLayer {
             let _: () = msg_send![&*self.view, removeFromSuperview];
         }
     }
+}
+
+/// CPU pictures drawn by gpui as an image: Wayland cannot embed a child surface under gpui's.
+#[cfg(not(target_os = "macos"))]
+pub struct VideoLayer {
+    /// The newest picture, written on a decode thread.
+    latest: Arc<Mutex<Option<Arc<RenderImage>>>>,
+    /// A wake is outstanding; cleared when a render takes the picture.
+    pending: Arc<AtomicBool>,
+    shown: RefCell<Option<Arc<RenderImage>>>,
+    presenter: RefCell<Option<Arc<Presenter>>>,
+    scale: Cell<f32>,
+    fit: Cell<(u32, u32)>,
+}
+
+#[cfg(not(target_os = "macos"))]
+impl VideoLayer {
+    pub fn attach(window: &Window) -> Option<Self> {
+        Some(Self {
+            latest: Arc::default(),
+            pending: Arc::default(),
+            shown: RefCell::default(),
+            presenter: RefCell::default(),
+            scale: Cell::new(window.scale_factor()),
+            fit: Cell::new((0, 0)),
+        })
+    }
+
+    /// A presenter whose pictures this layer shows; `wake` runs on a decode thread when a picture
+    /// arrives and no render has taken the last one yet.
+    pub fn presenter(&self, wake: impl Fn() + Send + Sync + 'static) -> Option<Arc<Presenter>> {
+        let (latest, pending) = (self.latest.clone(), self.pending.clone());
+        let presenter = Arc::new(Presenter::cpu(Box::new(move |width, height, bgra| {
+            // gpui's RenderImage holds BGRA bytes in an RgbaImage.
+            let Some(buffer) = image::RgbaImage::from_raw(width, height, bgra.to_vec()) else { return };
+            let picture = Arc::new(RenderImage::new(vec![image::Frame::new(buffer)]));
+            *latest.lock().unwrap_or_else(PoisonError::into_inner) = Some(picture);
+            if !pending.swap(true, Ordering::AcqRel) {
+                wake();
+            }
+        }))?);
+        *self.presenter.borrow_mut() = Some(presenter.clone());
+        Some(presenter)
+    }
+
+    /// Takes the newest picture for this render; the one it replaces leaves the sprite atlas.
+    pub fn refresh(&self, window: &mut Window) -> anyhow::Result<()> {
+        self.scale.set(window.scale_factor());
+        self.pending.store(false, Ordering::Release);
+        let latest = self.latest.lock().unwrap_or_else(PoisonError::into_inner).clone();
+        let old = self.shown.replace(latest.clone());
+        match old {
+            Some(old) if latest.as_ref().is_none_or(|new| new.id != old.id) => window.drop_image(old),
+            _ => Ok(()),
+        }
+    }
+
+    /// Paints the current picture into the video box.
+    pub fn underlay(&self, frame: Stateful<Div>) -> Stateful<Div> {
+        frame.bg(black()).when_some(self.shown.borrow().clone(), |frame, picture| {
+            frame.child(img(picture).absolute().inset_0().size_full().object_fit(ObjectFit::Contain))
+        })
+    }
+
+    /// Fits decoded pictures to the box in device pixels.
+    pub fn place(&self, bounds: Bounds<Pixels>, visible: bool) {
+        if !visible {
+            return;
+        }
+        let scale = self.scale.get();
+        let fit = (
+            (f32::from(bounds.size.width) * scale).round() as u32,
+            (f32::from(bounds.size.height) * scale).round() as u32,
+        );
+        if fit.0 == 0 || fit.1 == 0 || fit == self.fit.get() {
+            return;
+        }
+        self.fit.set(fit);
+        if let Some(presenter) = self.presenter.borrow().as_ref() {
+            presenter.set_size(fit.0, fit.1);
+        }
+    }
+
+    pub fn hide(&self) {}
 }
 
 /// Minimized, or ordered out (hidden or closed to the Dock), as opposed to merely covered.

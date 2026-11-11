@@ -1,7 +1,7 @@
 //! Now Playing, laid out like the JVM desktop app. Wide (W > H and W >= 640): the video on the left
 //! with overlay controls, the queue pane on the right (`clamp(0.3W, 320, 480)`) under its top bar.
 //! Narrow: top bar, video full width, title, then the queue.
-//! The video is a native view behind the window (see `video_layer`), so its box stays unpainted.
+//! The video box is painted by `video_layer`: a native view behind the window on macOS, CPU pictures elsewhere.
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -159,9 +159,30 @@ impl NowPlaying {
         }
         let Some(layer) = VideoLayer::attach(window) else { return };
         let layer = Rc::new(layer);
-        let pointer = layer.as_ptr();
-        // SAFETY: the layer lives in this view for the app's lifetime, past Playback's use of it.
-        self.playback.update(cx, |playback, _| unsafe { playback.attach_video_layer(pointer) });
+        #[cfg(target_os = "macos")]
+        {
+            let pointer = layer.as_ptr();
+            // SAFETY: the layer lives in this view for the app's lifetime, past Playback's use of it.
+            self.playback.update(cx, |playback, _| unsafe { playback.attach_video_layer(pointer) });
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            use futures::StreamExt;
+            let (sender, mut pictures) = futures::channel::mpsc::unbounded::<()>();
+            if let Some(presenter) = layer.presenter(move || {
+                let _ = sender.unbounded_send(());
+            }) {
+                cx.spawn(async move |view, cx| {
+                    while pictures.next().await.is_some() {
+                        if view.update(cx, |_, cx| cx.notify()).is_err() {
+                            break;
+                        }
+                    }
+                })
+                .detach();
+                self.playback.update(cx, |playback, _| playback.attach_presenter(presenter));
+            }
+        }
         self.video_layer = Some(layer);
     }
 
@@ -279,6 +300,7 @@ impl NowPlaying {
             .relative()
             .overflow_hidden()
             .map(|frame| if fill { frame.size_full() } else { frame.w_full().aspect_ratio(16. / 9.) })
+            .when_some(layer.clone().filter(|_| show_video), |frame, layer| layer.underlay(frame))
             .when(!show_video, |frame| {
                 frame.bg(black()).when_some(current.thumb(i32::MAX), |frame, url| {
                     frame.child(img(url).size_full().object_fit(ObjectFit::Contain))
@@ -753,6 +775,13 @@ impl NowPlaying {
 impl Render for NowPlaying {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.ensure_video_layer(window, cx);
+        #[cfg(not(target_os = "macos"))]
+        if let Some(layer) = &self.video_layer
+            && let Err(error) = layer.refresh(window)
+        {
+            let log = &cx.global::<crate::graph::AppGraph>().log;
+            log.warn("video picture could not leave the atlas", Some(error.as_ref()));
+        }
         let painted = self.video_box.get();
         if painted.0 > 0 && painted != self.reported_box {
             self.reported_box = painted;
