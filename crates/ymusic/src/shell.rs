@@ -520,6 +520,18 @@ impl Shell {
             })
             .detach();
         }
+        // `YMUSIC_DEV_CLOSE_AFTER=<s>` presses the window's close button then.
+        if let Some(seconds) = std::env::var("YMUSIC_DEV_CLOSE_AFTER").ok().and_then(|value| value.parse().ok()) {
+            let executor = cx.background_executor().clone();
+            cx.spawn_in(window, async move |this, cx| {
+                executor.timer(std::time::Duration::from_secs(seconds)).await;
+                let close = this.update_in(cx, |shell, window, cx| shell.close_requested(window, cx));
+                if close.unwrap_or(false) {
+                    cx.update(|window, _| window.remove_window()).ok();
+                }
+            })
+            .detach();
+        }
         // `YMUSIC_DEV_KEYS=secondary-n,escape` presses those keys 4 s apart, through the window's
         // own key dispatch, to check shortcuts without driving the real keyboard.
         if let Ok(keys) = std::env::var("YMUSIC_DEV_KEYS") {
