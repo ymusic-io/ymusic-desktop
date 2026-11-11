@@ -8,13 +8,12 @@ use std::time::{Duration, Instant};
 
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::button::{Button, ButtonVariants};
-use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::{ActiveTheme, Icon, IconName, StyledExt, WindowExt, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use ym_i18n::{Str, t, tf};
 
-use crate::a11y::{FocusList, Layout, focusable};
+use crate::a11y::{FocusList, focusable};
 use crate::download_dialog::{DownloadPicker, DownloadTarget};
 use crate::downloads_view::DownloadsView;
 use crate::feed::{FeedAction, FeedSource, FeedView, ItemAction, Navigate, Play};
@@ -30,6 +29,7 @@ use crate::playback::{Playback, QueueItem};
 use crate::search_view::{SearchEvent, SearchView};
 use crate::settings_view::SettingsView;
 use crate::sponsor_block::SponsorBlock;
+use crate::tab_row::tab_row;
 
 const RAIL_COLLAPSED: f32 = 72.;
 const DRAWER_ICON_START: f32 = 20.;
@@ -243,6 +243,7 @@ pub struct Shell {
     focus: FocusHandle,
     nav_focus: FocusList,
     tab_focus: FocusList,
+    music_tab_focus: FocusList,
     /// The last Esc that had nothing to close; a second one soon after goes back.
     idle_escape_at: Option<Instant>,
     playback: Entity<Playback>,
@@ -323,6 +324,7 @@ impl Shell {
             focus: cx.focus_handle(),
             nav_focus: FocusList::new(None),
             tab_focus: FocusList::new(None),
+            music_tab_focus: FocusList::new(None),
             idle_escape_at: None,
             _subscriptions: vec![toggle, now_playing_events, visibility],
         }
@@ -973,7 +975,7 @@ impl Shell {
             let cell = self.tab_focus.item(index, cell, cx);
             row = row.child(if inline { cell.w(px(88.)) } else { cell.flex_1() });
         }
-        self.tab_focus.container(row, 0..DiscoverTab::ALL.len(), Layout::Horizontal, cx).into_any_element()
+        self.tab_focus.container(row, 0..DiscoverTab::ALL.len(), cx).into_any_element()
     }
 
     /// YT Music's text tabs with a sliding underline, pinned under the section bar.
@@ -986,22 +988,23 @@ impl Shell {
             .px_3()
             .border_b_1()
             .border_color(theme.border)
-            .child(
-                TabBar::new("music-tabs")
-                    .underline()
-                    .selected_index(selected)
-                    .children(MusicTab::ALL.iter().map(|tab| Tab::new().label(tab.label())))
-                    .on_click(move |index, _, cx| {
-                        if let Some(tab) = MusicTab::ALL.get(*index).copied() {
-                            shell
-                                .update(cx, |shell, cx| {
-                                    shell.music_tab = tab;
-                                    cx.notify();
-                                })
-                                .ok();
-                        }
-                    }),
-            )
+            .child(tab_row(
+                "music-tabs",
+                MusicTab::ALL.iter().map(|tab| SharedString::from(tab.label())).collect(),
+                selected,
+                &self.music_tab_focus,
+                move |index, _, cx| {
+                    if let Some(tab) = MusicTab::ALL.get(index).copied() {
+                        shell
+                            .update(cx, |shell, cx| {
+                                shell.music_tab = tab;
+                                cx.notify();
+                            })
+                            .ok();
+                    }
+                },
+                cx,
+            ))
             .into_any_element()
     }
 
@@ -1112,7 +1115,7 @@ impl Shell {
             }
         }
         let count = Section::GROUPS.iter().map(|group| group.len()).sum();
-        let list = self.nav_focus.container(list, 0..count, Layout::Vertical, cx);
+        let list = self.nav_focus.container(list, 0..count, cx);
         list.into_any_element()
     }
 
@@ -1349,6 +1352,7 @@ impl Render for Shell {
         root.relative()
             .size_full()
             .when(!now_playing, |shell| shell.bg(cx.theme().background))
+            .child(crate::a11y::frame_marker())
             .child(div().flex_1().min_h_0().w_full().child(body))
             .when(!now_playing, |shell| shell.child(self.mini_player.clone()))
             .children(drawer)

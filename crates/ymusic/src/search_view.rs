@@ -9,7 +9,7 @@ use gpui_kit::component::{ActiveTheme, Icon, IconName, Sizable, h_flex, v_flex};
 use gpui_kit::*;
 use ym_i18n::{Str, t};
 
-use crate::a11y::{FocusList, Layout};
+use crate::a11y::FocusList;
 use crate::graph::{AppGraph, on_core};
 
 const SUGGEST_DEBOUNCE: Duration = Duration::from_millis(250);
@@ -144,7 +144,7 @@ impl Render for SearchView {
             );
         }
         let shown = self.suggestions.len().min(12);
-        let rows = self.focus.container(rows, 0..shown, Layout::Vertical, cx);
+        let rows = self.focus.container(rows, 0..shown, cx);
         v_flex().size_full().child(bar).child(div().id("suggestions").flex_1().overflow_y_scroll().child(rows))
     }
 }

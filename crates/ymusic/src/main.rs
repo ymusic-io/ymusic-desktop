@@ -25,6 +25,7 @@ mod signin;
 mod signin_dialog;
 mod sound_panel;
 mod sponsor_block;
+mod tab_row;
 mod telemetry;
 mod video_layer;
 mod youtube_session;

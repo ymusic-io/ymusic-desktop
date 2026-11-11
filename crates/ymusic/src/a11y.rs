@@ -1,58 +1,137 @@
-//! Keyboard reach for lists and grids, the way the JVM app's `listKeyboardNavigation` works: every
-//! item is a real focus stop (Tab reaches it, Enter or Space activates it, the screen reader
-//! announces it), the arrow keys move between items, and an arrow past a list's edge moves on to
-//! the next or previous list. The focused item is ringed and scrolled into view.
+//! Keyboard reach the way the JVM app's Compose focus works: every list item, card, tab and chip is
+//! a real focus stop (Tab reaches it, Enter or Space activates it, the screen reader announces it),
+//! and an arrow key moves focus geometrically, to the nearest stop on screen in that direction,
+//! preferring one that lines up (Android's FocusFinder rule), so focus enters and leaves lists in
+//! screen order. The focused stop is ringed and scrolled into view.
 
 use std::cell::{Cell, RefCell};
 use std::ops::Range;
 use std::rc::{Rc, Weak};
 
 use gpui_kit::component::ActiveTheme;
+use gpui_kit::component::button::Button;
 use gpui_kit::*;
 
 const RING: f32 = 2.;
 /// Room kept between a revealed item and the scroll viewport's edge.
 const REVEAL_MARGIN: f32 = 12.;
-
-#[derive(Clone, Copy, PartialEq)]
-pub enum Layout {
-    /// Up/Down move; Left/Right leave the list.
-    Vertical,
-    /// Left/Right move; Up/Down leave the list.
-    Horizontal,
-    /// Left/Right move by one, Up/Down by a row of this many.
-    Grid(usize),
-}
+/// FocusFinder's weight of the distance along the arrow against the sideways offset.
+const MAJOR_WEIGHT: f32 = 13.;
 
 struct Slot {
     handle: FocusHandle,
     was_focused: Cell<bool>,
+    /// Window bounds as last painted, and the frame that painted it.
+    bounds: Cell<Bounds<Pixels>>,
+    painted: Cell<u64>,
 }
 
-/// Every list's item handles, so an arrow past one list's edge can land in another.
+/// Every focus stop on screen, for geometric arrow moves.
 #[derive(Default)]
-pub struct RovingItems(RefCell<Vec<Weak<Slot>>>);
+pub struct RovingItems {
+    slots: RefCell<Vec<Weak<Slot>>>,
+    frame: Cell<u64>,
+}
 
 impl Global for RovingItems {}
 
 impl RovingItems {
     fn register(cx: &App, slot: &Rc<Slot>) {
-        let mut slots = cx.global::<RovingItems>().0.borrow_mut();
+        let mut slots = cx.global::<RovingItems>().slots.borrow_mut();
         slots.retain(|slot| slot.strong_count() > 0);
         slots.push(Rc::downgrade(slot));
     }
 
-    fn contains(cx: &App, handle: &FocusHandle) -> bool {
-        cx.global::<RovingItems>()
-            .0
-            .borrow()
-            .iter()
-            .any(|slot| slot.upgrade().is_some_and(|slot| slot.handle == *handle))
+    /// The stops the latest frame painted, which is what is on screen.
+    fn painted(cx: &App) -> Vec<Rc<Slot>> {
+        let items = cx.global::<RovingItems>();
+        let frame = items.frame.get();
+        items.slots.borrow().iter().filter_map(Weak::upgrade).filter(|slot| slot.painted.get() == frame).collect()
     }
 }
 
 pub fn init(cx: &mut App) {
     cx.set_global(RovingItems::default());
+}
+
+/// Paint this first in the window (before any stop) so stops from earlier frames drop out.
+pub fn frame_marker() -> impl IntoElement {
+    canvas(
+        |_, _, _| {},
+        |_, _, _, cx| {
+            let items = cx.global::<RovingItems>();
+            items.frame.set(items.frame.get() + 1);
+        },
+    )
+    .absolute()
+    .size_0()
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Direction {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
+/// FocusFinder's ranking of `to` as the next stop from `from`; `None` when it is not that way.
+fn rank(from: Bounds<Pixels>, to: Bounds<Pixels>, direction: Direction) -> Option<(bool, f32)> {
+    let (fl, fr, ft, fb) =
+        (f32::from(from.left()), f32::from(from.right()), f32::from(from.top()), f32::from(from.bottom()));
+    let (tl, tr, tt, tb) = (f32::from(to.left()), f32::from(to.right()), f32::from(to.top()), f32::from(to.bottom()));
+    let candidate = match direction {
+        Direction::Left => (fr > tr || fl >= tr) && fl > tl,
+        Direction::Right => (fl < tl || fr <= tl) && fr < tr,
+        Direction::Up => (fb > tb || ft >= tb) && ft > tt,
+        Direction::Down => (ft < tt || fb <= tt) && fb < tb,
+    };
+    if !candidate {
+        return None;
+    }
+    let (major, minor, in_beam) = match direction {
+        Direction::Left => ((fl - tr).max(0.), ((ft + fb) - (tt + tb)).abs() / 2., tb > ft && tt < fb),
+        Direction::Right => ((tl - fr).max(0.), ((ft + fb) - (tt + tb)).abs() / 2., tb > ft && tt < fb),
+        Direction::Up => ((ft - tb).max(0.), ((fl + fr) - (tl + tr)).abs() / 2., tr > fl && tl < fr),
+        Direction::Down => ((tt - fb).max(0.), ((fl + fr) - (tl + tr)).abs() / 2., tr > fl && tl < fr),
+    };
+    Some((!in_beam, MAJOR_WEIGHT * major * major + minor * minor))
+}
+
+/// Moves focus to the best stop in `direction`; false when there is none.
+fn step(direction: Direction, window: &mut Window, cx: &mut App) -> bool {
+    let slots = RovingItems::painted(cx);
+    let Some(current) = slots.iter().find(|slot| slot.handle.is_focused(window)) else { return false };
+    let from = current.bounds.get();
+    let best = slots
+        .iter()
+        .filter(|slot| !Rc::ptr_eq(slot, current))
+        .filter_map(|slot| rank(from, slot.bounds.get(), direction).map(|rank| (rank, slot)))
+        .min_by(|(left, _), (right, _)| left.partial_cmp(right).unwrap_or(std::cmp::Ordering::Equal));
+    let Some((_, target)) = best else { return false };
+    let handle = target.handle.clone();
+    window.focus(&handle, cx);
+    true
+}
+
+/// Arrow keys move focus geometrically from any stop inside `element`.
+fn on_arrows<E: InteractiveElement>(element: E) -> E {
+    element.on_key_down(|event: &KeyDownEvent, window, cx| {
+        let modifiers = &event.keystroke.modifiers;
+        if modifiers.platform || modifiers.control || modifiers.alt || modifiers.shift {
+            return;
+        }
+        let direction = match event.keystroke.key.as_str() {
+            "left" => Direction::Left,
+            "right" => Direction::Right,
+            "up" => Direction::Up,
+            "down" => Direction::Down,
+            _ => return,
+        };
+        if step(direction, window, cx) {
+            cx.stop_propagation();
+        }
+    })
 }
 
 /// The focus handles of one list's items, kept across frames by item position.
@@ -70,7 +149,12 @@ impl FocusList {
     fn slot(&self, index: usize, cx: &App) -> Rc<Slot> {
         let mut slots = self.slots.borrow_mut();
         while slots.len() <= index {
-            let slot = Rc::new(Slot { handle: cx.focus_handle().tab_stop(true), was_focused: Cell::new(false) });
+            let slot = Rc::new(Slot {
+                handle: cx.focus_handle().tab_stop(true),
+                was_focused: Cell::new(false),
+                bounds: Cell::new(Bounds::default()),
+                painted: Cell::new(0),
+            });
             RovingItems::register(cx, &slot);
             slots.push(slot);
         }
@@ -81,108 +165,79 @@ impl FocusList {
         self.slot(index, cx).handle.clone()
     }
 
-    /// Makes `element` the list's `index`th item. It needs an id and a role of its own.
+    /// Records the stop's bounds each frame and reveals it when it gains focus.
+    fn tracker(&self, slot: Rc<Slot>) -> impl IntoElement {
+        let scroll = self.scroll.clone();
+        canvas(
+            |_, _, _| {},
+            move |bounds, _, window, cx| {
+                slot.bounds.set(bounds);
+                slot.painted.set(cx.global::<RovingItems>().frame.get());
+                let focused = slot.handle.is_focused(window);
+                if focused
+                    && !slot.was_focused.get()
+                    && let Some(scroll) = &scroll
+                {
+                    reveal(scroll, bounds, window);
+                }
+                slot.was_focused.set(focused);
+            },
+        )
+        .absolute()
+        .size_full()
+    }
+
+    /// Makes `element` the list's `index`th stop. It needs an id and a role of its own.
     pub fn item(&self, index: usize, element: Stateful<Div>, cx: &App) -> Stateful<Div> {
         let slot = self.slot(index, cx);
         let ring = cx.theme().ring;
-        let scroll = self.scroll.clone();
-        let watched = slot.clone();
-        element
-            .track_focus(&slot.handle)
-            .relative()
-            .focus_visible(move |style| {
-                style.shadow(vec![BoxShadow {
-                    color: ring,
-                    offset: point(px(0.), px(0.)),
-                    blur_radius: px(0.),
-                    spread_radius: px(RING),
-                    inset: true,
-                }])
-            })
-            .child(
-                canvas(
-                    |_, _, _| {},
-                    move |bounds, _, window, _| {
-                        let focused = watched.handle.is_focused(window);
-                        if focused
-                            && !watched.was_focused.get()
-                            && let Some(scroll) = &scroll
-                        {
-                            reveal(scroll, bounds, window);
-                        }
-                        watched.was_focused.set(focused);
-                    },
-                )
-                .absolute()
-                .size_full(),
-            )
+        on_arrows(
+            element
+                .track_focus(&slot.handle)
+                .relative()
+                .focus_visible(move |style| {
+                    style.shadow(vec![BoxShadow {
+                        color: ring,
+                        offset: point(px(0.), px(0.)),
+                        blur_radius: px(0.),
+                        spread_radius: px(RING),
+                        inset: true,
+                    }])
+                })
+                .child(self.tracker(slot)),
+        )
     }
 
-    /// Arrow keys over the items in `items`, laid out as `layout`.
-    pub fn container<E: InteractiveElement>(&self, element: E, items: Range<usize>, layout: Layout, cx: &App) -> E {
+    /// Makes `button` the list's `index`th stop (a chip, a pill), reachable by the arrows too.
+    pub fn button(&self, index: usize, button: Button, cx: &App) -> Div {
+        let button = button.track_focus(&self.handle(index, cx));
+        self.wrap(index, button, cx)
+    }
+
+    /// Makes `element`, already tracking [`Self::handle`]`(index)`, the list's `index`th stop.
+    pub fn wrap(&self, index: usize, element: impl IntoElement, cx: &App) -> Div {
+        let slot = self.slot(index, cx);
+        on_arrows(div().relative().child(element).child(self.tracker(slot)))
+    }
+
+    /// Home and End over the stops in `items`.
+    pub fn container<E: InteractiveElement>(&self, element: E, items: Range<usize>, cx: &App) -> E {
         let handles: Vec<FocusHandle> = items.map(|index| self.handle(index, cx)).collect();
         element.on_key_down(move |event: &KeyDownEvent, window, cx| {
-            let modifiers = &event.keystroke.modifiers;
-            if modifiers.platform || modifiers.control || modifiers.alt || modifiers.shift {
+            if !handles.iter().any(|handle| handle.is_focused(window)) {
                 return;
             }
-            if handles.is_empty() {
-                return;
-            }
-            let Some(current) = handles.iter().position(|handle| handle.is_focused(window)) else { return };
-            let step: isize = match (layout, event.keystroke.key.as_str()) {
-                (Layout::Vertical, "up") | (Layout::Horizontal | Layout::Grid(_), "left") => -1,
-                (Layout::Vertical, "down") | (Layout::Horizontal | Layout::Grid(_), "right") => 1,
-                (Layout::Grid(columns), "up") => -(columns.max(1) as isize),
-                (Layout::Grid(columns), "down") => columns.max(1) as isize,
-                (Layout::Vertical, "left") | (Layout::Horizontal, "up") => {
-                    if leave(&handles, false, window, cx) {
-                        cx.stop_propagation();
-                    }
-                    return;
-                }
-                (Layout::Vertical, "right") | (Layout::Horizontal, "down") => {
-                    if leave(&handles, true, window, cx) {
-                        cx.stop_propagation();
-                    }
-                    return;
-                }
-                (_, "home") => -(current as isize),
-                (_, "end") => (handles.len() - 1 - current) as isize,
-                _ => return,
+            let target = match event.keystroke.key.as_str() {
+                "home" => handles.first(),
+                "end" => handles.last(),
+                _ => None,
             };
-            let target = current as isize + step;
-            if (0..handles.len() as isize).contains(&target) {
-                window.focus(&handles[target as usize], cx);
-                cx.stop_propagation();
-            } else if leave(&handles, step > 0, window, cx) {
+            if let Some(target) = target {
+                window.focus(target, cx);
                 cx.stop_propagation();
             }
         })
     }
-}
-
-/// Moves focus along the tab order to the nearest item of another list; stays put if there is none.
-fn leave(own: &[FocusHandle], forward: bool, window: &mut Window, cx: &mut App) -> bool {
-    let Some(start) = window.focused(cx) else { return false };
-    let mut visited = vec![start.clone()];
-    loop {
-        if forward {
-            window.focus_next(cx);
-        } else {
-            window.focus_prev(cx);
-        }
-        let Some(focused) = window.focused(cx) else { break };
-        if visited.contains(&focused) {
-            break;
-        }
-        if !own.contains(&focused) && RovingItems::contains(cx, &focused) {
-            return true;
-        }
-        visited.push(focused);
-    }
-    window.focus(&start, cx);
-    false
 }
 
 /// Scrolls `scroll` the least that shows `item` (both in window coordinates).

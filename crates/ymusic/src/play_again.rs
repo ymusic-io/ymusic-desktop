@@ -11,7 +11,7 @@ use gpui_kit::*;
 use ym_history::{PlayAgainSession, PlayHistory};
 use ym_i18n::{Str, t, tf};
 
-use crate::a11y::{FocusList, Layout};
+use crate::a11y::FocusList;
 use crate::graph::{AppGraph, on_core};
 use crate::mini_player::clock;
 use crate::play_history::decode_items;
@@ -311,7 +311,7 @@ impl Render for PlayAgainView {
             }
             grid = grid.child(cells);
         }
-        let grid = self.focus.container(grid, 0..sessions.len(), Layout::Grid(columns), cx);
+        let grid = self.focus.container(grid, 0..sessions.len(), cx);
         div()
             .id("play-again-scroll")
             .size_full()

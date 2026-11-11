@@ -15,7 +15,7 @@ use gpui_kit::*;
 use ym_download::{DownloadChange, DownloadService, DownloadState, DownloadTask, TaskError};
 use ym_i18n::{Str, t, tf};
 
-use crate::a11y::{FocusList, Layout};
+use crate::a11y::FocusList;
 use crate::graph::{AppGraph, on_core};
 use crate::library::PlayLocal;
 use crate::playback::{QueueItem, Source};
@@ -76,6 +76,7 @@ pub struct DownloadsView {
     filter: Filter,
     scroll: ScrollHandle,
     focus: FocusList,
+    chip_focus: FocusList,
     _changes: Task<()>,
 }
 
@@ -112,7 +113,8 @@ impl DownloadsView {
             tasks: Vec::new(),
             filter: Filter::All,
             scroll: scroll.clone(),
-            focus: FocusList::new(Some(scroll)),
+            focus: FocusList::new(Some(scroll.clone())),
+            chip_focus: FocusList::new(Some(scroll)),
             _changes: changes,
         };
         view.refresh(cx);
@@ -511,10 +513,11 @@ impl Render for DownloadsView {
             let selected = candidate == filter;
             let chip = Button::new(("filter", index)).small().rounded_full().label(label).selected(selected);
             let chip = if selected { chip.primary() } else { chip.outline() };
-            chips = chips.child(chip.on_click(cx.listener(move |view, _, _, cx| {
+            let chip = chip.on_click(cx.listener(move |view, _, _, cx| {
                 view.filter = candidate;
                 cx.notify();
-            })));
+            }));
+            chips = chips.child(self.chip_focus.button(index, chip, cx));
         }
 
         let width = crate::feed::feed_width(window);
@@ -535,7 +538,7 @@ impl Render for DownloadsView {
             }
             cards = cards.child(cells);
         }
-        let grid = grid.child(self.focus.container(cards, 0..visible.len(), Layout::Grid(columns), cx));
+        let grid = grid.child(self.focus.container(cards, 0..visible.len(), cx));
         let fab = if any_active {
             Some((t(Str::DownloadsPauseAll), Lucide::Pause, true))
         } else if any_paused {

@@ -9,17 +9,17 @@ use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::component::spinner::Spinner;
-use gpui_kit::component::tab::{Tab as Tab_, TabBar};
 use gpui_kit::component::{ActiveTheme, Icon, IconName, Sizable, StyledExt, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use ym_i18n::{Str, t, tf};
 use ym_store::{Bucket, MediaItem, MediaStore};
 
-use crate::a11y::{FocusList, KeyboardFocusable, Layout};
+use crate::a11y::{FocusList, KeyboardFocusable};
 use crate::graph::{AppGraph, on_core};
 use crate::mini_player::clock;
 use crate::playback::QueueItem;
+use crate::tab_row::tab_row;
 
 /// Play these local files in order from `index`.
 pub struct PlayLocal {
@@ -76,6 +76,10 @@ const CARD_MAX: f32 = 176.;
 const SONG_MIN: f32 = 360.;
 const GRID_PADDING: f32 = 10.;
 const THUMB: f32 = 56.;
+const TOOL_ADD_FOLDER: usize = 0;
+const TOOL_SHUFFLE: usize = 1;
+const TOOL_SORT: usize = 2;
+const TOOL_SORT_DIRECTION: usize = 3;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tab {
@@ -124,6 +128,8 @@ pub struct LibraryView {
     summary: Option<String>,
     scroll: ScrollHandle,
     card_focus: FocusList,
+    tab_focus: FocusList,
+    tool_focus: FocusList,
     song_focus: FocusList,
     song_sort: (SongKey, bool),
     group_sort: (GroupKey, bool),
@@ -150,6 +156,8 @@ impl LibraryView {
             summary: None,
             scroll: scroll.clone(),
             card_focus: FocusList::new(Some(scroll.clone())),
+            tab_focus: FocusList::new(None),
+            tool_focus: FocusList::new(None),
             song_focus: FocusList::new(Some(scroll)),
             song_sort: (SongKey::Name, true),
             group_sort: (GroupKey::Name, true),
@@ -638,6 +646,7 @@ impl LibraryView {
             .rounded_full()
             .icon(Lucide::ArrowUpDown)
             .label(current)
+            .track_focus(&self.tool_focus.handle(TOOL_SORT, cx))
             .dropdown_menu_with_anchor(Anchor::TopRight, move |mut menu, _, _| {
                 if songs {
                     for key in SongKey::ALL {
@@ -684,7 +693,12 @@ impl LibraryView {
                 }
                 cx.notify();
             }));
-        h_flex().gap_1().items_center().child(chip).child(direction).into_any_element()
+        h_flex()
+            .gap_1()
+            .items_center()
+            .child(self.tool_focus.wrap(TOOL_SORT, chip, cx))
+            .child(self.tool_focus.button(TOOL_SORT_DIRECTION, direction, cx))
+            .into_any_element()
     }
 
     fn rescan_button(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -707,12 +721,16 @@ impl LibraryView {
         let bar = match (self.tab, &self.group) {
             (Tab::Folders, _) if self.path.is_empty() => bar
                 .child(
-                    Button::new("add-folder")
-                        .outline()
-                        .small()
-                        .rounded_full()
-                        .label(if self.scanning { t(Str::LibraryScanning) } else { t(Str::LibraryAddFolder) })
-                        .on_click(cx.listener(|view, _, _, cx| view.scan(cx))),
+                    self.tool_focus.button(
+                        TOOL_ADD_FOLDER,
+                        Button::new("add-folder")
+                            .outline()
+                            .small()
+                            .rounded_full()
+                            .label(if self.scanning { t(Str::LibraryScanning) } else { t(Str::LibraryAddFolder) })
+                            .on_click(cx.listener(|view, _, _, cx| view.scan(cx))),
+                        cx,
+                    ),
                 )
                 .child(self.rescan_button(cx)),
             (Tab::Folders, _) => {
@@ -785,14 +803,15 @@ impl LibraryView {
         bar.child(div().flex_1()).when(sortable, |bar| bar.child(self.sort_control(cx))).into_any_element()
     }
 
-    fn shuffle_chip(&self, cx: &mut Context<Self>) -> Button {
-        Button::new("shuffle-all")
+    fn shuffle_chip(&self, cx: &mut Context<Self>) -> Div {
+        let chip = Button::new("shuffle-all")
             .outline()
             .small()
             .rounded_full()
             .icon(Lucide::Shuffle)
             .label(t(Str::ShuffleAll))
-            .on_click(cx.listener(|view, _, _, cx| view.shuffle_all(cx)))
+            .on_click(cx.listener(|view, _, _, cx| view.shuffle_all(cx)));
+        self.tool_focus.button(TOOL_SHUFFLE, chip, cx)
     }
 }
 
@@ -805,13 +824,17 @@ impl Render for LibraryView {
         let song_columns = ((width - 2. * GRID_PADDING) / SONG_MIN).floor().max(1.) as usize;
 
         let selected = Tab::ALL.iter().position(|tab| *tab == self.tab).unwrap_or(0);
-        let tabs = div().w_full().px_3().border_b_1().border_color(theme.border).child(
-            TabBar::new("library-tabs")
-                .underline()
-                .selected_index(selected)
-                .children(Tab::ALL.iter().map(|tab| Tab_::new().label(tab.label())))
-                .on_click(cx.listener(|view, index: &usize, _, cx| view.select_tab(Tab::ALL[*index], cx))),
-        );
+        let view = cx.entity().downgrade();
+        let tabs = div().w_full().px_3().border_b_1().border_color(theme.border).child(tab_row(
+            "library-tabs",
+            Tab::ALL.iter().map(|tab| SharedString::from(tab.label())).collect(),
+            selected,
+            &self.tab_focus,
+            move |index, _, cx| {
+                view.update(cx, |view, cx| view.select_tab(Tab::ALL[index], cx)).ok();
+            },
+            cx,
+        ));
 
         let nothing_indexed = self.tab == Tab::Folders && self.path.is_empty() && self.folders.is_empty();
         if nothing_indexed && !self.scanning {
@@ -898,19 +921,16 @@ impl Render for LibraryView {
         }
         let empty = cards.is_empty() && songs.is_empty();
         let (card_count, song_count) = (cards.len(), songs.len());
-        let (card_layout, song_layout) = if grid {
-            (Layout::Grid(card_columns), Layout::Grid(song_columns))
-        } else {
-            (Layout::Vertical, Layout::Vertical)
-        };
         let (card_block, song_block) = if grid {
             (v_flex().children(grid_rows(cards, card_columns)), v_flex().children(grid_rows(songs, song_columns)))
         } else {
             (v_flex().children(cards), v_flex().children(songs))
         };
-        body = body
-            .child(self.card_focus.container(card_block, 0..card_count, card_layout, cx))
-            .child(self.song_focus.container(song_block, 0..song_count, song_layout, cx));
+        body = body.child(self.card_focus.container(card_block, 0..card_count, cx)).child(self.song_focus.container(
+            song_block,
+            0..song_count,
+            cx,
+        ));
         if empty {
             let message = t(match self.tab {
                 Tab::Folders => Str::LibraryEmptyFolder,

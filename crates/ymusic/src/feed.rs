@@ -17,8 +17,9 @@ use ym_engine::yt::{YtFeedItem, YtFeedPage, YtPageHeader, YtSectionHeader, YtThu
 use ym_engine::{DynamicEngine, EngineError, ErrorKind};
 use ym_i18n::{Str, t, tf};
 
-use crate::a11y::{FocusList, Layout, focusable};
+use crate::a11y::{FocusList, focusable};
 use crate::graph::{AppGraph, on_core};
+use crate::tab_row::tab_row;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum FeedSource {
@@ -175,6 +176,11 @@ pub struct FeedView {
     header_busy: bool,
     /// Every item's focus stop, by its index across all sections.
     focus: FocusList,
+    /// Section header and Show more buttons, three per section.
+    controls: FocusList,
+    /// The filter chips, then the page's Show more.
+    chips: FocusList,
+    tabs: FocusList,
 }
 
 /// Which page header a detail page shows.
@@ -207,7 +213,10 @@ impl FeedView {
             scroll: scroll.clone(),
             expanded: std::collections::HashSet::new(),
             header_busy: false,
-            focus: FocusList::new(Some(scroll)),
+            focus: FocusList::new(Some(scroll.clone())),
+            controls: FocusList::new(Some(scroll.clone())),
+            chips: FocusList::new(Some(scroll)),
+            tabs: FocusList::new(None),
         };
         view.reload(cx);
         view
@@ -692,6 +701,8 @@ struct Bands {
 }
 
 const CARD_MAX: f32 = 324.;
+/// The page's Show more, after any chip.
+const CHIPS_SHOW_MORE: usize = 64;
 const ROW_GAP: f32 = 16.;
 
 impl Bands {
@@ -1045,25 +1056,23 @@ impl FeedView {
             .when_some(count, |row, count| row.child(div().text_sm().text_color(theme.muted_foreground).child(count)))
             .when_some(cta.filter(|_| !collapsible), |row, (link, label)| {
                 let title = title.clone().map(SharedString::from);
-                row.child(
-                    Button::new(("cta", section_index))
-                        .ghost()
-                        .small()
-                        .label(label)
-                        .icon(Icon::new(IconName::ChevronRight))
-                        .on_click(cx.listener(move |view, _, _, cx| view.open_link(&link, title.clone(), cx))),
-                )
+                let button = Button::new(("cta", section_index))
+                    .ghost()
+                    .small()
+                    .label(label)
+                    .icon(Icon::new(IconName::ChevronRight))
+                    .on_click(cx.listener(move |view, _, _, cx| view.open_link(&link, title.clone(), cx)));
+                row.child(self.controls.button(section_index * 3, button, cx))
             })
             .when(collapsible, |row| {
-                row.child(
-                    Button::new(("collapse", section_index))
-                        .ghost()
-                        .small()
-                        .icon(Icon::new(if expanded { IconName::ChevronUp } else { IconName::ChevronDown }))
-                        .accessibility_label(t(if expanded { Str::CdCollapse } else { Str::CdExpand }))
-                        .tooltip(t(if expanded { Str::CdCollapse } else { Str::CdExpand }))
-                        .on_click(cx.listener(move |view, _, _, cx| view.toggle_section(section_index, cx))),
-                )
+                let button = Button::new(("collapse", section_index))
+                    .ghost()
+                    .small()
+                    .icon(Icon::new(if expanded { IconName::ChevronUp } else { IconName::ChevronDown }))
+                    .accessibility_label(t(if expanded { Str::CdCollapse } else { Str::CdExpand }))
+                    .tooltip(t(if expanded { Str::CdCollapse } else { Str::CdExpand }))
+                    .on_click(cx.listener(move |view, _, _, cx| view.toggle_section(section_index, cx)));
+                row.child(self.controls.button(section_index * 3 + 1, button, cx))
             })
             .into_any_element()
     }
@@ -1107,18 +1116,17 @@ impl FeedView {
                 for (offset, item) in section.items.iter().take(shown).enumerate() {
                     let link = item.url.clone();
                     let title = SharedString::from(item.title.clone());
-                    pills = pills.child(
-                        Button::new(("tag", first_item + offset))
-                            .small()
-                            .outline()
-                            .rounded_full()
-                            .label(item.title.clone())
-                            .on_click(cx.listener(move |view, _, _, cx| {
-                                if let Some(link) = &link {
-                                    view.open_link(link, Some(title.clone()), cx);
-                                }
-                            })),
-                    );
+                    let tag = Button::new(("tag", first_item + offset))
+                        .small()
+                        .outline()
+                        .rounded_full()
+                        .label(item.title.clone())
+                        .on_click(cx.listener(move |view, _, _, cx| {
+                            if let Some(link) = &link {
+                                view.open_link(link, Some(title.clone()), cx);
+                            }
+                        }));
+                    pills = pills.child(self.focus.button(first_item + offset, tag, cx));
                 }
                 if section.collapsible && section.items.len() > 10 {
                     let label = if expanded {
@@ -1126,14 +1134,13 @@ impl FeedView {
                     } else {
                         tf(Str::ShowMoreN, &[&(section.items.len() - 10)])
                     };
-                    pills = pills.child(
-                        Button::new(("tags-more", section_index))
-                            .small()
-                            .outline()
-                            .rounded_full()
-                            .label(label)
-                            .on_click(cx.listener(move |view, _, _, cx| view.toggle_section(section_index, cx))),
-                    );
+                    let more = Button::new(("tags-more", section_index))
+                        .small()
+                        .outline()
+                        .rounded_full()
+                        .label(label)
+                        .on_click(cx.listener(move |view, _, _, cx| view.toggle_section(section_index, cx)));
+                    pills = pills.child(self.controls.button(section_index * 3 + 2, more, cx));
                 }
                 return block.child(pills).into_any_element();
             }
@@ -1163,8 +1170,7 @@ impl FeedView {
                             ),
                     );
                 }
-                let row =
-                    self.focus.container(row, first_item..first_item + section.items.len(), Layout::Horizontal, cx);
+                let row = self.focus.container(row, first_item..first_item + section.items.len(), cx);
                 return block
                     .child(div().id(("carousel-scroll", section_index)).overflow_x_scroll().child(row))
                     .into_any_element();
@@ -1181,8 +1187,7 @@ impl FeedView {
         let limit = bands.columns * rows;
         let shown = if section.collapsible && !expanded { limit.min(section.items.len()) } else { section.items.len() };
         let items = &section.items[..shown];
-        let layout = if bands.columns == 1 { Layout::Vertical } else { Layout::Grid(bands.columns) };
-        block = self.focus.container(block, first_item..first_item + shown, layout, cx);
+        block = self.focus.container(block, first_item..first_item + shown, cx);
         if bands.columns == 1 {
             for (offset, item) in items.iter().enumerate() {
                 block = block.child(self.render_row(item, first_item + offset, bands, queue.clone(), cx));
@@ -1212,16 +1217,15 @@ impl FeedView {
             } else {
                 tf(Str::ShowMoreN, &[&(section.items.len() - limit)])
             };
+            let more = Button::new(("section-more", section_index))
+                .outline()
+                .rounded_full()
+                .w_full()
+                .label(label)
+                .icon(Icon::new(if expanded { IconName::ChevronUp } else { IconName::ChevronDown }))
+                .on_click(cx.listener(move |view, _, _, cx| view.toggle_section(section_index, cx)));
             block = block.child(
-                div().px(px(bands.margin)).child(
-                    Button::new(("section-more", section_index))
-                        .outline()
-                        .rounded_full()
-                        .w_full()
-                        .label(label)
-                        .icon(Icon::new(if expanded { IconName::ChevronUp } else { IconName::ChevronDown }))
-                        .on_click(cx.listener(move |view, _, _, cx| view.toggle_section(section_index, cx))),
-                ),
+                div().px(px(bands.margin)).child(self.controls.button(section_index * 3 + 2, more, cx).w_full()),
             );
         }
         block.into_any_element()
@@ -1285,17 +1289,18 @@ impl Render for FeedView {
         let tab_row = (!tabs.is_empty()).then(|| {
             let urls: Vec<Option<String>> = tabs.iter().map(|tab| tab.url.clone()).collect();
             let entity = cx.entity().downgrade();
-            div().px_3().border_b_1().border_color(theme.border).child(
-                gpui_kit::component::tab::TabBar::new("page-tabs")
-                    .underline()
-                    .selected_index(selected_tab)
-                    .children(tabs.iter().map(|tab| gpui_kit::component::tab::Tab::new().label(tab.title.clone())))
-                    .on_click(move |index, _, cx| {
-                        if let Some(Some(url)) = urls.get(*index).cloned() {
-                            entity.update(cx, |view, cx| view.open_tab(url, cx)).ok();
-                        }
-                    }),
-            )
+            div().px_3().border_b_1().border_color(theme.border).child(tab_row(
+                "page-tabs",
+                tabs.iter().map(|tab| SharedString::from(tab.title.clone())).collect(),
+                selected_tab,
+                &self.tabs,
+                move |index, _, cx| {
+                    if let Some(Some(url)) = urls.get(index).cloned() {
+                        entity.update(cx, |view, cx| view.open_tab(url, cx)).ok();
+                    }
+                },
+                cx,
+            ))
         });
         if !self.page.chips.is_empty() {
             let mut chips = h_flex().gap_2().px_4().py_2().when(self.page.chips_wrap, |row| row.flex_wrap());
@@ -1303,11 +1308,12 @@ impl Render for FeedView {
                 let token = chip.token.clone();
                 let mut button = Button::new(("chip", index)).label(chip.title.clone()).small().rounded_full();
                 button = if chip.selected { button.primary() } else { button.outline() };
-                chips = chips.child(button.selected(chip.selected).on_click(cx.listener(move |view, _, _, cx| {
+                let button = button.selected(chip.selected).on_click(cx.listener(move |view, _, _, cx| {
                     if let Some(token) = token.clone() {
                         view.refilter(token, cx);
                     }
-                })));
+                }));
+                chips = chips.child(self.chips.button(index, button, cx));
             }
             column = column.child(div().id("chips").overflow_x_scroll().child(chips));
         } else if self.page.page_header.is_none() && !category {
@@ -1348,12 +1354,18 @@ impl Render for FeedView {
         } else if self.page.continuation.is_some() {
             column = column.child(
                 div().px(px(bands.margin)).pt_2().child(
-                    Button::new("show-more")
-                        .outline()
-                        .rounded_full()
-                        .w_full()
-                        .label(t(Str::ShowMore))
-                        .on_click(cx.listener(|view, _, _, cx| view.load_more(cx))),
+                    self.chips
+                        .button(
+                            CHIPS_SHOW_MORE,
+                            Button::new("show-more")
+                                .outline()
+                                .rounded_full()
+                                .w_full()
+                                .label(t(Str::ShowMore))
+                                .on_click(cx.listener(|view, _, _, cx| view.load_more(cx))),
+                            cx,
+                        )
+                        .w_full(),
                 ),
             );
         }

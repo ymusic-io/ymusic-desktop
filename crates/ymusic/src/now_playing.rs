@@ -17,7 +17,7 @@ use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use ym_i18n::{Str, t, tf};
 
-use crate::a11y::{FocusList, KeyboardFocusable, Layout};
+use crate::a11y::{FocusList, KeyboardFocusable};
 use crate::download_dialog::DownloadTarget;
 use crate::mini_player::clock;
 use crate::playback::{PlayState, Playback, QueueItem};
@@ -547,7 +547,7 @@ impl NowPlaying {
                     })),
             );
         }
-        let list = self.queue_focus.container(list, 0..queue.len(), Layout::Vertical, cx);
+        let list = self.queue_focus.container(list, 0..queue.len(), cx);
         div()
             .id("np-queue")
             .flex_1()
