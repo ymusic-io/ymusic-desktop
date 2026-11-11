@@ -161,6 +161,13 @@ fn bucket_from_row(row: &Row<'_>) -> rusqlite::Result<Bucket> {
     })
 }
 
+/// A user-made Library playlist; its members are content codes (a YouTube id, or size and length).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Playlist {
+    pub id: i64,
+    pub name: String,
+}
+
 const BUCKET_COLUMNS: &str = "id, parentId, uri, name, aliasName, excluded";
 
 fn now_millis() -> i64 {
@@ -349,5 +356,51 @@ impl MediaStore {
         let mut statement = db.prepare(&sql)?;
         let rows = statement.query_map([], item_from_row)?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// The YouTube video ids the Library holds a file of.
+    pub fn youtube_video_ids(&self) -> Result<Vec<String>, StoreError> {
+        let db = self.db.lock().unwrap();
+        let mut statement =
+            db.prepare("SELECT DISTINCT youtubeVid FROM mediaItem WHERE youtubeVid IS NOT NULL AND deleted = 0")?;
+        let rows = statement.query_map([], |row| row.get(0))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    pub fn playlists(&self) -> Result<Vec<Playlist>, StoreError> {
+        let db = self.db.lock().unwrap();
+        let mut statement = db.prepare("SELECT id, name FROM playlist ORDER BY id")?;
+        let rows = statement.query_map([], |row| Ok(Playlist { id: row.get(0)?, name: row.get(1)? }))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    pub fn create_playlist(&self, name: &str) -> Result<Playlist, StoreError> {
+        let db = self.db.lock().unwrap();
+        let now = now_millis();
+        db.execute("INSERT INTO playlist(name, createdAt, updatedAt) VALUES (?1, ?2, ?2)", params![name, now])?;
+        Ok(Playlist { id: db.last_insert_rowid(), name: name.to_owned() })
+    }
+
+    /// Appends `codes` in order; members already in the playlist keep their place. A YouTube id
+    /// joins before its file exists and shows up once a Library item carries it.
+    pub fn add_codes_to_playlist(&self, playlist_id: i64, codes: &[String]) -> Result<(), StoreError> {
+        let mut db = self.db.lock().unwrap();
+        let transaction = db.transaction()?;
+        let now = now_millis();
+        let last: i64 = transaction.query_row(
+            "SELECT COALESCE(MAX(sortKey), 0) FROM playlistItem WHERE playlistId = ?1",
+            params![playlist_id],
+            |row| row.get(0),
+        )?;
+        let mut sort_key = last.max(now);
+        for code in codes {
+            sort_key += 1;
+            transaction.execute(
+                "INSERT OR IGNORE INTO playlistItem(playlistId, code, sortKey, addedAt) VALUES (?1, ?2, ?3, ?4)",
+                params![playlist_id, code, sort_key, now],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(())
     }
 }
