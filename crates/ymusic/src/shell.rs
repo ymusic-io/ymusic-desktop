@@ -16,7 +16,7 @@ use ym_i18n::{Str, t, tf};
 use crate::a11y::{DragRow, FocusList, focusable};
 use crate::account_view::AccountView;
 use crate::download_dialog::{DownloadPicker, DownloadTarget};
-use crate::downloads_view::DownloadsView;
+use crate::downloads_view::{DownloadsView, RevealInLibrary};
 use crate::feed::{FeedAction, FeedSource, FeedView, ItemAction, Navigate, Play};
 use crate::feedback_view::FeedbackView;
 use crate::graph::{AppGraph, on_core};
@@ -659,6 +659,23 @@ impl Shell {
                     .detach();
                 }
             }
+            Some(("downloadsaction", spec)) => {
+                self.section = Section::Downloads;
+                let (action, video_id) = spec.split_once(':').unwrap_or((spec, ""));
+                let (action, video_id) = (action.to_owned(), video_id.to_owned());
+                let (view, executor) = (self.downloads_view(cx), cx.background_executor().clone());
+                cx.spawn_in(window, async move |_, cx| {
+                    for _ in 0..20 {
+                        executor.timer(Duration::from_millis(500)).await;
+                        let done =
+                            view.update_in(cx, |view, window, cx| view.dev_action(&action, &video_id, window, cx));
+                        if done.unwrap_or(true) {
+                            return;
+                        }
+                    }
+                })
+                .detach();
+            }
             Some(("quickdownload", video_id)) => {
                 self.section = Section::Downloads;
                 let target = DownloadTarget {
@@ -765,7 +782,14 @@ impl Shell {
             let (items, index) = (event.items.clone(), event.index);
             shell.playback.update(cx, |playback, cx| playback.play_queue(items, index, cx));
         });
-        self._subscriptions.push(play);
+        let reveal = cx.subscribe(&view, |shell, _, event: &RevealInLibrary, cx| {
+            shell.stacks.entry(Section::Library).or_default().pushed.clear();
+            shell.select_section(Section::Library, cx);
+            let library = shell.library_view(cx);
+            let file = event.file.clone();
+            library.update(cx, |library, cx| library.reveal_file(file, cx));
+        });
+        self._subscriptions.extend([play, reveal]);
         self.downloads = Some(view.clone());
         view
     }
@@ -1102,6 +1126,9 @@ impl Shell {
         }
         if let Some(settings) = &self.settings {
             settings.update(cx, |settings, cx| settings.refresh_account(cx));
+        }
+        if let Some(downloads) = &self.downloads {
+            downloads.update(cx, |downloads, _| downloads.signed_in());
         }
     }
 

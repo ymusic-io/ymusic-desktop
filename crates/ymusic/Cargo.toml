@@ -36,6 +36,7 @@ ym-ytmedia = { path = "../ym-ytmedia" }
 ym-history = { path = "../ym-history" }
 qrcode = { version = "0.14", default-features = false }
 rand = "0.9"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 uuid = { version = "1", features = ["v4"] }
 rfd = { version = "0.15", default-features = false, features = ["tokio"] }
 

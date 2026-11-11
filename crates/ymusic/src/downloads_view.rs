@@ -16,6 +16,8 @@ use ym_download::{DownloadChange, DownloadService, DownloadState, DownloadTask, 
 use ym_i18n::{Str, t, tf};
 
 use crate::a11y::{DragRow, FocusList};
+use crate::download_dialog::{DownloadPicker, DownloadTarget};
+use crate::downloads::pick_download_folder;
 use crate::graph::{AppGraph, on_core};
 use crate::library::PlayLocal;
 use crate::playback::{QueueItem, Source};
@@ -78,10 +80,18 @@ pub struct DownloadsView {
     focus: FocusList,
     chip_focus: FocusList,
     chip_drag: DragRow,
+    /// Sign-in-required failures to re-run once the account signs in.
+    retry_after_sign_in: Vec<String>,
     _changes: Task<()>,
 }
 
+/// Open the Library at the folder holding a finished download.
+pub struct RevealInLibrary {
+    pub file: PathBuf,
+}
+
 impl EventEmitter<PlayLocal> for DownloadsView {}
+impl EventEmitter<RevealInLibrary> for DownloadsView {}
 
 impl DownloadsView {
     pub fn new(service: DownloadService, cx: &mut Context<Self>) -> Self {
@@ -117,6 +127,7 @@ impl DownloadsView {
             focus: FocusList::new(Some(scroll.clone())),
             chip_focus: FocusList::new(Some(scroll)),
             chip_drag: DragRow::default(),
+            retry_after_sign_in: Vec::new(),
             _changes: changes,
         };
         view.refresh(cx);
@@ -182,6 +193,107 @@ impl DownloadsView {
         cx.notify();
     }
 
+    /// A Retry that a playability verdict answers first: signed out on a sign-in verdict, the
+    /// sign-in dialog (the task re-runs once signed in); an unavailable verdict offers removal; a
+    /// lost folder re-picks it.
+    fn retry(&mut self, task: &DownloadTask, window: &mut Window, cx: &mut Context<Self>) {
+        let code = task.error.as_ref().map(|error| error.code.clone()).unwrap_or_default();
+        let id = task.id.clone();
+        match playability(&code) {
+            Some(Playability::SignInRequired) => {
+                let graph = cx.global::<AppGraph>();
+                let (engine, log) = (graph.engine(), graph.log.fork("downloads"));
+                let account = on_core(cx, async move { engine.account_info(false, &log).await });
+                cx.spawn_in(window, async move |this, cx| {
+                    let signed_in = matches!(account.await, Some(Ok(account)) if account.signed_in);
+                    this.update_in(cx, |view, window, cx| {
+                        if signed_in {
+                            view.service.retry(&id);
+                        } else {
+                            view.sign_in_dialog(id, window, cx);
+                        }
+                    })
+                    .ok();
+                })
+                .detach();
+            }
+            Some(Playability::Unavailable) => self.unavailable_dialog(id, window, cx),
+            None if code == "folder" => {
+                let pick = pick_download_folder(cx);
+                cx.spawn(async move |this, cx| {
+                    if pick.await.is_some() {
+                        this.update(cx, |view, _| view.service.retry(&id)).ok();
+                    }
+                })
+                .detach();
+            }
+            _ => self.service.retry(&id),
+        }
+    }
+
+    fn sign_in_dialog(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
+        let view = cx.entity().downgrade();
+        retry_dialog(
+            t(Str::DownloadsSignInTitle),
+            t(Str::DownloadsSignInMessage),
+            t(Str::SigninButton),
+            window,
+            cx,
+            move |window, cx| {
+                view.update(cx, |view, _| view.retry_after_sign_in.push(id.clone())).ok();
+                window.dispatch_action(Box::new(crate::shortcuts::OpenSignIn), cx);
+            },
+        );
+    }
+
+    fn unavailable_dialog(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
+        let service = self.service.clone();
+        retry_dialog(
+            t(Str::DownloadsUnavailableTitle),
+            t(Str::DownloadsUnavailableMessage),
+            t(Str::MenuRemove),
+            window,
+            cx,
+            move |_, _| service.remove(&id),
+        );
+    }
+
+    /// Debug routes: `retry` or `reveal` the newest task of `video_id`.
+    pub fn dev_action(&mut self, action: &str, video_id: &str, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let Some(task) = self.tasks.iter().find(|task| task.video_id == video_id).cloned() else { return false };
+        match action {
+            "retry" => self.retry(&task, window, cx),
+            "reveal" => {
+                if let Some(file) = file_path(&task) {
+                    cx.emit(RevealInLibrary { file });
+                }
+            }
+            "format" => Self::other_format(&task, window, cx),
+            _ => {}
+        }
+        true
+    }
+
+    /// The account signed in: the downloads that were waiting on it run again.
+    pub fn signed_in(&mut self) {
+        for id in std::mem::take(&mut self.retry_after_sign_in) {
+            self.service.retry(&id);
+        }
+    }
+
+    fn other_format(task: &DownloadTask, window: &mut Window, cx: &mut App) {
+        DownloadPicker::open(
+            DownloadTarget {
+                video_id: task.video_id.clone(),
+                title: task.title.clone(),
+                artist: task.artist.clone(),
+                thumbnail_url: task.thumbnail_url.clone(),
+            },
+            window,
+            cx,
+        );
+    }
+
     fn play(&mut self, task: &DownloadTask, cx: &mut Context<Self>) {
         let Some(path) = file_path(task) else { return };
         let media = cx.global::<AppGraph>().media.clone();
@@ -214,6 +326,69 @@ fn file_path(task: &DownloadTask) -> Option<PathBuf> {
     url::Url::parse(task.file_uri.as_deref()?).ok()?.to_file_path().ok()
 }
 
+enum Playability {
+    SignInRequired,
+    Unavailable,
+}
+
+/// A YouTube playabilityStatus verdict in a failure code: all caps, unlike site codes and categories.
+/// ERROR is transient, so a plain re-run.
+fn playability(code: &str) -> Option<Playability> {
+    match code {
+        "LOGIN_REQUIRED" | "AGE_CHECK_REQUIRED" | "AGE_VERIFICATION_REQUIRED" => Some(Playability::SignInRequired),
+        "ERROR" => None,
+        _ if !code.is_empty() && code.chars().all(|c| c.is_ascii_uppercase() || c == '_') => {
+            Some(Playability::Unavailable)
+        }
+        _ => None,
+    }
+}
+
+fn retry_dialog(
+    title: &'static str,
+    message: &'static str,
+    action: &'static str,
+    window: &mut Window,
+    cx: &mut App,
+    on_action: impl Fn(&mut Window, &mut App) + 'static,
+) {
+    let on_action = std::rc::Rc::new(on_action);
+    window.open_alert_dialog(cx, move |alert, _, _| {
+        let on_action = on_action.clone();
+        alert
+            .title(title)
+            .description(message)
+            .ok_text(action)
+            .cancel_text(t(Str::DialogCancel))
+            .show_cancel(true)
+            .on_ok(move |_, window, cx| {
+                on_action(window, cx);
+                true
+            })
+    })
+}
+
+/// "Jul 31, 2026", in the local time zone.
+fn short_date(epoch_ms: i64) -> Option<String> {
+    use chrono::{Datelike, TimeZone};
+    const MONTHS: [Str; 12] = [
+        Str::MonthAbbr0,
+        Str::MonthAbbr1,
+        Str::MonthAbbr2,
+        Str::MonthAbbr3,
+        Str::MonthAbbr4,
+        Str::MonthAbbr5,
+        Str::MonthAbbr6,
+        Str::MonthAbbr7,
+        Str::MonthAbbr8,
+        Str::MonthAbbr9,
+        Str::MonthAbbr10,
+        Str::MonthAbbr11,
+    ];
+    let date = chrono::Local.timestamp_millis_opt(epoch_ms).single()?;
+    Some(tf(Str::DownloadsCompletedDate, &[&t(MONTHS[date.month0() as usize]), &date.day(), &date.year()]))
+}
+
 pub fn size_label(bytes: i64) -> String {
     let bytes = bytes.max(0) as f64;
     if bytes >= 1e9 {
@@ -227,6 +402,12 @@ pub fn size_label(bytes: i64) -> String {
 
 /// A failure as the user reads it: a category they can act on, else the code.
 pub fn task_error_text(error: &TaskError) -> String {
+    match playability(&error.code) {
+        Some(Playability::SignInRequired) => return t(Str::PlaybackSignInRequired).to_owned(),
+        Some(Playability::Unavailable) => return t(Str::PlaybackUnavailable).to_owned(),
+        None if error.code == "ERROR" => return t(Str::PlaybackRetryLater).to_owned(),
+        None => {}
+    }
     if let Some(message) = &error.user_message {
         return format!("{message} ({})", error.code);
     }
@@ -301,6 +482,11 @@ impl DownloadsView {
                         view.update(cx, |view, _| action(&view.service, &id)).ok();
                     })
                 };
+                let other_format = || {
+                    let task = task.clone();
+                    PopupMenuItem::new(t(Str::DownloadOtherFormat))
+                        .on_click(move |_, window, cx| DownloadsView::other_format(&task, window, cx))
+                };
                 match task.state {
                     DownloadState::Queued
                     | DownloadState::Preparing
@@ -316,8 +502,12 @@ impl DownloadsView {
                             .item(act(t(Str::DialogCancel), DownloadService::cancel));
                     }
                     DownloadState::Failed => {
+                        let (retry_view, retry_task) = (view.clone(), task.clone());
                         menu = menu
-                            .item(act(t(Str::Retry), DownloadService::retry))
+                            .item(PopupMenuItem::new(t(Str::Retry)).on_click(move |_, window, cx| {
+                                retry_view.update(cx, |view, cx| view.retry(&retry_task, window, cx)).ok();
+                            }))
+                            .item(other_format())
                             .item(act(t(Str::MenuRemove), DownloadService::remove));
                     }
                     DownloadState::Completed => {
@@ -325,11 +515,20 @@ impl DownloadsView {
                         menu = menu.item(PopupMenuItem::new(t(Str::MenuPlay)).on_click(move |_, _, cx| {
                             play_view.update(cx, |view, cx| view.play(&play_task, cx)).ok();
                         }));
+                        menu = menu.item(other_format());
                         if let Some(path) = file_path(&task) {
-                            menu = menu.item(
-                                PopupMenuItem::new(crate::library::reveal_label())
-                                    .on_click(move |_, _, cx| cx.reveal_path(&path)),
-                            );
+                            let (library_view, file) = (view.clone(), path.clone());
+                            menu = menu
+                                .item(PopupMenuItem::new(t(Str::DownloadsActionRevealLibrary)).on_click(
+                                    move |_, _, cx| {
+                                        let file = file.clone();
+                                        library_view.update(cx, |_, cx| cx.emit(RevealInLibrary { file })).ok();
+                                    },
+                                ))
+                                .item(
+                                    PopupMenuItem::new(crate::library::reveal_label())
+                                        .on_click(move |_, _, cx| cx.reveal_path(&path)),
+                                );
                         }
                         let (disk_view, disk_task) = (view.clone(), task.clone());
                         menu = menu.separator().item(act(t(Str::MenuRemove), DownloadService::remove)).item(
@@ -341,7 +540,7 @@ impl DownloadsView {
                         );
                     }
                     DownloadState::Canceled => {
-                        menu = menu.item(act(t(Str::MenuRemove), DownloadService::remove));
+                        menu = menu.item(other_format()).item(act(t(Str::MenuRemove), DownloadService::remove));
                     }
                 }
                 menu
@@ -375,10 +574,12 @@ impl DownloadsView {
                 .text_color(theme.muted_foreground)
                 .child(format!("{} / {}", size_label(task.downloaded_bytes), size_label(task.total_bytes)))
                 .into_any_element(),
-            DownloadState::Completed => div()
+            DownloadState::Completed => h_flex()
+                .gap_3()
                 .text_xs()
                 .text_color(theme.muted_foreground)
                 .child(size_label(task.total_bytes))
+                .when_some(short_date(task.updated_at), |row, date| row.child(date))
                 .into_any_element(),
             DownloadState::Failed => {
                 let id = task.id.clone();
@@ -395,14 +596,13 @@ impl DownloadsView {
                             .line_clamp(2)
                             .child(task.error.as_ref().map(task_error_text).unwrap_or_default()),
                     )
-                    .child(
-                        Button::new(("retry", row))
-                            .outline()
-                            .xsmall()
-                            .rounded_full()
-                            .label(t(Str::Retry))
-                            .on_click(cx.listener(move |view, _, _, _| view.service.retry(&id))),
-                    )
+                    .child(Button::new(("retry", row)).outline().xsmall().rounded_full().label(t(Str::Retry)).on_click(
+                        cx.listener(move |view, _, window, cx| {
+                            if let Some(task) = view.tasks.iter().find(|task| task.id == id).cloned() {
+                                view.retry(&task, window, cx);
+                            }
+                        }),
+                    ))
                     .into_any_element()
             }
             _ => div().into_any_element(),

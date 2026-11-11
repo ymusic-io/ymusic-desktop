@@ -359,6 +359,44 @@ impl LibraryView {
         self.refresh(cx);
     }
 
+    /// The Folders tab at the deepest Library folder holding `file`; the root when none does.
+    pub fn reveal_file(&mut self, file: std::path::PathBuf, cx: &mut Context<Self>) {
+        let store = self.store.clone();
+        let load = on_core(cx, async move {
+            tokio::task::spawn_blocking(move || {
+                let mut chain = Vec::new();
+                let mut level = store.root_buckets()?;
+                while let Some(bucket) = level.into_iter().find(|bucket| file.starts_with(&bucket.uri)) {
+                    level = store.child_buckets(bucket.id)?;
+                    chain.push(bucket);
+                }
+                Ok::<_, ym_store::StoreError>(chain)
+            })
+            .await
+        });
+        cx.spawn(async move |this, cx| {
+            let result = load.await;
+            this.update(cx, |view, cx| {
+                view.select_tab(Tab::Folders, cx);
+                match result {
+                    Some(Ok(Ok(chain))) => view.path = chain,
+                    Some(Ok(Err(error))) => cx
+                        .global::<AppGraph>()
+                        .log
+                        .warn("library folders could not be read to reveal a file", Some(&error)),
+                    Some(Err(error)) => cx
+                        .global::<AppGraph>()
+                        .log
+                        .warn("library folders could not be read to reveal a file", Some(&error)),
+                    None => {}
+                }
+                view.refresh(cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     fn open_crumb(&mut self, depth: usize, cx: &mut Context<Self>) {
         self.path.truncate(depth);
         self.refresh(cx);
