@@ -51,17 +51,20 @@ impl CookieJar for MemoryCookieJar {
 /// Writes the jar's persistent cookies somewhere durable. Blocking.
 pub type CookiePersist = Box<dyn Fn(&[u8]) -> Result<(), BoxError> + Send + Sync>;
 
-/// [`MemoryCookieJar`] semantics, saved after every change and restored at start. Session
-/// cookies (no expiry) are not saved, as a browser drops them at exit.
+/// [`MemoryCookieJar`] semantics, saved after every change in the JVM app's document and restored
+/// at start. Session cookies (no expiry) are not saved, as a browser drops them at exit.
 pub struct PersistentCookieJar {
     store: Mutex<cookie_store::CookieStore>,
     persist: CookiePersist,
 }
 
 impl PersistentCookieJar {
-    /// `saved` is what `persist` last wrote; unreadable bytes start an empty jar.
+    /// `saved` is what `persist` last wrote (the JVM app's document, or the `cookie_store` JSON
+    /// earlier builds wrote); unreadable bytes start an empty jar.
     pub fn new(saved: Option<&[u8]>, persist: CookiePersist) -> Self {
-        let store = saved.and_then(|bytes| cookie_store::serde::json::load(bytes).ok()).unwrap_or_default();
+        let store = saved
+            .and_then(|bytes| read_document(bytes).or_else(|| cookie_store::serde::json::load(bytes).ok()))
+            .unwrap_or_default();
         Self { store: Mutex::new(store), persist }
     }
 }
@@ -73,26 +76,81 @@ impl CookieJar for PersistentCookieJar {
     }
 
     fn save_from_response(&self, url: &Url, set_cookies: &[String]) -> Result<(), BoxError> {
-        let mut bytes = Vec::new();
-        {
+        let bytes = {
             let mut store = self.store.lock().unwrap();
             for set_cookie in set_cookies {
                 let _ = store.parse(set_cookie, url);
             }
-            cookie_store::serde::json::save(&store, &mut bytes)?;
-        }
+            write_document(&store)?
+        };
         (self.persist)(&bytes)
     }
 
     fn clear(&self) -> Result<(), BoxError> {
-        let mut bytes = Vec::new();
-        {
+        let bytes = {
             let mut store = self.store.lock().unwrap();
             store.clear();
-            cookie_store::serde::json::save(&store, &mut bytes)?;
-        }
+            write_document(&store)?
+        };
         (self.persist)(&bytes)
     }
+}
+
+/// The JVM app's jar document (`PersistentCookieStore`): `{"cookies": [{name, value, expiresAt (epoch
+/// ms), domain, path, secure, httpOnly, hostOnly}]}`, persistent cookies only. `None` when `bytes`
+/// is not one; a malformed entry is skipped, as the JVM app does.
+fn read_document(bytes: &[u8]) -> Option<cookie_store::CookieStore> {
+    let document: Value = serde_json::from_slice(bytes).ok()?;
+    let entries = document.get("cookies")?.as_array()?;
+    let mut store = cookie_store::CookieStore::default();
+    for entry in entries {
+        let text = |key: &str| entry.get(key).and_then(Value::as_str);
+        let flag = |key: &str| entry.get(key).and_then(Value::as_bool).unwrap_or(false);
+        let (Some(name), Some(value), Some(domain), Some(path), Some(expires_at)) =
+            (text("name"), text("value"), text("domain"), text("path"), entry.get("expiresAt").and_then(Value::as_i64))
+        else {
+            continue;
+        };
+        let Ok(expires) = time::OffsetDateTime::from_unix_timestamp_nanos(i128::from(expires_at) * 1_000_000) else {
+            continue;
+        };
+        let mut raw = cookie_store::RawCookie::build((name.to_owned(), value.to_owned()))
+            .path(path.to_owned())
+            .expires(expires)
+            .secure(flag("secure"))
+            .http_only(flag("httpOnly"));
+        if !flag("hostOnly") {
+            raw = raw.domain(domain.to_owned());
+        }
+        let Ok(url) = Url::parse(&format!("https://{domain}{path}")) else { continue };
+        let _ = store.insert_raw(&raw.build(), &url);
+    }
+    Some(store)
+}
+
+fn write_document(store: &cookie_store::CookieStore) -> Result<Vec<u8>, BoxError> {
+    let cookies: Vec<Value> = store
+        .iter_unexpired()
+        .filter_map(|cookie| {
+            let cookie_store::CookieExpiration::AtUtc(expires) = cookie.expires else { return None };
+            let (domain, host_only) = match &cookie.domain {
+                cookie_store::CookieDomain::HostOnly(domain) => (domain.clone(), true),
+                cookie_store::CookieDomain::Suffix(domain) => (domain.clone(), false),
+                _ => return None,
+            };
+            Some(serde_json::json!({
+                "name": cookie.name(),
+                "value": cookie.value(),
+                "expiresAt": (expires.unix_timestamp_nanos() / 1_000_000) as i64,
+                "domain": domain,
+                "path": String::from(&cookie.path),
+                "secure": cookie.secure().unwrap_or(false),
+                "httpOnly": cookie.http_only().unwrap_or(false),
+                "hostOnly": host_only,
+            }))
+        })
+        .collect();
+    Ok(serde_json::to_vec(&serde_json::json!({ "cookies": cookies }))?)
 }
 
 pub(crate) fn install(runtime: &QuickJsRuntime, jar: Arc<dyn CookieJar>, parked: Arc<ParkedLoggers>) {
