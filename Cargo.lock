@@ -9211,6 +9211,7 @@ dependencies = [
  "dirs 6.0.0",
  "futures",
  "gpui-kit",
+ "image",
  "log",
  "objc2 0.6.5",
  "objc2-core-foundation",

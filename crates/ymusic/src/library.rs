@@ -253,17 +253,24 @@ impl LibraryView {
     }
 
     /// The artist (or album) names of the open tab with their song counts, by name.
-    fn groups(&self) -> Vec<(String, usize)> {
-        let mut counts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    /// Each group's name, song count and the first member that has artwork.
+    fn groups(&self) -> Vec<(String, usize, Option<MediaItem>)> {
+        let mut counts: std::collections::BTreeMap<String, (usize, Option<&MediaItem>)> =
+            std::collections::BTreeMap::new();
         for item in &self.all_items {
             if let Some(name) = self.group_of(item) {
-                *counts.entry(name).or_default() += 1;
+                let entry = counts.entry(name).or_default();
+                entry.0 += 1;
+                if entry.1.is_none() && crate::local_art::art_url(item, 0).is_some() {
+                    entry.1 = Some(item);
+                }
             }
         }
-        let mut groups: Vec<(String, usize)> = counts.into_iter().collect();
+        let mut groups: Vec<(String, usize, Option<MediaItem>)> =
+            counts.into_iter().map(|(name, (count, art))| (name, count, art.cloned())).collect();
         let (key, ascending) = self.group_sort;
         if key == GroupKey::SongCount {
-            groups.sort_by_key(|(_, count)| *count);
+            groups.sort_by_key(|(_, count, _)| *count);
         }
         if !ascending {
             groups.reverse();
@@ -480,6 +487,21 @@ pub fn reveal_label() -> &'static str {
     })
 }
 
+/// The artwork filling its frame, the icon while it loads or when there is none.
+fn art_or_icon(icon: Lucide, art: Option<SharedString>, icon_size: Pixels, cx: &App) -> AnyElement {
+    let color = cx.theme().muted_foreground;
+    let placeholder = move || Icon::new(icon).size(icon_size).text_color(color).into_any_element();
+    match art {
+        Some(url) => img(url)
+            .size_full()
+            .object_fit(ObjectFit::Cover)
+            .with_loading(placeholder)
+            .with_fallback(placeholder)
+            .into_any_element(),
+        None => placeholder(),
+    }
+}
+
 /// Splits `cells` into rows of `columns` equal cells, padding a short last row.
 fn grid_rows(cells: Vec<AnyElement>, columns: usize) -> Vec<AnyElement> {
     let mut rows = Vec::new();
@@ -498,19 +520,20 @@ fn grid_rows(cells: Vec<AnyElement>, columns: usize) -> Vec<AnyElement> {
 }
 
 impl LibraryView {
-    /// A 56 thumbnail: the file kind's icon, with the duration badged at the bottom-end.
-    fn thumb(icon: Lucide, duration_ms: Option<i64>, cx: &App) -> Div {
+    /// A 56 thumbnail: the art, else the file kind's icon, with the duration badged at the bottom-end.
+    fn thumb(icon: Lucide, art: Option<SharedString>, duration_ms: Option<i64>, cx: &App) -> Div {
         let theme = cx.theme();
         div()
             .relative()
             .size(px(THUMB))
             .flex_shrink_0()
             .rounded(px(10.))
+            .overflow_hidden()
             .bg(theme.secondary)
             .flex()
             .items_center()
             .justify_center()
-            .child(Icon::new(icon).text_color(theme.muted_foreground))
+            .child(art_or_icon(icon, art, px(20.), cx))
             .when_some(duration_ms, |thumb, duration| {
                 thumb.child(
                     div()
@@ -572,6 +595,7 @@ impl LibraryView {
             .hover(|style| style.bg(theme.secondary))
             .child(Self::thumb(
                 if item.video_codec.is_some() { Lucide::Film } else { Lucide::Music },
+                crate::local_art::art_url(item, crate::local_art::ROW_PX),
                 item.duration_ms,
                 cx,
             ))
@@ -590,6 +614,7 @@ impl LibraryView {
     fn card(
         id: ElementId,
         icon: Lucide,
+        art: Option<SharedString>,
         title: String,
         subtitle: String,
         grid: bool,
@@ -615,16 +640,17 @@ impl LibraryView {
                         .w_full()
                         .aspect_ratio(1.)
                         .rounded(px(10.))
+                        .overflow_hidden()
                         .bg(theme.secondary)
                         .flex()
                         .items_center()
                         .justify_center()
-                        .child(Icon::new(icon).size(px(40.)).text_color(theme.muted_foreground)),
+                        .child(art_or_icon(icon, art, px(40.), cx)),
                 )
                 .child(div().pt(px(7.)).text_sm().line_clamp(2).child(title))
                 .child(div().pt(px(3.)).text_xs().text_color(theme.muted_foreground).truncate().child(subtitle))
         } else {
-            base.flex().px_4().py_2().gap_4().items_start().child(Self::thumb(icon, None, cx)).child(
+            base.flex().px_4().py_2().gap_4().items_start().child(Self::thumb(icon, art, None, cx)).child(
                 v_flex()
                     .flex_1()
                     .min_w_0()
@@ -891,6 +917,7 @@ impl Render for LibraryView {
                 let card = Self::card(
                     ("folder", index).into(),
                     Lucide::Folder,
+                    None,
                     name,
                     t(Str::LibraryFolder).to_owned(),
                     grid,
@@ -909,10 +936,12 @@ impl Render for LibraryView {
                 Tab::Albums => Lucide::Disc,
                 _ => Lucide::Tag,
             };
-            for (index, (name, count)) in self.groups().into_iter().enumerate() {
+            let art_px = if grid { crate::local_art::CARD_PX } else { crate::local_art::ROW_PX };
+            for (index, (name, count, art_item)) in self.groups().into_iter().enumerate() {
+                let art = art_item.and_then(|item| crate::local_art::art_url(&item, art_px));
                 let subtitle = ym_i18n::plural(ym_i18n::Plural::NSongs, count as i64, &[&count]);
                 let open = name.clone();
-                let card = Self::card(("group", index).into(), icon, name, subtitle, grid, false, cx).on_click(
+                let card = Self::card(("group", index).into(), icon, art, name, subtitle, grid, false, cx).on_click(
                     cx.listener(move |view, _, _, cx| {
                         view.group = Some(open.clone());
                         cx.notify();

@@ -1,8 +1,11 @@
-//! The default component assets plus the extra Lucide icons the shell uses.
+//! The default component assets, the extra Lucide icons the shell uses, and library artwork.
 
 use std::borrow::Cow;
+use std::sync::Arc;
 
 use gpui_kit::{AssetSource, Result, SharedString};
+
+use crate::local_art::LocalArt;
 
 gpui_kit::assets::icon_assets!(
     ShellIcons,
@@ -64,10 +67,15 @@ gpui_kit::assets::icon_assets!(
     ]
 );
 
-pub struct AppAssets;
+pub struct AppAssets {
+    pub local_art: Arc<LocalArt>,
+}
 
 impl AssetSource for AppAssets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
+        if LocalArt::handles(path) {
+            return self.local_art.load(path).map(Some);
+        }
         match ShellIcons.load(path) {
             Ok(Some(bytes)) => Ok(Some(bytes)),
             _ => gpui_kit::assets::Assets.load(path),

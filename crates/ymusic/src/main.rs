@@ -10,6 +10,7 @@ mod feedback_view;
 mod graph;
 mod http_client;
 mod library;
+mod local_art;
 mod local_engine;
 mod media_session;
 mod mini_player;
@@ -52,6 +53,7 @@ fn main() {
     let tokio =
         tokio::runtime::Builder::new_multi_thread().enable_all().thread_name("ym-core").build().expect("tokio runtime");
     let http = HttpClients::new().expect("HTTP client");
+    let local_art = std::sync::Arc::new(crate::local_art::LocalArt::new(data_dir.join("art-cache"), log.fork("art")));
     let graph = match tokio.block_on(AppGraph::boot(tokio.handle().clone(), log.clone(), http.clone(), data_dir)) {
         Ok(graph) => graph,
         Err(error) => {
@@ -68,8 +70,10 @@ fn main() {
     let images = ReqwestHttpClient::new(http.following.clone(), tokio.handle().clone());
 
     crate::a11y::install_debug_log();
-    application().with_assets(crate::assets::AppAssets).with_http_client(images).run(move |cx| {
+    let assets = crate::assets::AppAssets { local_art: local_art.clone() };
+    application().with_assets(assets).with_http_client(images).run(move |cx| {
         init(cx);
+        cx.set_global(crate::local_art::SharedLocalArt(local_art));
         crate::shortcuts::bind(cx);
         crate::a11y::init(cx);
         // No enter/exit animations anywhere: dialogs, popovers, menus and tabs change in one frame.

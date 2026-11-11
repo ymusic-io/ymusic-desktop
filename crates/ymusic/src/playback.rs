@@ -86,7 +86,7 @@ impl QueueItem {
             artist: item.artist.clone(),
             duration_ms: item.duration_ms,
             duration_label: item.duration_ms.map(crate::mini_player::clock),
-            thumbs: Vec::new(),
+            thumbs: crate::local_art::queue_thumbs(item),
             history_code: Some(
                 item.youtube_vid
                     .clone()

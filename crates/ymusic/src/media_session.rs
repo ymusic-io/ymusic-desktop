@@ -101,7 +101,13 @@ impl MediaSession {
         let duration_learned = playback.duration_ms > 0 && playback.duration_ms != self.announced_duration;
         let key = item.key();
         if self.announced_video.as_deref() != Some(key.as_str()) || duration_learned {
-            let cover = item.thumb(i32::MAX).map(|url| url.to_string());
+            let cover = item.thumb(i32::MAX).and_then(|url| {
+                if !crate::local_art::LocalArt::handles(&url) {
+                    return Some(url.to_string());
+                }
+                let art = cx.try_global::<crate::local_art::SharedLocalArt>()?;
+                art.0.cached_file(&url).and_then(|file| url::Url::from_file_path(file).ok()).map(String::from)
+            });
             let artist = item.artist.clone();
             let duration = (playback.duration_ms > 0).then(|| Duration::from_millis(playback.duration_ms as u64));
             let _ = controls.set_metadata(MediaMetadata {
