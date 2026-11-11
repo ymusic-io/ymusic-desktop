@@ -29,6 +29,9 @@ use crate::quick_download::{
 };
 use crate::spinner::Spinner;
 
+type CheckAction = fn(&mut PlaylistDownload);
+type OnCreated = Rc<dyn Fn(Playlist, &mut App)>;
+
 const STOP_LOAD_MORE: usize = 0;
 const STOP_MENU: usize = 1;
 const STOP_PRESET: usize = 2;
@@ -312,7 +315,7 @@ impl PlaylistDownload {
             .accessibility_label(t(Str::CdMore))
             .tooltip(t(Str::CdMore))
             .dropdown_menu_with_anchor(Anchor::TopRight, move |mut menu, _, _| {
-                let entries: [(Str, fn(&mut PlaylistDownload)); 4] = [
+                let entries: [(Str, CheckAction); 4] = [
                     (Str::PlaylistCheckAll, |view| {
                         view.checked = view.pickable().map(|video| video.id.clone()).collect();
                     }),
@@ -614,7 +617,7 @@ impl Render for PlaylistDownload {
 pub struct NewPlaylistName {
     name: Entity<InputState>,
     taken: Vec<String>,
-    on_created: Rc<dyn Fn(Playlist, &mut App)>,
+    on_created: OnCreated,
     busy: bool,
     _subscription: Subscription,
 }
