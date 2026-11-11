@@ -139,6 +139,7 @@ pub struct StreamDownloader {
     pub client: reqwest::Client,
     pub storage: Arc<DownloadStorage>,
     pub index: Option<Arc<SegmentIndex>>,
+    pub player_cache: Option<Arc<ym_ytmedia::cache::MediaCache>>,
     pub log: Logger,
 }
 
@@ -271,7 +272,7 @@ impl StreamDownloader {
                 ),
                 None => None,
             };
-            let mut session = SabrSession::new(self.log.fork("sabr"));
+            let mut session = SabrSession::new(self.log.fork("sabr")).reuse_player_cache(self.player_cache.clone());
             let mut report = |progress: ym_ytmedia::sabr::Progress| {
                 observer.progress(progress.done() as i64, progress.total() as i64)
             };

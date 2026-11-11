@@ -36,6 +36,8 @@ pub struct DownloadConfig {
     pub client: reqwest::Client,
     pub ffmpeg: Option<Ffmpeg>,
     pub segment_index: Option<Arc<ym_ytmedia::segment_index::SegmentIndex>>,
+    /// The player cache, read to reuse played segments, never written.
+    pub player_cache: Option<Arc<ym_ytmedia::cache::MediaCache>>,
     pub max_concurrent: usize,
     /// The user's download folder, read at publish time.
     pub folder: FolderSource,
@@ -85,6 +87,7 @@ impl DownloadService {
             client: config.client,
             storage: config.storage.clone(),
             index: config.segment_index,
+            player_cache: config.player_cache,
             log: log.fork("streams"),
         };
         let ffmpeg_available = config.ffmpeg.is_some();

@@ -60,6 +60,7 @@ pub struct DownloadInputs {
     pub settings: Arc<dyn SettingsStore>,
     pub media: Arc<MediaStore>,
     pub sessions: Arc<YoutubeSessions>,
+    pub player_cache: Option<Arc<ym_ytmedia::cache::MediaCache>>,
     pub log: Logger,
 }
 
@@ -100,6 +101,7 @@ pub fn open(inputs: DownloadInputs) -> Result<DownloadService, String> {
         client: inputs.http.following.clone(),
         ffmpeg: ffmpeg.map(ym_download::ffmpeg::Ffmpeg::new),
         segment_index: Some(Arc::new(index)),
+        player_cache: inputs.player_cache,
         max_concurrent: MAX_CONCURRENT,
         folder: Arc::new(move || download_folder(folder_settings.as_ref())),
         on_completed: Some(Arc::new(move |_, result| {

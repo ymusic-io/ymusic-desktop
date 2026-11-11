@@ -219,6 +219,7 @@ impl AppGraph {
             settings: settings.clone(),
             media: media.clone(),
             sessions: youtube.clone(),
+            player_cache: player_cache.clone(),
             log: log.clone(),
         };
         let downloads = tokio::task::spawn_blocking(move || crate::downloads::open(download_inputs))

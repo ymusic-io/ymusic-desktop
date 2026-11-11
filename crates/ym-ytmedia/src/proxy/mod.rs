@@ -15,12 +15,10 @@ use futures::StreamExt;
 use tokio::runtime::Handle;
 use ym_common::log::Logger;
 
-use crate::cache::{CacheError, MediaCache, SabrServe, serve_sabr};
+use crate::cache::{CacheError, MediaCache, SabrServe, reader_stream, serve_sabr};
 use crate::sabr::messages::{ADAPTIVE_FORMATS_HEADER, AbrRequest, parse_adaptive_formats_header};
 use crate::ump::ByteStream;
 use tee::SabrCacheTee;
-
-const READ_CHUNK: usize = 64 * 1024;
 
 pub struct ProxyRequest {
     pub url: String,
@@ -168,34 +166,9 @@ impl LocalMediaProxy {
     }
 
     /// Streams a hit off its pinned spans on a blocking worker; a read failure is a storage fault.
-    fn read_stream(self: &Arc<Self>, mut reader: impl Read + Send + 'static) -> ByteStream {
-        let (sender, receiver) = tokio::sync::mpsc::channel::<io::Result<Bytes>>(4);
+    fn read_stream(self: &Arc<Self>, reader: impl Read + Send + 'static) -> ByteStream {
         let proxy = self.clone();
-        self.tokio.spawn_blocking(move || {
-            loop {
-                let mut chunk = vec![0; READ_CHUNK];
-                match reader.read(&mut chunk) {
-                    Ok(0) => return,
-                    Ok(read) => {
-                        chunk.truncate(read);
-                        // A closed receiver is the client gone: stop and unpin.
-                        if sender.blocking_send(Ok(Bytes::from(chunk))).is_err() {
-                            return;
-                        }
-                    }
-                    Err(error) => {
-                        proxy.on_storage_fault(&error);
-                        let _ = sender.blocking_send(Err(error));
-                        return;
-                    }
-                }
-            }
-        });
-        futures::stream::unfold(
-            receiver,
-            |mut receiver| async move { receiver.recv().await.map(|item| (item, receiver)) },
-        )
-        .boxed()
+        reader_stream(reader, &self.tokio, move |error| proxy.on_storage_fault(error))
     }
 
     async fn forward<F, Fut>(

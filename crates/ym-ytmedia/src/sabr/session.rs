@@ -17,9 +17,10 @@ use ym_common::log::Logger;
 
 use super::SabrStreamSpec;
 use super::messages::{
-    self, AdaptiveFormat, BufferedRange, ClientAbrState, MediaHeader, NextRequestPolicy, SabrContextUpdate,
+    self, AbrRequest, AdaptiveFormat, BufferedRange, ClientAbrState, MediaHeader, NextRequestPolicy, SabrContextUpdate,
     VideoPlaybackAbrRequest,
 };
+use crate::cache::{MediaCache, SabrServe, reader_stream, serve_sabr};
 use crate::proto::{Message, ProtoError};
 use crate::segment_index::SegmentIndex;
 use crate::ump::{ByteStream, UmpReader, part};
@@ -224,6 +225,8 @@ pub struct SabrSession {
     video_segment: Option<MediaHeader>,
     trail: VecDeque<String>,
     rng: StdRng,
+    /// Segments it holds are read from it, never written into it.
+    player_cache: Option<Arc<MediaCache>>,
     log: Logger,
 }
 
@@ -240,8 +243,16 @@ impl SabrSession {
             video_segment: None,
             trail: VecDeque::new(),
             rng,
+            player_cache: None,
             log,
         }
+    }
+
+    /// Serves rounds from the player cache when it holds the next segments: a track played before
+    /// downloads without the network. Read-only, so a download never fills the player cache.
+    pub fn reuse_player_cache(mut self, cache: Option<Arc<MediaCache>>) -> Self {
+        self.player_cache = cache;
+        self
     }
 
     /// Drives the tracks to completion. With `index`, segments are recorded as they arrive and the
@@ -308,7 +319,30 @@ impl SabrSession {
                 }
                 return Err(SabrError::Stalled(last_error));
             }
-            let body = self.next_request(spec, tracks, fallback_video.as_ref(), started)?;
+            let (body, cache_request) = self.next_request(spec, tracks, fallback_video.as_ref(), started)?;
+            if let Some(request) = cache_request
+                && let Some(stream) = self.serve_from_player_cache(request).await
+            {
+                match self.read_response(UmpReader::new(stream), tracks, index, &mut gate, true).await {
+                    Ok(outcome) if outcome.completed_segments == 0 => {
+                        empty_rounds += 1;
+                        last_error = "cache served zero segments".to_owned();
+                    }
+                    Ok(_) => empty_rounds = 0,
+                    // A cache read failing mid-round leaves at most a partial segment past the cursor:
+                    // the network resends it and the prefix already written is skipped.
+                    Err(error @ (SabrError::Body(_) | SabrError::Protocol(_))) => {
+                        self.log.warn("cache-served round failed, continuing from network", Some(&error));
+                        self.player_cache = None;
+                    }
+                    Err(error) => return Err(error),
+                }
+                if tracks.is_complete() {
+                    gate.emit(tracks.progress(), true);
+                    return Ok(());
+                }
+                continue;
+            }
             self.rn += 1;
             let request_url = set_query_param(&set_query_param(&url, "cpn", &self.cpn), "rn", &self.rn.to_string());
             let player_time = self.player_time(tracks.video.is_some());
@@ -346,7 +380,7 @@ impl SabrSession {
                 return Err(SabrError::Status(status.as_u16()));
             }
             let stream: ByteStream = response.bytes_stream().map(|chunk| chunk.map_err(io::Error::other)).boxed();
-            let outcome = self.read_response(UmpReader::new(stream), tracks, index, &mut gate).await?;
+            let outcome = self.read_response(UmpReader::new(stream), tracks, index, &mut gate, false).await?;
             if let Some(redirect) = outcome.redirect {
                 url = redirect;
                 continue;
@@ -366,6 +400,27 @@ impl SabrSession {
         }
     }
 
+    /// The player cache's answer to this round, when it holds the next segments.
+    async fn serve_from_player_cache(&self, request: AbrRequest) -> Option<ByteStream> {
+        let cache = self.player_cache.clone()?;
+        match tokio::task::spawn_blocking(move || serve_sabr(&cache, &request)).await {
+            Ok(Ok(SabrServe::Hit { body, segment_count, cached_bytes, .. })) => {
+                self.log.debug(|| format!("cache-serve rn={} segments={segment_count} bytes={cached_bytes}", self.rn));
+                // A read error reaches the round as a body error.
+                Some(reader_stream(body, &tokio::runtime::Handle::current(), |_| {}))
+            }
+            Ok(Ok(_)) => None,
+            Ok(Err(error)) => {
+                self.log.warn("cache serve failed, using network", Some(&error));
+                None
+            }
+            Err(error) => {
+                self.log.warn("cache serve failed, using network", Some(&error));
+                None
+            }
+        }
+    }
+
     fn player_time(&self, with_video: bool) -> i64 {
         let audio = buffered_end(self.audio_segment.as_ref());
         if with_video { audio.min(buffered_end(self.video_segment.as_ref())) } else { audio }
@@ -377,7 +432,7 @@ impl SabrSession {
         tracks: &Tracks,
         fallback_video: Option<&AdaptiveFormat>,
         started: Instant,
-    ) -> Result<Vec<u8>, SabrError> {
+    ) -> Result<(Vec<u8>, Option<AbrRequest>), SabrError> {
         let with_video = tracks.video.is_some();
         let audio_buffered = buffered_range(self.audio_segment.as_ref())?;
         let video_buffered = if with_video { buffered_range(self.video_segment.as_ref())? } else { None };
@@ -405,6 +460,19 @@ impl SabrSession {
             tracks.audio.file.len(),
             tracks.video.as_ref().map(|video| video.file.len()),
         ));
+        let selected_video: Vec<messages::FormatId> =
+            video_format.or(fallback_video).map(AdaptiveFormat::format_id).into_iter().collect();
+        let cache_request = self.player_cache.is_some().then(|| AbrRequest {
+            player_time_ms: self.player_time(with_video),
+            enabled_track_types_bitfield: Some(if with_video { 0 } else { 1 }),
+            drc_enabled: audio_format.is_drc,
+            selected_formats: selected.clone(),
+            buffered_ranges: buffered.clone(),
+            selected_audio_formats: vec![audio_format.format_id()],
+            selected_video_formats: selected_video.clone(),
+            playback_cookie: Some(self.playback_cookie.clone()),
+            ..AbrRequest::default()
+        });
         let request = VideoPlaybackAbrRequest {
             client_abr_state: ClientAbrState {
                 player_time_ms: self.player_time(with_video),
@@ -422,17 +490,13 @@ impl SabrSession {
             buffered_ranges: buffered,
             ustreamer_config: &spec.ustreamer_config,
             selected_audio_formats: vec![audio_format.format_id()],
-            selected_video_formats: video_format
-                .or(fallback_video)
-                .map(AdaptiveFormat::format_id)
-                .into_iter()
-                .collect(),
+            selected_video_formats: selected_video,
             client_info: &spec.client_info,
             po_token: spec.po_token.as_deref(),
             playback_cookie: &self.playback_cookie,
             sabr_contexts: self.contexts.values().collect(),
         };
-        Ok(request.encode())
+        Ok((request.encode(), cache_request))
     }
 
     async fn read_response(
@@ -441,8 +505,9 @@ impl SabrSession {
         tracks: &mut Tracks<'_, '_>,
         index: Option<&SegmentIndex>,
         gate: &mut ProgressGate<'_>,
+        from_cache: bool,
     ) -> Result<RoundOutcome, SabrError> {
-        self.note("  network response".to_owned());
+        self.note(format!("  {} response", if from_cache { "cache" } else { "network" }));
         let mut open: HashMap<u8, PartState> = HashMap::new();
         let mut outcome =
             RoundOutcome { completed_segments: 0, redirect: None, backoff_ms: 0, protection_status: None };
