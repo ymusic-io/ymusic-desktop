@@ -55,7 +55,11 @@ fn apply_theme(choice: &str, accent: &str, cx: &mut App) {
     crate::desktop::set_pin_accent(accent);
     let on_accent = white();
     let amoled = choice == "amoled";
+    let ui_font = linux_ui_font(cx);
     Theme::update(cx, |theme| {
+        if let Some(font) = ui_font {
+            theme.font_family = font;
+        }
         theme.primary = accent;
         theme.primary_hover = accent.lighten(0.1);
         theme.primary_active = accent.darken(0.1);
@@ -85,6 +89,19 @@ fn apply_theme(choice: &str, accent: &str, cx: &mut App) {
             theme.window_border = if theme.mode.is_dark() { white().opacity(0.07) } else { black().opacity(0.15) };
         }
     });
+}
+
+/// Linux desktops' UI fonts, in the order GNOME and fontconfig fall back. gpui's system font there
+/// is IBM Plex Sans, rarely installed, which leaves each glyph to a different fallback face and
+/// breaks Vietnamese diacritics.
+const LINUX_UI_FONTS: [&str; 5] = ["Adwaita Sans", "Cantarell", "Noto Sans", "Ubuntu Sans", "DejaVu Sans"];
+
+fn linux_ui_font(cx: &App) -> Option<SharedString> {
+    if !cfg!(target_os = "linux") {
+        return None;
+    }
+    let installed = cx.text_system().all_font_names();
+    LINUX_UI_FONTS.into_iter().find(|font| installed.iter().any(|name| name == font)).map(SharedString::from)
 }
 
 /// Writes a setting off the UI thread, then redraws every window so its readers see it.
