@@ -1,6 +1,8 @@
-/* Library scan metadata, probed in-process through libavformat. */
+/* Library scan metadata and artwork, read in-process through libav. */
+#include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
 #include <libavutil/dict.h>
+#include <libswscale/swscale.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -105,4 +107,164 @@ int ym_probe(const char *path, YmProbe *out)
     }
     avformat_close_input(&ctx);
     return 0;
+}
+
+/* The attached picture's encoded bytes into a malloc'd *out (free with ym_free); 0, or a negative AVERROR. */
+int ym_attached_pic(const char *path, int stream_index, uint8_t **out, int *out_len)
+{
+    AVFormatContext *ctx = NULL;
+    AVPacket *pic;
+    int rc;
+    *out = NULL;
+    *out_len = 0;
+    rc = avformat_open_input(&ctx, path, NULL, NULL);
+    if (rc < 0)
+        return rc;
+    if (stream_index < 0 || (unsigned)stream_index >= ctx->nb_streams
+        || !(ctx->streams[stream_index]->disposition & AV_DISPOSITION_ATTACHED_PIC)) {
+        avformat_close_input(&ctx);
+        return AVERROR_STREAM_NOT_FOUND;
+    }
+    pic = &ctx->streams[stream_index]->attached_pic;
+    if (pic->size <= 0) {
+        avformat_close_input(&ctx);
+        return AVERROR_INVALIDDATA;
+    }
+    *out = malloc(pic->size);
+    if (!*out) {
+        avformat_close_input(&ctx);
+        return AVERROR(ENOMEM);
+    }
+    memcpy(*out, pic->data, pic->size);
+    *out_len = pic->size;
+    avformat_close_input(&ctx);
+    return 0;
+}
+
+static int decode_one(AVCodecContext *dec, AVPacket *packet, AVFrame *frame)
+{
+    int rc = avcodec_send_packet(dec, packet);
+    if (rc < 0 && rc != AVERROR(EAGAIN) && rc != AVERROR_EOF)
+        return rc;
+    rc = avcodec_receive_frame(dec, frame);
+    return rc == AVERROR(EAGAIN) ? 1 : rc;
+}
+
+/* A decoded frame a tenth into the video, scaled to fit max_side, as tightly packed RGBA in a
+ * malloc'd *out (free with ym_free); 0, or a negative AVERROR. */
+int ym_video_frame(const char *path, int max_side, uint8_t **out, int *width, int *height)
+{
+    AVFormatContext *ctx = NULL;
+    AVCodecContext *dec = NULL;
+    const AVCodec *codec = NULL;
+    AVPacket *packet = NULL;
+    AVFrame *frame = NULL;
+    struct SwsContext *sws = NULL;
+    int stream, rc, got = 0, packets = 0;
+    *out = NULL;
+    *width = *height = 0;
+    rc = avformat_open_input(&ctx, path, NULL, NULL);
+    if (rc < 0)
+        return rc;
+    rc = avformat_find_stream_info(ctx, NULL);
+    if (rc < 0)
+        goto done;
+    stream = av_find_best_stream(ctx, AVMEDIA_TYPE_VIDEO, -1, -1, &codec, 0);
+    if (stream < 0) {
+        rc = stream;
+        goto done;
+    }
+    dec = avcodec_alloc_context3(codec);
+    packet = av_packet_alloc();
+    frame = av_frame_alloc();
+    if (!dec || !packet || !frame) {
+        rc = AVERROR(ENOMEM);
+        goto done;
+    }
+    rc = avcodec_parameters_to_context(dec, ctx->streams[stream]->codecpar);
+    if (rc < 0)
+        goto done;
+    rc = avcodec_open2(dec, codec, NULL);
+    if (rc < 0)
+        goto done;
+    /* The first keyframe at or after the target: one decode, past a fade-in at the start. */
+    if (ctx->duration > 0 && avformat_seek_file(ctx, -1, ctx->duration / 10, ctx->duration / 10, INT64_MAX, 0) < 0)
+        av_seek_frame(ctx, -1, ctx->duration / 10, AVSEEK_FLAG_BACKWARD);
+    /* Bounded so a file with an undecodable video stream gives up instead of reading it all. */
+    while (!got && packets < 2000) {
+        rc = av_read_frame(ctx, packet);
+        if (rc < 0) {
+            rc = decode_one(dec, NULL, frame);
+            if (rc == 0)
+                got = 1;
+            break;
+        }
+        if (packet->stream_index == stream) {
+            packets++;
+            rc = decode_one(dec, packet, frame);
+            if (rc == 0)
+                got = 1;
+            else if (rc < 0 && rc != AVERROR_INVALIDDATA) {
+                av_packet_unref(packet);
+                goto done;
+            }
+        }
+        av_packet_unref(packet);
+    }
+    if (!got) {
+        rc = rc < 0 ? rc : AVERROR_INVALIDDATA;
+        goto done;
+    }
+    {
+        int src_w = frame->width, src_h = frame->height;
+        int dst_w = src_w, dst_h = src_h;
+        if (src_w <= 0 || src_h <= 0) {
+            rc = AVERROR_INVALIDDATA;
+            goto done;
+        }
+        if (max_side > 0 && (src_w > max_side || src_h > max_side)) {
+            if (src_w >= src_h) {
+                dst_w = max_side;
+                dst_h = (int)((long long)src_h * max_side / src_w);
+            } else {
+                dst_h = max_side;
+                dst_w = (int)((long long)src_w * max_side / src_h);
+            }
+            if (dst_w < 1)
+                dst_w = 1;
+            if (dst_h < 1)
+                dst_h = 1;
+        }
+        sws = sws_getContext(src_w, src_h, frame->format, dst_w, dst_h, AV_PIX_FMT_RGBA, SWS_BILINEAR, NULL, NULL,
+                             NULL);
+        if (!sws) {
+            rc = AVERROR(EINVAL);
+            goto done;
+        }
+        *out = malloc((size_t)dst_w * dst_h * 4);
+        if (!*out) {
+            rc = AVERROR(ENOMEM);
+            goto done;
+        }
+        {
+            uint8_t *planes[4] = {*out, NULL, NULL, NULL};
+            int strides[4] = {dst_w * 4, 0, 0, 0};
+            sws_scale(sws, (const uint8_t *const *)frame->data, frame->linesize, 0, src_h, planes, strides);
+        }
+        *width = dst_w;
+        *height = dst_h;
+        rc = 0;
+    }
+done:
+    sws_freeContext(sws);
+    av_frame_free(&frame);
+    av_packet_free(&packet);
+    avcodec_free_context(&dec);
+    avformat_close_input(&ctx);
+    return rc;
+}
+
+void ym_free(void *pointer)
+{
+    free(pointer);
 }

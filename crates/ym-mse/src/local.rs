@@ -1,4 +1,4 @@
-//! Local files: the in-process libav player (`file_av.c`) and the scan probe.
+//! Local files: the in-process libav player (`file_av.c`), the scan probe and artwork extraction.
 
 use std::ffi::{CStr, CString, c_char, c_int, c_void};
 use std::path::Path;
@@ -29,6 +29,15 @@ unsafe extern "C" {
     fn file_av_ended(player: *mut c_void) -> c_int;
     fn file_av_last_error(player: *mut c_void) -> *const c_char;
     fn ym_probe(path: *const c_char, out: *mut RawProbe) -> c_int;
+    fn ym_attached_pic(path: *const c_char, stream_index: c_int, out: *mut *mut u8, out_len: *mut c_int) -> c_int;
+    fn ym_video_frame(
+        path: *const c_char,
+        max_side: c_int,
+        out: *mut *mut u8,
+        width: *mut c_int,
+        height: *mut c_int,
+    ) -> c_int;
+    fn ym_free(pointer: *mut c_void);
 }
 
 /// The in-process file player. Every call comes from one player thread, which also calls
@@ -214,4 +223,44 @@ pub fn probe(path: &Path) -> Result<Probe, i32> {
         has_audio: raw.has_audio != 0,
         composers: [text(&raw.composer), text(&raw.stream_composer)].into_iter().flatten().collect(),
     })
+}
+
+/// Takes ownership of a malloc'd C buffer of `len` bytes.
+fn take_buffer(pointer: *mut u8, len: usize) -> Vec<u8> {
+    // SAFETY: the C side returned `len` initialized bytes at `pointer`, released right after the copy.
+    let bytes = unsafe { std::slice::from_raw_parts(pointer, len) }.to_vec();
+    unsafe { ym_free(pointer.cast()) };
+    bytes
+}
+
+/// Blocking: the encoded bytes (usually JPEG or PNG) of the attached picture at `stream_index`.
+/// `Err` carries libav's error code.
+pub fn attached_picture(path: &Path, stream_index: i32) -> Result<Vec<u8>, i32> {
+    let path = CString::new(path.to_string_lossy().as_bytes()).map_err(|_| -22)?;
+    let (mut out, mut len) = (std::ptr::null_mut(), 0);
+    let rc = unsafe { ym_attached_pic(path.as_ptr(), stream_index, &mut out, &mut len) };
+    if rc < 0 {
+        return Err(rc);
+    }
+    Ok(take_buffer(out, len as usize))
+}
+
+/// A decoded video frame, tightly packed RGBA.
+pub struct Frame {
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Vec<u8>,
+}
+
+/// Blocking: decodes a frame a tenth into the video, scaled to fit `max_side`.
+/// `Err` carries libav's error code.
+pub fn video_frame(path: &Path, max_side: u32) -> Result<Frame, i32> {
+    let path = CString::new(path.to_string_lossy().as_bytes()).map_err(|_| -22)?;
+    let (mut out, mut width, mut height) = (std::ptr::null_mut(), 0, 0);
+    let rc = unsafe { ym_video_frame(path.as_ptr(), max_side as c_int, &mut out, &mut width, &mut height) };
+    if rc < 0 {
+        return Err(rc);
+    }
+    let (width, height) = (width as u32, height as u32);
+    Ok(Frame { width, height, rgba: take_buffer(out, width as usize * height as usize * 4) })
 }
