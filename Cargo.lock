@@ -9796,6 +9796,7 @@ dependencies = [
  "raw-window-handle",
  "reqwest",
  "rfd",
+ "rusqlite",
  "serde_json",
  "souvlaki",
  "thiserror 2.0.21",

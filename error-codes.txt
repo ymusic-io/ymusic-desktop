@@ -112,12 +112,16 @@ R95000 - now playing: a local queue item could not be looked up in the library t
 R96000 - single instance: another process holds the data dir's instance lock but took no request
 R96001 - single instance: the lock, loopback listener or port file could not be set up
 R96002 - open with: none of the files the OS asked the app to open could be read
+R98000 - cookies: the cookie store (app.db secret) could not be read at launch
+R98001 - cookies: sealing the saved sign-in under a password failed
+R98002 - cookies: the unlock screen's unlock, guest or sign-out failed for a reason other than a wrong password
+R98003 - launch: the boot after the unlock screen did not finish (task panicked or the runtime shut down)
+R99001 - feedback: this build has no Sentry DSN, so the report cannot be sent
+R99002 - feedback: the report was not delivered before the flush timeout
+R99003 - feedback: the feedback-inbox envelope item could not be serialized
+R99004 - feedback: the Sentry client dropped the report (or the send worker stopped)
 R99010 - rename file: another file in the folder already has the new name
 R99011 - rename file: the file could not be renamed on disk
 R99012 - rename file: the Library row could not be moved to the new path (media store)
 R99013 - rename file: the finished download could not be moved to the new path (downloads.db)
 R99014 - rename file: the core runtime stopped before the rename finished
-R99001 - feedback: this build has no Sentry DSN, so the report cannot be sent
-R99002 - feedback: the report was not delivered before the flush timeout
-R99003 - feedback: the feedback-inbox envelope item could not be serialized
-R99004 - feedback: the Sentry client dropped the report (or the send worker stopped)

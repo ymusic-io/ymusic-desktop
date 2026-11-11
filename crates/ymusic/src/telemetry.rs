@@ -123,6 +123,13 @@ impl ReportPolicy for RemotePolicy {
     }
 }
 
+/// Keeps reporting alive for the app's lifetime.
+pub struct Reporting {
+    pub _guard: Option<Telemetry>,
+}
+
+impl gpui_kit::Global for Reporting {}
+
 /// After boot: trims the app log to the configured size, and starts Sentry when this build has a
 /// DSN and the user allows crash reports. The returned guard keeps reporting alive.
 pub fn start_reporting(setup: &LogSetup, graph: &AppGraph) -> Option<Telemetry> {

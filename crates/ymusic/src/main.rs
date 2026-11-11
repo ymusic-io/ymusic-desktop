@@ -4,6 +4,8 @@ mod account_view;
 mod assets;
 mod audio_effects;
 mod caption_style;
+mod cookie_lock;
+mod cookie_session;
 mod desktop;
 mod download_dialog;
 mod downloads;
@@ -15,6 +17,7 @@ mod fps_badge;
 mod graph;
 mod http_client;
 mod instance;
+mod launch;
 mod library;
 mod library_playlist;
 mod library_search;
@@ -56,9 +59,23 @@ use gpui_kit::*;
 use ym_common::http::HttpClients;
 use ym_i18n::{Str, t};
 
+use crate::cookie_session::{CookieOpen, LockedJar};
 use crate::graph::AppGraph;
 use crate::http_client::ReqwestHttpClient;
-use crate::shell::Shell;
+use crate::launch::{BootInputs, Launch};
+use crate::telemetry::LogSetup;
+
+enum Start {
+    Ready(Box<AppGraph>, Option<ym_telemetry::Telemetry>),
+    Locked(std::sync::Arc<LockedJar>, BootInputs, LogSetup),
+}
+
+/// A launch that cannot boot ends here, its error captured.
+pub fn boot_failed(log: &ym_common::log::Logger, error: &ym_engine::EngineError) -> ! {
+    log.capture_error("engine boot failed", error);
+    eprintln!("{}", crate::feed::error_text(error));
+    std::process::exit(1);
+}
 
 fn main() {
     ym_i18n::use_system_locale();
@@ -90,21 +107,33 @@ fn main() {
         tokio::runtime::Builder::new_multi_thread().enable_all().thread_name("ym-core").build().expect("tokio runtime");
     let http = HttpClients::new().expect("HTTP client");
     let local_art = std::sync::Arc::new(crate::local_art::LocalArt::new(data_dir.join("art-cache"), log.fork("art")));
-    let graph = match tokio.block_on(AppGraph::boot(tokio.handle().clone(), log.clone(), http.clone(), data_dir)) {
-        Ok(graph) => graph,
-        Err(error) => {
-            log.capture_error("engine boot failed", &error);
-            eprintln!("{}", crate::feed::error_text(&error));
-            std::process::exit(1);
+    let app_db = graph::open_app_db(&data_dir).unwrap_or_else(|error| boot_failed(&log, &error));
+    let opened = crate::cookie_session::open(app_db.clone(), &data_dir, &log).unwrap_or_else(|error| {
+        boot_failed(&log, &ym_engine::EngineError::site("R98000", format!("cookie store: {error}")))
+    });
+    crate::settings_view::apply_language(app_db.as_ref());
+    let inputs = crate::launch::BootInputs {
+        tokio: tokio.handle().clone(),
+        log: log.clone(),
+        http: http.clone(),
+        data_dir,
+        app_db: app_db.clone(),
+    };
+    let app_logs = crate::telemetry::AppLogs(log_setup.logs.clone());
+    let start = match opened {
+        CookieOpen::Ready(session) => {
+            let graph = tokio.block_on(inputs.boot(session)).unwrap_or_else(|error| boot_failed(&log, &error));
+            let reporting = crate::telemetry::start_reporting(&log_setup, &graph);
+            Start::Ready(Box::new(graph), reporting)
+        }
+        CookieOpen::Locked(locked) => {
+            log.info("cookie jar is password-sealed: waiting for the unlock screen");
+            Start::Locked(locked, inputs, log_setup)
         }
     };
-    crate::settings_view::apply_language(graph.settings.as_ref());
-    let _reporting = crate::telemetry::start_reporting(&log_setup, &graph);
-    let app_logs = crate::telemetry::AppLogs(log_setup.logs.clone());
-    if graph.cookies_locked {
-        log.warn("cookie jar is password-sealed: running signed out until it is unlocked", None);
-    }
     let images = ReqwestHttpClient::new(http.following.clone(), tokio.handle().clone());
+    #[cfg(target_os = "linux")]
+    let tokio_handle = tokio.handle().clone();
 
     crate::a11y::install_debug_log();
     let assets = crate::assets::AppAssets { local_art: local_art.clone() };
@@ -133,23 +162,38 @@ fn main() {
         crate::a11y::init(cx);
         // No enter/exit animations anywhere: dialogs, popovers, menus and tabs change in one frame.
         cx.set_reduce_motion(true);
-        crate::settings_view::apply_saved_theme(graph.settings.as_ref(), cx);
-        crate::desktop::set_dock_icon(&graph.log);
+        // A guest's cache is fire-and-forget at quit: nothing else reads it.
+        cx.on_app_quit(|cx| {
+            if let Some(dir) = cx.try_global::<AppGraph>().and_then(|graph| graph.guest_cache.clone()) {
+                let _ = std::fs::remove_dir_all(dir);
+            }
+            async {}
+        })
+        .detach();
+        crate::settings_view::apply_saved_theme(app_db.as_ref(), cx);
+        crate::desktop::set_dock_icon(&log);
         #[cfg(target_os = "linux")]
         {
-            let log = graph.log.fork("desktop-entry");
-            graph.tokio.spawn_blocking(move || {
+            let log = log.fork("desktop-entry");
+            tokio_handle.spawn_blocking(move || {
                 if let Err(error) = crate::desktop::sync_desktop_entry() {
                     log.warn("desktop entry install failed", Some(error.as_ref()));
                 }
             });
         }
-        let window_icon = crate::desktop::window_icon(&graph.log);
+        let window_icon = crate::desktop::window_icon(&log);
         let window_bounds = match dev_window_size() {
             Some(dev) => WindowBounds::centered(dev, cx),
-            None => crate::desktop::initial_bounds(graph.settings.as_ref(), size(px(1180.), px(780.)), cx),
+            None => crate::desktop::initial_bounds(app_db.as_ref(), size(px(1180.), px(780.)), cx),
         };
-        cx.set_global(graph);
+        let locked = match start {
+            Start::Ready(graph, reporting) => {
+                cx.set_global(*graph);
+                cx.set_global(crate::telemetry::Reporting { _guard: reporting });
+                None
+            }
+            Start::Locked(locked, inputs, log_setup) => Some((locked, inputs, log_setup)),
+        };
         cx.set_global(app_logs);
         let options = WindowOptions {
             window_bounds: Some(window_bounds),
@@ -172,14 +216,13 @@ fn main() {
             ..Default::default()
         };
         cx.open_window(options, |window, cx| {
-            crate::desktop::install_pin_button(window, &cx.global::<AppGraph>().log.fork("pin"));
+            crate::desktop::install_pin_button(window, &log.fork("pin"));
             crate::desktop::remember_main_window(window);
-            let shell = cx.new(|cx| {
-                let mut shell = Shell::new(window, cx);
-                shell.apply_dev_route(window, cx);
-                shell
+            let launch = cx.new(|cx| match locked {
+                Some((locked, inputs, log_setup)) => Launch::locked(locked, inputs, log_setup, window, cx),
+                None => Launch::shell(window, cx),
             });
-            cx.new(|cx| gpui_kit::base::Root::new(shell, window, cx).bg(transparent_black()))
+            cx.new(|cx| gpui_kit::base::Root::new(launch, window, cx).bg(transparent_black()))
         })
         .expect("open main window");
         cx.activate(true);

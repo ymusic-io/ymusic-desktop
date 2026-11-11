@@ -21,13 +21,13 @@ use crate::feed::{FeedAction, FeedSource, FeedView, ItemAction, Navigate, Play};
 use crate::feedback_view::FeedbackView;
 use crate::graph::{AppGraph, on_core};
 use crate::library::{GroupKind, LibraryView, PlayLocal, QueueLocal};
+use crate::library_search::{LibrarySearchEvent, LibrarySearchView};
 use crate::media_session::MediaSession;
 use crate::mini_player::{MiniPlayer, ToggleNowPlaying};
 use crate::now_playing::{NowPlaying, NowPlayingEvent};
 use crate::play_again::{PlayAgainView, ResumeQueue};
 use crate::play_history::HistoryRecorder;
 use crate::playback::{Playback, QueueItem};
-use crate::library_search::{LibrarySearchEvent, LibrarySearchView};
 use crate::search_view::{SearchEvent, SearchMode, SearchView};
 use crate::settings_view::{LocaleChanged, SettingsView};
 use crate::signin_dialog::{SignInEvent, SignInView};
@@ -87,6 +87,14 @@ impl Section {
         Section::Feedback,
     ];
 
+    /// A guest keeps no YouTube play history, so it has no Play again.
+    fn groups(guest: bool) -> Vec<Vec<Section>> {
+        Self::GROUPS
+            .iter()
+            .map(|group| group.iter().copied().filter(|section| !guest || *section != Section::PlayAgain).collect())
+            .collect()
+    }
+
     /// The persisted id (the Compose `AppSection.id`): stable, never reused.
     fn id(self) -> i32 {
         Self::ALL.iter().position(|section| *section == self).unwrap_or(0) as i32 + 1
@@ -139,6 +147,11 @@ impl MusicTab {
     const ALL: [MusicTab; 5] =
         [MusicTab::Home, MusicTab::Explore, MusicTab::NewReleases, MusicTab::Charts, MusicTab::Library];
 
+    /// A guest has no account library.
+    fn listed(guest: bool) -> Vec<MusicTab> {
+        Self::ALL.into_iter().filter(|tab| !guest || *tab != MusicTab::Library).collect()
+    }
+
     fn label(self) -> &'static str {
         t(match self {
             MusicTab::Home => Str::YtmusicTabHome,
@@ -177,6 +190,14 @@ impl DiscoverTab {
         DiscoverTab::TopTracks,
         DiscoverTab::Account,
     ];
+
+    /// A guest has no account and keeps no YouTube play history: no Account, no Top tracks.
+    fn listed(guest: bool) -> Vec<DiscoverTab> {
+        Self::ALL
+            .into_iter()
+            .filter(|tab| !guest || !matches!(tab, DiscoverTab::Account | DiscoverTab::TopTracks))
+            .collect()
+    }
 
     /// The persisted id (the Compose `DiscoverTab.id`).
     fn id(self) -> i32 {
@@ -222,6 +243,36 @@ impl DiscoverTab {
             DiscoverTab::Account => FeedSource::Account,
         }
     }
+}
+
+/// Debug: `YMUSIC_DEV_KEYS=secondary-n,escape` presses those keys 4 s apart, through the window's
+/// own key dispatch (down, then up: a focused button clicks on the release), to check shortcuts
+/// without driving the real keyboard. Once per launch, from
+/// whichever root comes up first.
+pub fn dev_keys(window: &mut Window, cx: &mut App) {
+    static STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    let Ok(keys) = std::env::var("YMUSIC_DEV_KEYS") else { return };
+    if !cfg!(debug_assertions) || STARTED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
+    let keys: Vec<&'static str> =
+        keys.split(',').map(|key| &*Box::leak(key.trim().to_owned().into_boxed_str())).collect();
+    let executor = cx.background_executor().clone();
+    window
+        .spawn(cx, async move |cx| {
+            for key in keys {
+                executor.timer(Duration::from_secs(4)).await;
+                cx.update(|window, cx| match Keystroke::parse(key) {
+                    Ok(keystroke) => {
+                        window.dispatch_keystroke(keystroke.clone(), cx);
+                        window.dispatch_event(PlatformInput::KeyUp(KeyUpEvent { keystroke }), cx);
+                    }
+                    Err(error) => eprintln!("YMUSIC_DEV_KEYS: {key}: {error}"),
+                })
+                .ok();
+            }
+        })
+        .detach();
 }
 
 /// A surface pushed over a section's root; each draws its own back bar.
@@ -275,6 +326,8 @@ pub struct Shell {
     feedback: Option<Entity<FeedbackView>>,
     /// Debug: open the sign-in dialog on the next frame.
     pending_signin: bool,
+    /// The graph's guest launch: no sign-in, account or YouTube play history surfaces.
+    guest: bool,
     /// Debug: open the Sound panel on the next frame.
     pending_sound: bool,
     /// A download dialog to open on the next frame (opening needs the window).
@@ -401,10 +454,19 @@ impl Shell {
             let hidden = !visibility.is_visible() && crate::video_layer::window_out_of_sight(window);
             shell.playback.update(cx, |playback, cx| playback.set_window_hidden(hidden, cx));
         });
-        let settings = cx.global::<AppGraph>().settings.clone();
-        let section = settings.int(LAST_SECTION_KEY, 1).ok().and_then(Section::from_id).unwrap_or(Section::Discover);
-        let discover_tab =
-            settings.int(LAST_DISCOVER_TAB_KEY, 1).ok().and_then(DiscoverTab::from_id).unwrap_or(DiscoverTab::Home);
+        let (settings, guest) = (cx.global::<AppGraph>().settings.clone(), cx.global::<AppGraph>().guest);
+        let section = settings
+            .int(LAST_SECTION_KEY, 1)
+            .ok()
+            .and_then(Section::from_id)
+            .filter(|section| !guest || *section != Section::PlayAgain)
+            .unwrap_or(Section::Discover);
+        let discover_tab = settings
+            .int(LAST_DISCOVER_TAB_KEY, 1)
+            .ok()
+            .and_then(DiscoverTab::from_id)
+            .filter(|tab| DiscoverTab::listed(guest).contains(tab))
+            .unwrap_or(DiscoverTab::Home);
         Self {
             playback,
             mini_player,
@@ -418,6 +480,7 @@ impl Shell {
             settings: None,
             feedback: None,
             pending_signin: false,
+            guest,
             pending_sound: false,
             pending_download: None,
             pending_details: None,
@@ -545,7 +608,7 @@ impl Shell {
     }
 
     /// Debug builds only: `YMUSIC_DEV_ROUTE` opens a surface at start (`trending`, `music`,
-    /// `search:<query>`, `searchfilter:<n>:<query>` (the filter dialog once the results land; `n` > 0 first applies that option, counted across groups from 1), `open:<app link>`, `musictab:<n>`, `play:<youtube url>`, `nowplaying:<url>`, `library:<dir>`, `localplay:<dir>`, `libraryact:<a;b>` (`LibraryView::dev_action`), `details:<videoId>`, `addtoplaylist:<videoId>`, `feedback:message|send:<text>` (with `YMUSIC_DEV_FEEDBACK_ENVELOPE=<file>` the report is written there, not sent), `sleeptimer`, `signin-paste:<file>`, `devicelink`, `signout`,
+    /// `search:<query>`, `searchfilter:<n>:<query>` (the filter dialog once the results land; `n` > 0 first applies that option, counted across groups from 1), `open:<app link>`, `musictab:<n>`, `play:<youtube url>`, `nowplaying:<url>`, `library:<dir>`, `localplay:<dir>`, `libraryact:<a;b>` (`LibraryView::dev_action`), `details:<videoId>`, `addtoplaylist:<videoId>`, `feedback:message|send:<text>` (with `YMUSIC_DEV_FEEDBACK_ENVELOPE=<file>` the report is written there, not sent), `sleeptimer`, `signin-paste:<file>`, `devicelink`, `signout`, `protect` (the password step after a sign-in),
     /// `download:<FORMAT>:<videoId>` into `YMUSIC_DEV_DOWNLOAD_DIR` or the chosen folder), for
     /// screenshots and checks without driving the UI. `YMUSIC_DEV_CAPTIONS=1|<vssId>` turns captions on (with that track), `YMUSIC_DEV_QUALITY=<token>` picks a quality, `YMUSIC_DEV_TRAY_POPUP=1|hidden` opens the tray popup.
     pub fn apply_dev_route(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -580,26 +643,7 @@ impl Shell {
             })
             .detach();
         }
-        // `YMUSIC_DEV_KEYS=secondary-n,escape` presses those keys 4 s apart, through the window's
-        // own key dispatch, to check shortcuts without driving the real keyboard.
-        if let Ok(keys) = std::env::var("YMUSIC_DEV_KEYS") {
-            let keys: Vec<&'static str> =
-                keys.split(',').map(|key| &*Box::leak(key.trim().to_owned().into_boxed_str())).collect();
-            let executor = cx.background_executor().clone();
-            cx.spawn_in(window, async move |_, cx| {
-                for key in keys {
-                    executor.timer(Duration::from_secs(4)).await;
-                    cx.update(|window, cx| match Keystroke::parse(key) {
-                        Ok(keystroke) => {
-                            window.dispatch_keystroke(keystroke, cx);
-                        }
-                        Err(error) => eprintln!("YMUSIC_DEV_KEYS: {key}: {error}"),
-                    })
-                    .ok();
-                }
-            })
-            .detach();
-        }
+        dev_keys(window, cx);
         crate::a11y::dev_dump_tree(window, cx);
         // `YMUSIC_DEV_DRAG=x0,y,x1` presses at (x0, y) after 8 s and drags to x1 (`x0,y0,x1,y1`: to
         // (x1, y1)) and releases a second later, to check dragging without driving the real mouse.
@@ -658,7 +702,8 @@ impl Shell {
             Some(("searchfilter", spec)) => self.dev_search_filter(spec, window, cx),
             Some(("musictab", index)) => {
                 self.section = Section::YtMusic;
-                self.music_tab = MusicTab::ALL[index.parse::<usize>().unwrap_or(0).min(4)];
+                let tabs = MusicTab::listed(self.guest);
+                self.music_tab = tabs[index.parse::<usize>().unwrap_or(0).min(tabs.len() - 1)];
             }
             Some(("open", link)) => {
                 if let Some(source) = FeedSource::from_link(link) {
@@ -760,7 +805,8 @@ impl Shell {
             }
             Some(("discovertab", index)) => {
                 self.section = Section::Discover;
-                self.discover_tab = DiscoverTab::ALL[index.parse::<usize>().unwrap_or(0).min(4)];
+                let tabs = DiscoverTab::listed(self.guest);
+                self.discover_tab = tabs[index.parse::<usize>().unwrap_or(0).min(tabs.len() - 1)];
             }
             _ if route == "searchinput" => self.open_search(String::new(), window, cx),
             _ if route == "drawer" => self.drawer_open = true,
@@ -799,6 +845,14 @@ impl Shell {
             _ if route == "signin" => {
                 self.section = Section::Settings;
                 self.pending_signin = true;
+            }
+            _ if route == "protect" => {
+                self.section = Section::Settings;
+                self.open_sign_in(window, cx);
+                if let Some(Layer::SignIn(view)) = self.stacks.get(&self.section).and_then(|stack| stack.pushed.last())
+                {
+                    view.update(cx, |view, _| view.dev_protect());
+                }
             }
             Some(("playagain", "resume")) => {
                 self.section = Section::PlayAgain;
@@ -873,12 +927,13 @@ impl Shell {
             let (items, index) = (event.items.clone(), event.index);
             shell.playback.update(cx, |playback, cx| playback.play_queue(items, index, cx));
         });
-        let queue = cx.subscribe(&view, |shell, _, event: &QueueLocal, cx| {
-            let (item, next) = (event.item.clone(), event.next);
-            shell.playback.update(cx, |playback, cx| {
-                if next { playback.queue_next(item, cx) } else { playback.queue_last(item, cx) }
+        let queue =
+            cx.subscribe(&view, |shell, _, event: &QueueLocal, cx| {
+                let (item, next) = (event.item.clone(), event.next);
+                shell.playback.update(cx, |playback, cx| {
+                    if next { playback.queue_next(item, cx) } else { playback.queue_last(item, cx) }
+                });
             });
-        });
         self._subscriptions.extend([play, queue]);
         self.library = Some(view.clone());
         view
@@ -1225,12 +1280,13 @@ impl Shell {
             let (items, index) = (event.items.clone(), event.index);
             shell.playback.update(cx, |playback, cx| playback.play_queue(items, index, cx));
         });
-        let queue = cx.subscribe(&view, |shell, _, event: &QueueLocal, cx| {
-            let (item, next) = (event.item.clone(), event.next);
-            shell.playback.update(cx, |playback, cx| {
-                if next { playback.queue_next(item, cx) } else { playback.queue_last(item, cx) }
+        let queue =
+            cx.subscribe(&view, |shell, _, event: &QueueLocal, cx| {
+                let (item, next) = (event.item.clone(), event.next);
+                shell.playback.update(cx, |playback, cx| {
+                    if next { playback.queue_next(item, cx) } else { playback.queue_last(item, cx) }
+                });
             });
-        });
         self._subscriptions.extend([events, play, queue]);
         self.push_layer(Layer::LibrarySearch(view), cx);
     }
@@ -1481,7 +1537,8 @@ impl Shell {
         if !inline {
             row = row.w_full().border_b_1().border_color(theme.border);
         }
-        for (index, tab) in DiscoverTab::ALL.iter().copied().enumerate() {
+        let tabs = DiscoverTab::listed(self.guest);
+        for (index, tab) in tabs.iter().copied().enumerate() {
             let selected = tab == self.discover_tab;
             let cell = div()
                 .id(("discover-tab", index))
@@ -1504,13 +1561,14 @@ impl Shell {
             let cell = self.tab_focus.item(index, cell, cx);
             row = row.child(if inline { cell.w(px(88.)) } else { cell.flex_1() });
         }
-        self.tab_focus.container(row, 0..DiscoverTab::ALL.len(), cx).into_any_element()
+        self.tab_focus.container(row, 0..tabs.len(), cx).into_any_element()
     }
 
     /// YT Music's text tabs with a sliding underline, pinned under the section bar.
     fn music_tabs(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme();
-        let selected = MusicTab::ALL.iter().position(|tab| *tab == self.music_tab).unwrap_or(0);
+        let tabs = MusicTab::listed(self.guest);
+        let selected = tabs.iter().position(|tab| *tab == self.music_tab).unwrap_or(0);
         let shell = cx.entity().downgrade();
         div()
             .w_full()
@@ -1519,12 +1577,12 @@ impl Shell {
             .border_color(theme.border)
             .child(tab_row(
                 "music-tabs",
-                MusicTab::ALL.iter().map(|tab| SharedString::from(tab.label())).collect(),
+                tabs.iter().map(|tab| SharedString::from(tab.label())).collect(),
                 selected,
                 &self.music_tab_focus,
                 &self.music_tab_drag,
                 move |index, _, cx| {
-                    if let Some(tab) = MusicTab::ALL.get(index).copied() {
+                    if let Some(tab) = tabs.get(index).copied() {
                         shell
                             .update(cx, |shell, cx| {
                                 shell.music_tab = tab;
@@ -1549,16 +1607,9 @@ impl Shell {
         h_flex()
             .gap_2()
             .items_center()
-            .child(
-                div()
-                    .size(px(logo))
-                    .flex_shrink_0()
-                    .child(
-                        img(crate::assets::logo_path((logo * self.scale_factor).round() as u32))
-                            .size_full()
-                            .rounded_full(),
-                    ),
-            )
+            .child(div().size(px(logo)).flex_shrink_0().child(
+                img(crate::assets::logo_path((logo * self.scale_factor).round() as u32)).size_full().rounded_full(),
+            ))
             .child(v_flex().min_w_0().child(div().font_semibold().child(t(Str::AppName))).child(
                 div().text_xs().text_color(theme.muted_foreground).child(format!("v{}", env!("CARGO_PKG_VERSION"))),
             ))
@@ -1579,7 +1630,7 @@ impl Shell {
             .when(selected, |entry| entry.bg(theme.secondary))
             .hover(|style| style.bg(theme.secondary))
             .on_click(cx.listener(move |shell, _, _, cx| shell.select_section(section, cx)));
-        let position = Section::GROUPS.iter().flat_map(|group| group.iter()).position(|entry| *entry == section);
+        let position = Section::groups(self.guest).iter().flatten().position(|entry| *entry == section);
         let entry = self.nav_focus.item(position.unwrap_or(0), entry, cx);
         let tint = if selected { theme.primary } else { theme.foreground };
         if !labelled {
@@ -1629,7 +1680,8 @@ impl Shell {
     fn section_groups(&self, labelled: bool, icon_start: f32, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme().clone();
         let mut list = v_flex().gap_1().items_center().w_full();
-        for (index, group) in Section::GROUPS.iter().enumerate() {
+        let groups = Section::groups(self.guest);
+        for (index, group) in groups.iter().enumerate() {
             if index > 0 {
                 list = list.child(
                     div()
@@ -1643,7 +1695,7 @@ impl Shell {
                 list = list.child(self.section_entry(section, labelled, icon_start, cx));
             }
         }
-        let count = Section::GROUPS.iter().map(|group| group.len()).sum();
+        let count = groups.iter().map(|group| group.len()).sum();
         let list = self.nav_focus.container(list, 0..count, cx);
         list.into_any_element()
     }
@@ -1781,12 +1833,12 @@ impl Shell {
     fn select_tab(&mut self, index: usize, cx: &mut Context<Self>) {
         match self.section {
             Section::Discover => {
-                if let Some(tab) = DiscoverTab::ALL.get(index).copied() {
+                if let Some(tab) = DiscoverTab::listed(self.guest).get(index).copied() {
                     self.set_discover_tab(tab, cx);
                 }
             }
             Section::YtMusic => {
-                if let Some(tab) = MusicTab::ALL.get(index).copied() {
+                if let Some(tab) = MusicTab::listed(self.guest).get(index).copied() {
                     self.music_tab = tab;
                 }
             }

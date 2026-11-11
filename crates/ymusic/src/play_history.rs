@@ -102,7 +102,8 @@ enum Write {
 }
 
 /// One thread applies every write in order.
-fn start_writer(history: Arc<PlayHistory>, log: Logger) -> mpsc::Sender<Write> {
+/// A guest's YouTube plays are not kept.
+fn start_writer(history: Arc<PlayHistory>, guest: bool, log: Logger) -> mpsc::Sender<Write> {
     let (sender, receiver) = mpsc::channel::<Write>();
     std::thread::Builder::new()
         .name("play-history".into())
@@ -113,7 +114,7 @@ fn start_writer(history: Arc<PlayHistory>, log: Logger) -> mpsc::Sender<Write> {
                         let _ = done.send(());
                         continue;
                     }
-                    Write::Watch { item, watch_ms } => record_watch(&history, &item, watch_ms),
+                    Write::Watch { item, watch_ms } => record_watch(&history, &item, watch_ms, guest),
                     Write::Session { session, items: Some(items) } => {
                         history.save_session(&session, &items).map_err(|error| error.to_string())
                     }
@@ -133,21 +134,27 @@ fn start_writer(history: Arc<PlayHistory>, log: Logger) -> mpsc::Sender<Write> {
     sender
 }
 
-fn record_watch(history: &PlayHistory, item: &QueueItem, watch_ms: i64) -> Result<(), String> {
-    record_watch_rows(history, item, watch_ms).map_err(|error| error.to_string())
+fn record_watch(history: &PlayHistory, item: &QueueItem, watch_ms: i64, guest: bool) -> Result<(), String> {
+    record_watch_rows(history, item, watch_ms, guest).map_err(|error| error.to_string())
 }
 
-fn record_watch_rows(history: &PlayHistory, item: &QueueItem, watch_ms: i64) -> Result<(), ym_history::StoreError> {
+fn record_watch_rows(
+    history: &PlayHistory,
+    item: &QueueItem,
+    watch_ms: i64,
+    guest: bool,
+) -> Result<(), ym_history::StoreError> {
     match &item.source {
         Source::Local(_) => {
             if let Some(code) = &item.history_code {
                 history.track_local(code, watch_ms)?;
             }
-            if let Some(video_id) = &item.youtube_vid {
+            if let Some(video_id) = item.youtube_vid.as_ref().filter(|_| !guest) {
                 history.track_youtube(video_id, watch_ms)?;
             }
             Ok(())
         }
+        Source::YouTube(_) if guest => Ok(()),
         Source::YouTube(video_id) => {
             history.save_youtube_metadata(&VideoMetadata {
                 video_id: video_id.clone(),
@@ -178,6 +185,8 @@ pub struct HistoryRecorder {
     last_written: Option<PlayAgainSession>,
     last_write_at: Instant,
     playback: Entity<Playback>,
+    /// A guest records no Play again sessions.
+    guest: bool,
     _observe: Subscription,
     _quit: Subscription,
 }
@@ -185,7 +194,8 @@ pub struct HistoryRecorder {
 impl HistoryRecorder {
     pub fn new(playback: Entity<Playback>, cx: &mut Context<Self>) -> Self {
         let graph = cx.global::<AppGraph>();
-        let writes = start_writer(graph.history.clone(), graph.log.fork("play-history"));
+        let guest = graph.guest;
+        let writes = start_writer(graph.history.clone(), guest, graph.log.fork("play-history"));
         let observe = cx.observe(&playback, |recorder, playback, cx| recorder.observe(&playback, cx));
         let quit = cx.on_app_quit(|recorder, cx| {
             recorder.flush(cx);
@@ -199,6 +209,7 @@ impl HistoryRecorder {
             last_written: None,
             last_write_at: Instant::now(),
             playback,
+            guest,
             _observe: observe,
             _quit: quit,
         }
@@ -268,6 +279,9 @@ impl HistoryRecorder {
     }
 
     fn write(&mut self, snapshot: &Snapshot, playback: &Playback) {
+        if self.guest {
+            return;
+        }
         let session = &snapshot.session;
         let saved = self.saved.as_ref() == Some(&(snapshot.queue_id.clone(), snapshot.revision));
         if saved

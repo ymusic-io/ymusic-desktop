@@ -14,6 +14,7 @@ use ym_i18n::{Str, t, tf};
 use ym_signin::DeviceLinkOffer;
 
 use crate::a11y::KeyboardFocusable;
+use crate::cookie_lock::{ProtectEvent, ProtectStep};
 use crate::graph::{AppGraph, on_core};
 use crate::signin::SignInError;
 use crate::spinner::{BusyButton, Spinner};
@@ -37,6 +38,8 @@ enum Link {
     },
     /// The offer could not be made or expired; Retry starts a new one.
     Ended,
+    /// A guest launch: nothing of a sign-in could be kept.
+    Unavailable,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -74,6 +77,9 @@ pub struct SignInView {
     browser: Browser,
     paste: Entity<TextareaState>,
     submitting: bool,
+    /// Signed in; the password step is up, or about to be built.
+    protecting: bool,
+    protect: Option<(Entity<ProtectStep>, Subscription)>,
     _link: Option<Task<()>>,
 }
 
@@ -82,22 +88,61 @@ impl EventEmitter<SignInEvent> for SignInView {}
 impl SignInView {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let paste = cx.new(|cx| TextareaState::new(window, cx).placeholder(t(Str::SigninPasteEmpty)));
+        let guest = cx.global::<AppGraph>().guest;
         let mut view = Self {
-            link: Link::Starting,
+            link: if guest { Link::Unavailable } else { Link::Starting },
             error: None,
             paste_mode: false,
             browser: if cfg!(target_os = "macos") { Browser::Safari } else { Browser::Chrome },
             paste,
             submitting: false,
+            protecting: false,
+            protect: None,
             _link: None,
         };
-        view.start_link(cx);
+        if !guest {
+            view.start_link(cx);
+        }
         view
     }
 
-    /// Back from pasting returns to the QR; back from the QR leaves.
+    /// Debug: straight to the password step, as after a sign-in.
+    pub fn dev_protect(&mut self) {
+        self.protecting = true;
+    }
+
+    /// Offers the password step where the saved jar can take one; done otherwise.
+    fn signed_in(&mut self, cx: &mut Context<Self>) {
+        let graph = cx.global::<AppGraph>();
+        if graph.can_protect && graph.sealed_jar.as_ref().is_some_and(|sealed| !sealed.is_password_protected()) {
+            self.protecting = true;
+            cx.notify();
+        } else {
+            cx.emit(SignInEvent::Done);
+        }
+    }
+
+    fn protect_step(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<Entity<ProtectStep>> {
+        if !self.protecting {
+            return None;
+        }
+        if self.protect.is_none() {
+            let graph = cx.global::<AppGraph>();
+            let sealed = graph.sealed_jar.clone()?;
+            let (tokio, log) = (graph.tokio.clone(), graph.log.clone());
+            let step = cx.new(|cx| ProtectStep::new(sealed, tokio, log, window, cx));
+            let done = cx.subscribe(&step, |_, _, _: &ProtectEvent, cx| cx.emit(SignInEvent::Done));
+            self.protect = Some((step, done));
+        }
+        self.protect.as_ref().map(|(step, _)| step.clone())
+    }
+
+    /// Back from pasting returns to the QR; back from the QR leaves; back from the password step
+    /// keeps the sign-in unprotected.
     pub fn back(&mut self, cx: &mut Context<Self>) {
-        if self.paste_mode {
+        if self.protecting {
+            cx.emit(SignInEvent::Done);
+        } else if self.paste_mode {
             self.paste_mode = false;
             self.error = None;
             cx.notify();
@@ -153,7 +198,7 @@ impl SignInView {
         self._link = Some(cx.spawn(async move |this, cx| {
             let result = linked.await;
             this.update(cx, |view, cx| match result {
-                Some(Ok(_)) => cx.emit(SignInEvent::Done),
+                Some(Ok(_)) => view.signed_in(cx),
                 Some(Err(error)) => {
                     view.error = Some(sign_in_error_text(&error, cx));
                     view.link = Link::Ended;
@@ -192,7 +237,7 @@ impl SignInView {
             this.update(cx, |view, cx| {
                 view.submitting = false;
                 match result {
-                    Some(Ok(_)) => cx.emit(SignInEvent::Done),
+                    Some(Ok(_)) => view.signed_in(cx),
                     Some(Err(error)) => view.error = Some(sign_in_error_text(&error, cx)),
                     None => {}
                 }
@@ -225,7 +270,7 @@ impl SignInView {
                 grid.into_any_element()
             }
             Link::Starting => Spinner::new().into_any_element(),
-            Link::Ended => div().into_any_element(),
+            Link::Ended | Link::Unavailable => div().into_any_element(),
         };
         let code = match &self.link {
             Link::Waiting { code, .. } => Some(code.clone()),
@@ -356,7 +401,10 @@ fn sign_in_error_text(error: &SignInError, cx: &App) -> String {
 }
 
 impl Render for SignInView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if let Some(step) = self.protect_step(window, cx) {
+            return step.into_any_element();
+        }
         let theme = cx.theme().clone();
         let bar = h_flex()
             .px_2()
@@ -372,13 +420,26 @@ impl Render for SignInView {
                     .on_click(cx.listener(|view, _, _, cx| view.back(cx))),
             )
             .child(div().id("signin-heading").role(Role::Heading).font_semibold().child(t(Str::SigninScreenTitle)));
-        let content = if self.paste_mode { self.render_paste(cx) } else { self.render_qr(cx) };
-        v_flex().size_full().bg(theme.background).child(bar).child(
-            div().id("signin-scroll").flex_1().min_h_0().overflow_y_scroll().child(
+        let content = match (&self.link, self.paste_mode) {
+            (Link::Unavailable, _) => vec![
+                div()
+                    .text_center()
+                    .text_color(theme.muted_foreground)
+                    .child(t(Str::SigninUnavailable))
+                    .into_any_element(),
+            ],
+            (_, true) => self.render_paste(cx),
+            (_, false) => self.render_qr(cx),
+        };
+        v_flex()
+            .size_full()
+            .bg(theme.background)
+            .child(bar)
+            .child(div().id("signin-scroll").flex_1().min_h_0().overflow_y_scroll().child(
                 h_flex().w_full().min_h_full().justify_center().items_center().child(
                     v_flex().w_full().max_w(px(FORM_MAX)).px_4().py_4().gap_4().items_center().children(content),
                 ),
-            ),
-        )
+            ))
+            .into_any_element()
     }
 }
