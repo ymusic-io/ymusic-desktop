@@ -341,7 +341,9 @@ fn add_to_library(media: &MediaStore, file: &Path, log: &Logger) {
 fn ffmpeg_binary() -> Option<PathBuf> {
     let candidates = [
         std::env::var_os("YMUSIC_FFMPEG").map(PathBuf::from),
-        std::env::current_exe().ok().and_then(|exe| exe.parent().map(|dir| dir.join("ffmpeg"))),
+        std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(|dir| dir.join(format!("ffmpeg{}", std::env::consts::EXE_SUFFIX)))),
         option_env!("YM_FFMPEG_BIN").map(PathBuf::from),
     ];
     candidates.into_iter().flatten().find(|path| path.is_file())

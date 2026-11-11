@@ -1,9 +1,18 @@
 use std::path::PathBuf;
 
 fn main() {
+    let windows = std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows");
     // The C MSE host links libav by @rpath; point the executable at the ffmpeg build.
-    if let Ok(lib) = std::env::var("DEP_MSEHOST_FFMPEG_LIB") {
+    if let Ok(lib) = std::env::var("DEP_MSEHOST_FFMPEG_LIB")
+        && !windows
+    {
         println!("cargo:rustc-link-arg-bins=-Wl,-rpath,{lib}");
+    }
+    if let Ok(dlls) = std::env::var("DEP_MSEHOST_FFMPEG_DLLS") {
+        copy_dlls_beside_executable(&PathBuf::from(dlls));
+    }
+    if windows {
+        embed_windows_resources();
     }
     if let Ok(binary) = std::env::var("DEP_MSEHOST_FFMPEG_BIN") {
         println!("cargo:rustc-env=YM_FFMPEG_BIN={binary}");
@@ -92,4 +101,38 @@ fn unescape(value: &str) -> String {
         }
     }
     out
+}
+
+/// Windows loads DLLs from the executable's folder: libav and the MinGW runtime go beside it in
+/// the profile dir (`OUT_DIR` is `<profile>/build/<crate>/out`), copied only when they differ.
+fn copy_dlls_beside_executable(source: &std::path::Path) {
+    println!("cargo:rerun-if-changed={}", source.display());
+    let out = PathBuf::from(std::env::var("OUT_DIR").unwrap());
+    let profile = out.ancestors().nth(3).expect("OUT_DIR inside the profile dir");
+    for entry in std::fs::read_dir(source).unwrap_or_else(|_| panic!("{}", source.display())).flatten() {
+        let path = entry.path();
+        if path.extension().is_none_or(|extension| !extension.eq_ignore_ascii_case("dll")) {
+            continue;
+        }
+        let target = profile.join(entry.file_name());
+        let same = |a: &std::path::Path, b: &std::path::Path| {
+            let (Ok(a), Ok(b)) = (a.metadata(), b.metadata()) else { return false };
+            a.len() == b.len() && a.modified().ok() == b.modified().ok()
+        };
+        if same(&path, &target) {
+            continue;
+        }
+        std::fs::copy(&path, &target)
+            .unwrap_or_else(|error| panic!("{} → {}: {error}", path.display(), target.display()));
+    }
+}
+
+/// The JVM app's icon as the executable's (gpui's `windows-manifest` feature embeds the manifest).
+fn embed_windows_resources() {
+    let v4 = PathBuf::from(std::env::var("YMUSIC_V4_DIR").unwrap());
+    let icon = v4.join("desktopApp/ymusic.ico");
+    println!("cargo:rerun-if-changed={}", icon.display());
+    let rc = PathBuf::from(std::env::var("OUT_DIR").unwrap()).join("ymusic.rc");
+    std::fs::write(&rc, format!("1 ICON \"{}\"\n", icon.display().to_string().replace('\\', "/"))).unwrap();
+    embed_resource::compile(&rc, embed_resource::NONE).manifest_optional().unwrap();
 }

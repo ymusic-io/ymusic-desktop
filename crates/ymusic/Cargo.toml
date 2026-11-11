@@ -58,3 +58,6 @@ ksni = "=0.3.6"
 
 [lints]
 workspace = true
+
+[build-dependencies]
+embed-resource = "3"

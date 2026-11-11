@@ -18,6 +18,9 @@ const COMMON_C: &[&str] = &[
 const APPLE_C: &[&str] = &["mse_vt_blit.c", "vpresent_vt.c", "vpipe_hw_vt.c"];
 // libpulse-simple is dlopen'd by aq_pulse.c; only its headers are needed at build time.
 const LINUX_C: &[&str] = &["aq_pulse.c", "mse_hwdev.c", "vpipe_hw_linux.c"];
+const WINDOWS_C: &[&str] = &["mse_d3d11.c", "mse_d3d11_dec.c", "vpresent_d3d11.c", "vpipe_hw_d3d11.c", "aq_winmm.c"];
+// d3dcompiler compiles the NV12 shader at runtime, dxguid has the IID_* symbols, winmm is waveOut*.
+const WINDOWS_LIBS: &[&str] = &["d3d11", "dxgi", "d3dcompiler", "dxguid", "winmm"];
 const APPLE_OBJC: &[&str] = &["mse_vt_layer.m", "mse_vt_dec.m"];
 const APPLE_FRAMEWORKS: &[&str] = &[
     "AudioToolbox",
@@ -42,9 +45,11 @@ fn main() {
     let slug = match target_os.as_str() {
         "macos" => format!("macos-{arch}"),
         "linux" => format!("linux-{arch}"),
-        other => panic!("ym-mse builds for macOS and Linux only so far, not {other}"),
+        "windows" => format!("windows-{arch}"),
+        other => panic!("ym-mse builds for macOS, Linux and Windows only, not {other}"),
     };
     let apple = target_os == "macos";
+    let windows = target_os == "windows";
     let ffmpeg = std::env::var("FFMPEG_ROOT")
         .map(PathBuf::from)
         .unwrap_or_else(|_| v4.parent().unwrap().join("ffmpeg-build/out").join(&slug));
@@ -59,7 +64,14 @@ fn main() {
         .warnings(false)
         .flag_if_supported("-w")
         .define("PRODUCTION", production);
-    let platform_c = if apple { APPLE_C } else { LINUX_C };
+    let platform_c = match target_os.as_str() {
+        "macos" => APPLE_C,
+        "windows" => WINDOWS_C,
+        _ => LINUX_C,
+    };
+    if windows {
+        c.define("MSE_WIN_HW", "1");
+    }
     for source in COMMON_C.iter().chain(platform_c) {
         c.file(native.join(source));
     }
@@ -80,12 +92,22 @@ fn main() {
     }
     println!("cargo:ffmpeg_lib={}", lib.display());
     // The packed ffmpeg executable (rpath to its own libav) the download mux runs.
-    let packed = ffmpeg.join("pack/ffmpeg");
+    let packed = ffmpeg.join("pack").join(if windows { "ffmpeg.exe" } else { "ffmpeg" });
     if packed.is_file() {
         println!("cargo:ffmpeg_bin={}", packed.display());
     }
+    // Windows has no rpath: the executable's build copies these DLLs beside itself.
+    if windows {
+        println!("cargo:ffmpeg_dlls={}", ffmpeg.join("pack").display());
+    }
     if apple {
         link_apple(&native, production);
+    } else if windows {
+        for name in WINDOWS_LIBS {
+            println!("cargo:rustc-link-lib=dylib={name}");
+        }
+        // The MinGW runtime the C threads on; ffmpeg's DLLs import the same libwinpthread-1.dll.
+        println!("cargo:rustc-link-lib=dylib=winpthread");
     } else {
         for name in ["dl", "m", "pthread"] {
             println!("cargo:rustc-link-lib=dylib={name}");
