@@ -9607,7 +9607,9 @@ dependencies = [
 name = "ym-common"
 version = "0.1.0"
 dependencies = [
+ "icu_normalizer",
  "reqwest",
+ "rusqlite",
  "serde_json",
 ]
 
@@ -9645,6 +9647,7 @@ dependencies = [
  "serde_json",
  "sha2 0.11.1",
  "thiserror 2.0.21",
+ "time",
  "tokio",
  "url",
  "ym-common",
@@ -9720,6 +9723,7 @@ name = "ym-settings"
 version = "0.1.0"
 dependencies = [
  "rusqlite",
+ "ym-common",
 ]
 
 [[package]]
@@ -9728,6 +9732,7 @@ version = "0.1.0"
 dependencies = [
  "aes-gcm",
  "base64 0.22.1",
+ "core-foundation 0.10.1",
  "getrandom 0.2.17",
  "hmac",
  "pbkdf2",
@@ -9745,6 +9750,7 @@ version = "0.1.0"
 dependencies = [
  "rusqlite",
  "thiserror 2.0.21",
+ "ym-common",
  "ym-mse",
 ]
 

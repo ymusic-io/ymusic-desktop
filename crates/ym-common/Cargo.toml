@@ -11,7 +11,11 @@ production = []
 
 [dependencies]
 reqwest.workspace = true
+rusqlite.workspace = true
 serde_json.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+icu_normalizer = { version = "2", default-features = false, features = ["compiled_data"] }
 
 [lints]
 workspace = true
