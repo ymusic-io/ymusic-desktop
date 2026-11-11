@@ -675,7 +675,7 @@ fn tray_scale_factor() -> f32 {
     unsafe { GetDpiForSystem() as f32 / 96. }
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 pub struct Tray;
 
 /// The StatusNotifierItem; its properties read the shared state, so a poke re-reads the newest.
