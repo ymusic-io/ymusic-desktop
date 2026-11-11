@@ -53,6 +53,8 @@ R90013 - cookies: the OS cookie key is unavailable; the launch runs as a guest (
 R90014 - cookies: the sealed cookie jar does not open with this key; the launch starts signed out
 R90450 - cookies (Linux): no Secret Service answered; the cookie key is kept in app.db (cookie-key.bin), as the JVM app does
 R90600 - download location: the picked folder could not be added to the Library (media store), or the core runtime stopped
+R90650 - player cache: the player-cache folder or its cache-index.db could not be opened (playback streams uncached), or the open task died
+R90651 - player cache: applying the size cap failed (eviction: cache-index.db or span files)
 R90700 - http cache: a cache entry could not be read (journal or value file I/O); the request goes to the network
 R90701 - http cache: a response's metadata could not be written into the cache; the response is still delivered
 R90702 - http cache: the journal is corrupt; the cache folder is emptied and starts over (as OkHttp does)

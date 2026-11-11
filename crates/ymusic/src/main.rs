@@ -36,6 +36,7 @@ mod offline;
 mod play_again;
 mod play_history;
 mod playback;
+mod player_cache;
 mod playlist_download;
 mod playlist_transfer;
 mod queue_nav;

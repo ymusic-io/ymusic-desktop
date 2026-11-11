@@ -60,6 +60,8 @@ pub struct AppGraph {
     pub guest_cache: Option<PathBuf>,
     /// The YouTube player session playback and downloads share.
     pub youtube: Arc<YoutubeSessions>,
+    /// The player's media cache (`player-cache`); `None` when it could not be opened.
+    pub player_cache: Option<Arc<ym_ytmedia::cache::MediaCache>>,
     pub downloads: DownloadService,
     pub history: Arc<ym_history::PlayHistory>,
     pub sponsor_block: Arc<ym_history::sponsor::SponsorBlockStore>,
@@ -189,6 +191,20 @@ impl AppGraph {
             let engines = engines.clone();
             Arc::new(move || Some(engines.current().runtime().clone()))
         });
+        let (cache_dir, cache_settings, cache_log) = (data_dir.clone(), settings.clone(), log.clone());
+        let player_cache = match tokio::task::spawn_blocking(move || {
+            crate::player_cache::open(&cache_dir, cache_settings.as_ref(), &cache_log)
+        })
+        .await
+        {
+            Ok(cache) => cache,
+            Err(error) => {
+                log.warn("R90650 player cache did not open, playback streams uncached", Some(&error));
+                None
+            }
+        };
+        player_config.media_proxy =
+            player_cache.clone().map(|cache| crate::player_cache::proxy(cache, tokio.clone(), &log, remote.clone()));
         let candidates: CandidateSource = {
             let (pending, source) = (pending_player.clone(), player_source.clone());
             Arc::new(move || player_candidates(&pending, &source))
@@ -256,6 +272,7 @@ impl AppGraph {
             can_protect,
             guest_cache,
             youtube,
+            player_cache,
             downloads,
             history,
             sponsor_block,

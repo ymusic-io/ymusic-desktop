@@ -146,6 +146,8 @@ pub struct SettingsView {
     /// The working region and the region menu, from the engine; None until the first answer.
     pub locales: Option<YtLocales>,
     pub locales_loading: bool,
+    /// Bytes the player cache holds, read off the UI thread; 0 until the first answer.
+    cache_used: i64,
     scroll: ScrollHandle,
 }
 
@@ -160,11 +162,50 @@ impl SettingsView {
             signing_out: false,
             locales: None,
             locales_loading: false,
+            cache_used: 0,
             scroll: ScrollHandle::new(),
         };
         view.refresh_account(cx);
         view.load_locales(cx);
+        view.refresh_cache_used(None, cx);
         view
+    }
+
+    /// Applies a new cap first when `max_mb` is set (evicting down to it), then re-reads the
+    /// player cache's size.
+    fn refresh_cache_used(&mut self, max_mb: Option<i32>, cx: &mut Context<Self>) {
+        let graph = cx.global::<AppGraph>();
+        let Some(cache) = graph.player_cache.clone() else { return };
+        let log = graph.log.fork("player-cache");
+        let read = on_core(cx, async move {
+            let result = tokio::task::spawn_blocking(move || {
+                if let Some(max_mb) = max_mb {
+                    crate::player_cache::apply_max_size(&cache, max_mb, &log);
+                }
+                let used = cache.blobs.total_size();
+                if let Err(error) = &used {
+                    log.warn("player cache size not read", Some(error));
+                }
+                used.ok()
+            })
+            .await;
+            result.ok().flatten()
+        });
+        cx.spawn(async move |this, cx| {
+            if let Some(Some(used)) = read.await {
+                this.update(cx, |view, cx| {
+                    view.cache_used = used;
+                    cx.notify();
+                })
+                .ok();
+            }
+        })
+        .detach();
+    }
+
+    pub fn set_cache_max(&mut self, max_mb: i32, cx: &mut Context<Self>) {
+        self.put(crate::player_cache::MAX_MB_KEY, max_mb.to_string(), cx);
+        self.refresh_cache_used(Some(max_mb), cx);
     }
 
     fn load_locales(&mut self, cx: &mut Context<Self>) {
@@ -460,6 +501,8 @@ impl Render for SettingsView {
         let source_url = link(graph, "sourceCodeUrl", SOURCE_CODE_URL);
         let terms_url = link(graph, "termsUrl", TERMS_URL);
         let can_update = graph.updates.is_some();
+        let cache_saved = graph.player_cache.as_ref().map(|cache| cache.hit_bytes());
+        let cache_max_mb = crate::player_cache::saved_max_mb(settings.as_ref());
 
         let theme_label = t(match theme_choice.as_str() {
             "light" => Str::SettingsThemeLight,
@@ -577,7 +620,7 @@ impl Render for SettingsView {
             region_button,
             cx,
         )];
-        let playback = vec![
+        let mut playback = vec![
             row(
                 t(Str::SettingsSound),
                 Some(t(Str::SettingsSoundHint).to_owned()),
@@ -605,6 +648,40 @@ impl Render for SettingsView {
                 cx,
             ),
         ];
+        if let Some(saved) = cache_saved {
+            let summary = if cache_max_mb > 0 {
+                tf(
+                    Str::SettingsPlayerCacheSummary,
+                    &[
+                        &crate::player_cache::max_label(cache_max_mb),
+                        &crate::player_cache::size_label(self.cache_used),
+                        &crate::player_cache::size_label(saved),
+                    ],
+                )
+            } else {
+                t(Str::SettingsPlayerCacheOff).to_owned()
+            };
+            let entity = cx.entity().downgrade();
+            let menu = Button::new("player-cache")
+                .small()
+                .ghost()
+                .label(crate::player_cache::max_label(cache_max_mb))
+                .accessibility_label(t(Str::SettingsPlayerCache))
+                .dropdown_menu(move |mut menu, _, _| {
+                    for max_mb in crate::player_cache::SIZE_CHOICES_MB {
+                        let view = entity.clone();
+                        menu = menu.item(
+                            PopupMenuItem::new(crate::player_cache::max_label(max_mb))
+                                .checked(max_mb == cache_max_mb)
+                                .on_click(move |_, _, cx| {
+                                    view.update(cx, |view, cx| view.set_cache_max(max_mb, cx)).ok();
+                                }),
+                        );
+                    }
+                    menu
+                });
+            playback.push(row(t(Str::SettingsPlayerCache), Some(summary), menu, cx));
+        }
         let downloads = vec![row(
             t(Str::MenuDownloadLocation),
             Some(

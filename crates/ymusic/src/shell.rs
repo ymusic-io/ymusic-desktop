@@ -831,7 +831,10 @@ impl Shell {
                     "captions" => crate::caption_style::CaptionStyleDialog::open(window, cx),
                     "region" => crate::settings_lists::RegionPicker::open(view, window, cx),
                     "licenses" => crate::settings_lists::Licenses::open(window, cx),
-                    _ => view.read(cx).scroll_to_end(),
+                    other => match other.strip_prefix("playercache=").and_then(|mb| mb.parse().ok()) {
+                        Some(max_mb) => view.update(cx, |view, cx| view.set_cache_max(max_mb, cx)),
+                        None => view.read(cx).scroll_to_end(),
+                    },
                 });
             }
             _ if route == "shortcuts" => window.defer(cx, crate::shortcuts_help::ShortcutsHelp::open),
@@ -970,7 +973,8 @@ impl Shell {
         .detach();
     }
 
-    /// Debug: `speed=2,pitch=1,preset=1,loop=One,shuffle=1,sleep=<seconds>,video=0,boot=1` applied at start.
+    /// Debug: `speed=2,pitch=1,preset=1,loop=One,shuffle=1,sleep=<seconds>,video=0,boot=1` applied at start;
+    /// `seek=<after s>@<to s>` (repeatable) seeks once that many seconds have passed.
     fn dev_player(&mut self, spec: &str, cx: &mut Context<Self>) {
         let mut effects = self.playback.read(cx).effects;
         for (key, value) in spec.split(',').filter_map(|pair| pair.split_once('=')) {
@@ -1022,6 +1026,20 @@ impl Shell {
                         executor.timer(std::time::Duration::from_secs(seconds)).await;
                         shell
                             .update(cx, |shell, cx| shell.playback.update(cx, |playback, cx| playback.reload(cx)))
+                            .ok();
+                    })
+                    .detach();
+                }
+                "seek" => {
+                    let Some((after, to)) = value.split_once('@') else { continue };
+                    let (after, to) = (after.parse().unwrap_or(0), to.parse::<i64>().unwrap_or(0));
+                    let executor = cx.background_executor().clone();
+                    cx.spawn(async move |shell, cx| {
+                        executor.timer(std::time::Duration::from_secs(after)).await;
+                        shell
+                            .update(cx, |shell, cx| {
+                                shell.playback.update(cx, |playback, cx| playback.seek(to * 1000, cx))
+                            })
                             .ok();
                     })
                     .detach();
