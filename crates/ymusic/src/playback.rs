@@ -164,6 +164,7 @@ pub struct Playback {
     /// Video on: loads request pictures and the presenter shows them; off: audio only.
     pub video: bool,
     /// No view shows the picture: the engines rest their video decoders, keeping the chosen quality.
+    /// True until the shell first draws.
     video_hidden: bool,
     /// Video was switched to audio only because the window went out of sight; never saved.
     demoted: bool,
@@ -213,7 +214,7 @@ impl Playback {
             captions: false,
             _sleep: None,
             video: true,
-            video_hidden: false,
+            video_hidden: true,
             demoted: false,
             presenter: None,
             _status: None,
