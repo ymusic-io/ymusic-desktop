@@ -17,6 +17,7 @@ use ym_engine::{DynamicEngine, EngineError, ErrorKind};
 use ym_i18n::{Str, t, tf};
 
 use crate::a11y::{DragRow, FocusList, focusable};
+use crate::action_icon::{HIT, action_icon, sized_action_icon};
 use crate::download_dialog::DownloadTarget;
 use crate::graph::{AppGraph, on_core};
 use crate::local_playlist::LocalPlaylistFromDownloads;
@@ -799,23 +800,15 @@ impl FeedView {
             actions = actions.child(if self.header_busy {
                 Spinner::new().into_any_element()
             } else {
-                Button::new("playlist-save")
-                    .ghost()
-                    .icon(if saved { Lucide::ListCheck } else { Lucide::ListPlus })
+                action_icon("playlist-save", Icon::new(if saved { Lucide::ListCheck } else { Lucide::ListPlus }), label)
                     .selected(saved)
-                    .accessibility_label(label)
-                    .tooltip(label)
                     .on_click(cx.listener(|view, _, window, cx| view.toggle_saved(window, cx)))
                     .into_any_element()
             });
         }
         actions = actions.child(
-            Button::new("playlist-share")
-                .ghost()
-                .icon(Lucide::Share2)
+            action_icon("playlist-share", Icon::new(Lucide::Share2), t(Str::CdShare))
                 .disabled(share.is_none())
-                .accessibility_label(t(Str::CdShare))
-                .tooltip(t(Str::CdShare))
                 .on_click(move |_, window, cx| {
                     if let Some(link) = share.clone() {
                         cx.write_to_clipboard(ClipboardItem::new_string(link));
@@ -824,23 +817,15 @@ impl FeedView {
                 }),
         );
         actions = actions.child(
-            Button::new("playlist-download")
-                .ghost()
-                .icon(Lucide::Download)
+            action_icon("playlist-download", Icon::new(Lucide::Download), t(Str::CdDownload))
                 .disabled(!has_videos)
-                .accessibility_label(t(Str::CdDownload))
-                .tooltip(t(Str::CdDownload))
                 .on_click(cx.listener(|view, _, window, cx| {
                     view.open_playlist_dialog(false, window, cx);
                 })),
         );
         actions = actions.child(
-            Button::new("playlist-local")
-                .ghost()
-                .icon(Lucide::LibraryBig)
+            action_icon("playlist-local", Icon::new(Lucide::LibraryBig), t(Str::LocalPlaylistCreate))
                 .disabled(!has_videos)
-                .accessibility_label(t(Str::LocalPlaylistCreate))
-                .tooltip(t(Str::LocalPlaylistCreate))
                 .on_click(cx.listener(|view, _, window, cx| {
                     view.open_playlist_dialog(true, window, cx);
                 })),
@@ -1086,12 +1071,7 @@ impl FeedView {
         let channel_id = (item.kind == "channel" && self.signed_in)
             .then(|| item.channel_id.clone().unwrap_or_else(|| item.id.clone()))
             .filter(|id| !id.is_empty());
-        Button::new(key)
-            .ghost()
-            .small()
-            .icon(Icon::new(IconName::EllipsisVertical))
-            .accessibility_label(t(Str::CdMore))
-            .tooltip(t(Str::CdMore))
+        action_icon(key, Icon::new(IconName::EllipsisVertical).text_color(cx.theme().muted_foreground), t(Str::CdMore))
             .dropdown_menu_with_anchor(Anchor::TopRight, move |mut menu, _, cx| {
                 let video = target.kind == "video";
                 let mut actions: Vec<(Str, MenuAction)> = Vec::new();
@@ -1437,12 +1417,10 @@ impl FeedView {
                 row.child(self.controls.button(section_index * 3, button, cx))
             })
             .when(collapsible, |row| {
-                let button = Button::new(("collapse", section_index))
-                    .ghost()
-                    .small()
-                    .icon(Icon::new(if expanded { IconName::ChevronUp } else { IconName::ChevronDown }))
-                    .accessibility_label(t(if expanded { Str::CdCollapse } else { Str::CdExpand }))
-                    .tooltip(t(if expanded { Str::CdCollapse } else { Str::CdExpand }))
+                let chevron = Icon::new(if expanded { IconName::ChevronUp } else { IconName::ChevronDown })
+                    .text_color(theme.muted_foreground);
+                let label = t(if expanded { Str::CdCollapse } else { Str::CdExpand });
+                let button = sized_action_icon(("collapse", section_index), chevron, label, 20., HIT)
                     .on_click(cx.listener(move |view, _, _, cx| view.toggle_section(section_index, cx)));
                 row.child(self.controls.button(section_index * 3 + 1, button, cx))
             })

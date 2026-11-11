@@ -7,7 +7,6 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use gpui_kit::assets::IconName as Lucide;
-use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::{ActiveTheme, Icon, IconName, StyledExt, WindowExt, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
@@ -15,6 +14,7 @@ use ym_i18n::{Str, t, tf};
 
 use crate::a11y::{DragRow, FocusList, focusable};
 use crate::account_view::AccountView;
+use crate::action_icon::action_icon;
 use crate::download_dialog::{DownloadPicker, DownloadTarget};
 use crate::downloads_view::{DownloadsView, RevealInLibrary};
 use crate::feed::{FeedAction, FeedSource, FeedView, ItemAction, Navigate, Play, RequestSearch};
@@ -1526,35 +1526,23 @@ impl Shell {
         h_flex()
             .gap_2()
             .px_2()
-            .pt(px(6.))
-            .pb(px(7.))
+            .pt(px(2.))
+            .pb(px(3.))
             .border_b_1()
             .border_color(theme.border)
             .child(
-                Button::new("layer-back")
-                    .ghost()
-                    .icon(Icon::new(IconName::ArrowLeft))
-                    .accessibility_label(t(Str::CdBack))
-                    .tooltip(t(Str::CdBack))
+                action_icon("layer-back", Icon::new(IconName::ArrowLeft), t(Str::CdBack))
                     .on_click(cx.listener(|shell, _, _, cx| shell.back(cx))),
             )
             .child(div().flex_1().min_w_0().truncate().text_lg().font_semibold().child(title))
             .when_some(filter, |bar, view| {
                 bar.child(
-                    Button::new("layer-filter")
-                        .ghost()
-                        .icon(Icon::new(Lucide::Funnel))
-                        .accessibility_label(t(Str::CdFilter))
-                        .tooltip(t(Str::CdFilter))
+                    action_icon("layer-filter", Icon::new(Lucide::Funnel), t(Str::CdFilter))
                         .on_click(move |_, window, cx| open_search_filter(&view, window, cx)),
                 )
             })
             .child(
-                Button::new("layer-search")
-                    .ghost()
-                    .icon(Icon::new(IconName::Search))
-                    .accessibility_label(t(Str::CdSearch))
-                    .tooltip(t(Str::CdSearch))
+                action_icon("layer-search", Icon::new(IconName::Search), t(Str::CdSearch))
                     .on_click(cx.listener(move |shell, _, window, cx| {
                         shell.open_search(search_query.clone().unwrap_or_default(), window, cx)
                     })),
@@ -1573,17 +1561,13 @@ impl Shell {
         h_flex()
             .gap_2()
             .px_2()
-            .pt(px(6.))
-            .pb(px(7.))
+            .pt(px(2.))
+            .pb(px(3.))
             .items_center()
             .when(!wide || !discover, |bar| bar.border_b_1().border_color(theme.border))
             .when(!rail_mode, |bar| {
                 bar.child(
-                    Button::new("open-drawer")
-                        .ghost()
-                        .icon(Icon::new(Lucide::Menu))
-                        .accessibility_label(t(Str::CdMenu))
-                        .tooltip(t(Str::CdMenu))
+                    action_icon("open-drawer", Icon::new(Lucide::Menu), t(Str::CdMenu))
                         .on_click(cx.listener(|shell, _, _, cx| {
                             shell.drawer_open = true;
                             cx.notify();
@@ -1603,11 +1587,7 @@ impl Shell {
             .when(discover && wide, |bar| bar.child(div().pl_4().flex_1().child(self.discover_tabs(true, cx))))
             .when(searchable, |bar| {
                 bar.child(
-                    Button::new("open-search")
-                        .ghost()
-                        .icon(Icon::new(IconName::Search))
-                        .accessibility_label(t(Str::CdSearch))
-                        .tooltip(t(Str::CdSearch))
+                    action_icon("open-search", Icon::new(IconName::Search), t(Str::CdSearch))
                         .on_click(cx.listener(|shell, _, window, cx| shell.open_search(String::new(), window, cx))),
                 )
             })
@@ -1791,11 +1771,7 @@ impl Shell {
 
     fn render_rail(&self, expanded: bool, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme().clone();
-        let toggle = Button::new("rail-toggle")
-            .ghost()
-            .icon(Icon::new(Lucide::Menu))
-            .accessibility_label(t(Str::CdMenu))
-            .tooltip(t(Str::CdMenu))
+        let toggle = action_icon("rail-toggle", Icon::new(Lucide::Menu), t(Str::CdMenu))
             .on_click(cx.listener(move |shell, _, _, cx| shell.toggle_rail(expanded, cx)));
         // The toggle and every section icon share the collapsed rail's centre line, so expanding moves
         // none of them.
