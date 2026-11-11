@@ -5,13 +5,14 @@
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Textarea, TextareaState};
-use gpui_kit::component::{ActiveTheme, Disableable, Icon, IconName, StyledExt, WindowExt, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme, Disableable, IconName, StyledExt, WindowExt, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use ym_i18n::{Str, t, tf};
 use ym_signin::DeviceLinkOffer;
 
 use crate::a11y::KeyboardFocusable;
+use crate::action_icon::action_icon;
 use crate::cookie_guide::CookieGuide;
 use crate::cookie_lock::{ProtectEvent, ProtectStep};
 use crate::graph::{AppGraph, on_core};
@@ -377,11 +378,7 @@ impl Render for SignInView {
             .gap_2()
             .items_center()
             .child(
-                Button::new("signin-back")
-                    .ghost()
-                    .icon(Icon::new(IconName::ArrowLeft))
-                    .accessibility_label(t(Str::CdBack))
-                    .tooltip(t(Str::CdBack))
+                action_icon("signin-back", IconName::ArrowLeft, t(Str::CdBack))
                     .on_click(cx.listener(|view, _, _, cx| view.back(cx))),
             )
             .child(div().id("signin-heading").role(Role::Heading).font_semibold().child(t(Str::SigninScreenTitle)));

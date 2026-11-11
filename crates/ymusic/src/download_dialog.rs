@@ -22,6 +22,7 @@ use ym_download::{AudioQuality, DownloadError, DownloadFormat, DownloadRequest, 
 use ym_i18n::{Str, t, tf};
 
 use crate::a11y::FocusList;
+use crate::action_icon::action_icon;
 use crate::downloads::{download_folder, offline_ids, pick_download_folder, usable_download_folder};
 use crate::downloads_view::{Playability, playability};
 use crate::elevated_dialog::{self, body_max_height, button_bar, chrome, scroll_shadows, text_button, title_bar};
@@ -1247,12 +1248,12 @@ impl DownloadPicker {
             .when_some(self.target.thumbnail_url.clone(), |frame, url| {
                 frame.child(img(url).absolute().inset_0().size_full().object_fit(ObjectFit::Cover))
             });
-        let rename = Button::new("download-rename")
-            .ghost()
-            .icon(Icon::new(Lucide::SquarePen).size(px(20.)).text_color(ink_soft(cx)))
-            .size(px(40.))
-            .accessibility_label(t(Str::DownloadEditName))
-            .on_click(cx.listener(|picker, _, window, cx| picker.rename(window, cx)));
+        let rename = action_icon(
+            "download-rename",
+            Icon::new(Lucide::SquarePen).text_color(ink_soft(cx)),
+            t(Str::DownloadEditName),
+        )
+        .on_click(cx.listener(|picker, _, window, cx| picker.rename(window, cx)));
         h_flex()
             .w_full()
             .gap(px(16.))

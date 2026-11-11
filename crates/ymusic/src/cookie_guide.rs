@@ -13,6 +13,7 @@ use gpui_kit::*;
 use ym_i18n::{Str, t};
 
 use crate::a11y::FocusList;
+use crate::action_icon::sized_action_icon;
 
 const WINDOW_MAX: f32 = 380.;
 const WINDOW_HEIGHT: f32 = 220.;
@@ -25,6 +26,8 @@ const NETWORK_ROW: f32 = 16.;
 const MENU_WIDTH: f32 = 128.;
 /// Children are not clipped to the frame's rounding, so the edge ones round themselves.
 const INNER_RADIUS: f32 = 9.;
+const PAUSE_ICON: f32 = 20.;
+const PAUSE_HIT: f32 = 36.;
 
 /// Light schematic chrome: it stays light in the dark theme so it still reads as a browser window.
 mod chrome {
@@ -396,13 +399,14 @@ impl Render for CookieGuide {
             .w_full()
             .child(self.window_frame(cx));
         let pause_label = t(if self.paused { Str::CdSigninPastePlay } else { Str::CdSigninPastePause });
-        let pause = Button::new("signin-paste-pause")
-            .ghost()
-            .small()
-            .icon(Icon::new(if self.paused { Lucide::Play } else { Lucide::Pause }))
-            .accessibility_label(pause_label)
-            .tooltip(pause_label)
-            .on_click(cx.listener(|guide, _, _, cx| guide.set_paused(!guide.paused, cx)));
+        let pause = sized_action_icon(
+            "signin-paste-pause",
+            if self.paused { Lucide::Play } else { Lucide::Pause },
+            pause_label,
+            PAUSE_ICON,
+            PAUSE_HIT,
+        )
+        .on_click(cx.listener(|guide, _, _, cx| guide.set_paused(!guide.paused, cx)));
         let mut marks = h_flex().flex_1().gap_1().items_center();
         let current = Step::ALL.iter().position(|each| *each == self.step).unwrap_or(0);
         for (index, step) in Step::ALL.into_iter().enumerate() {

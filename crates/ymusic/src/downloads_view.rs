@@ -16,6 +16,7 @@ use ym_download::{DownloadChange, DownloadService, DownloadState, DownloadTask, 
 use ym_i18n::{Str, t, tf};
 
 use crate::a11y::{DragRow, FocusList};
+use crate::action_icon::action_icon;
 use crate::download_dialog::{DownloadPicker, DownloadTarget};
 use crate::downloads::pick_download_folder;
 use crate::file_rename::RenameFileDialog;
@@ -499,13 +500,9 @@ impl DownloadsView {
     fn menu(&self, row: usize, task: &DownloadTask, cx: &mut Context<Self>) -> impl IntoElement {
         let view = cx.entity().downgrade();
         let task = task.clone();
-        Button::new(("download-more", row))
-            .ghost()
-            .small()
-            .icon(IconName::EllipsisVertical)
-            .accessibility_label(t(Str::CdMore))
-            .tooltip(t(Str::CdMore))
-            .dropdown_menu_with_anchor(Anchor::TopRight, move |mut menu, _, _| {
+        action_icon(("download-more", row), IconName::EllipsisVertical, t(Str::CdMore)).dropdown_menu_with_anchor(
+            Anchor::TopRight,
+            move |mut menu, _, _| {
                 let id = task.id.clone();
                 let act = |label: &'static str, action: fn(&DownloadService, &str)| {
                     let (view, id) = (view.clone(), id.clone());
@@ -583,7 +580,8 @@ impl DownloadsView {
                     }
                 }
                 menu
-            })
+            },
+        )
     }
 
     fn card(&self, row: usize, task: &DownloadTask, cx: &mut Context<Self>) -> AnyElement {

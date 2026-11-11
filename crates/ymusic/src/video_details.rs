@@ -18,6 +18,7 @@ use ym_engine::yt::{YtComment, YtCommentPage, YtThumb, YtVideoDetails};
 use ym_i18n::{Str, t, tf};
 
 use crate::a11y::FocusList;
+use crate::action_icon::{HIT, action_icon};
 use crate::feed::{FeedSource, Navigate, error_text, thumb_for};
 use crate::graph::{AppGraph, on_core};
 use crate::spinner::Spinner;
@@ -31,6 +32,8 @@ const COMMENT_MAX_ROWS: usize = 6;
 const DESCRIPTION_LINES: usize = 4;
 /// Replies and their composer sit under the parent's text, past its avatar.
 const REPLY_INDENT: f32 = 64.;
+const PILL_ICON: f32 = 18.;
+const PILL_HEIGHT: f32 = 34.;
 
 #[derive(Default)]
 struct CommentList {
@@ -523,6 +526,11 @@ impl VideoDetailsView {
         h_flex().items_center().rounded_full().bg(cx.theme().secondary)
     }
 
+    /// A segment of a [`Self::pill`]: `icon`, and whatever the caller adds after it.
+    fn pill_button(id: &'static str, icon: Lucide) -> Button {
+        Button::new(id).ghost().rounded_full().h(px(PILL_HEIGHT)).px_4().child(Icon::new(icon).size(px(PILL_ICON)))
+    }
+
     fn render_header(&self, details: &YtVideoDetails, cx: &mut Context<Self>) -> Div {
         let theme = cx.theme().clone();
         let mut column = v_flex().gap_4().px_4().py_2();
@@ -581,12 +589,8 @@ impl VideoDetailsView {
         let rating = Self::pill(cx)
             .child(
                 self.stop(
-                    Button::new("details-like")
-                        .ghost()
-                        .small()
-                        .rounded_full()
-                        .icon(Icon::new(Lucide::ThumbsUp))
-                        .when_some(like_count, |button, count| button.label(count))
+                    Self::pill_button("details-like", Lucide::ThumbsUp)
+                        .when_some(like_count, |button, count| button.child(count))
                         .selected(liked)
                         .accessibility_label(like_label)
                         .on_click(cx.listener(|view, _, window, cx| view.toggle_rating(LIKE, window, cx))),
@@ -596,11 +600,7 @@ impl VideoDetailsView {
             .child(div().w(px(1.)).h(px(20.)).bg(theme.border))
             .child(
                 self.stop(
-                    Button::new("details-dislike")
-                        .ghost()
-                        .small()
-                        .rounded_full()
-                        .icon(Icon::new(Lucide::ThumbsDown))
+                    Self::pill_button("details-dislike", Lucide::ThumbsDown)
                         .selected(disliked)
                         .accessibility_label(t(Str::VideoDetailsDislike))
                         .on_click(cx.listener(|view, _, window, cx| view.toggle_rating(DISLIKE, window, cx))),
@@ -608,11 +608,7 @@ impl VideoDetailsView {
                 ),
             );
         let link = format!("https://youtu.be/{}", self.video_id);
-        let share = Button::new("details-share")
-            .ghost()
-            .small()
-            .rounded_full()
-            .icon(Icon::new(Lucide::Share2))
+        let share = Self::pill_button("details-share", Lucide::Share2)
             .accessibility_label(t(Str::CdShare))
             .tooltip(t(Str::CdShare))
             .on_click(move |_, window, cx| {
@@ -674,29 +670,26 @@ impl VideoDetailsView {
                     .child(div().flex_1().child(Textarea::new(input)))
                     .when(draft == Draft::Edit && !busy, |row| {
                         row.child(self.stop(
-                            Button::new("cancel-edit")
-                                .ghost()
-                                .small()
-                                .icon(IconName::Close)
-                                .accessibility_label(t(Str::DialogCancel))
-                                .tooltip(t(Str::DialogCancel))
-                                .on_click(cx.listener(|view, _, _, cx| {
+                            action_icon("cancel-edit", IconName::Close, t(Str::DialogCancel)).on_click(cx.listener(
+                                |view, _, _, cx| {
                                     view.editing = None;
                                     cx.notify();
-                                })),
+                                },
+                            )),
                             cx,
                         ))
                     })
                     .child(if busy {
-                        div().p_2().child(Spinner::new().small()).into_any_element()
+                        div()
+                            .size(px(HIT))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(Spinner::new().small())
+                            .into_any_element()
                     } else {
                         self.stop(
-                            Button::new(id)
-                                .ghost()
-                                .small()
-                                .icon(Lucide::Send)
-                                .accessibility_label(t(Str::VideoDetailsPost))
-                                .tooltip(t(Str::VideoDetailsPost))
+                            action_icon(id, Lucide::Send, t(Str::VideoDetailsPost))
                                 .on_click(cx.listener(move |view, _, window, cx| view.send(draft, window, cx))),
                             cx,
                         )
@@ -760,15 +753,11 @@ impl VideoDetailsView {
             .child(body)
             .when(own, |row| {
                 let index = self.next_stop();
+                let more_id = SharedString::from(format!("{id}-more"));
                 row.child(self.focus.wrap(
                     index,
-                    Button::new(SharedString::from(format!("{id}-more")))
+                    action_icon(more_id, IconName::EllipsisVertical, t(Str::CdMore))
                         .track_focus(&self.focus.handle(index, cx))
-                        .ghost()
-                        .xsmall()
-                        .icon(IconName::EllipsisVertical)
-                        .accessibility_label(t(Str::CdMore))
-                        .tooltip(t(Str::CdMore))
                         .dropdown_menu_with_anchor(Anchor::TopRight, move |mut menu, _, _| {
                             if menu_comment.edit_token.is_some() {
                                 let (view, comment) = (view.clone(), menu_comment.clone());

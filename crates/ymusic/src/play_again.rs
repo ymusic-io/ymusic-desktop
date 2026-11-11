@@ -3,15 +3,16 @@
 use std::sync::Arc;
 
 use gpui_kit::assets::IconName as Lucide;
-use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::button::Button;
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
-use gpui_kit::component::{ActiveTheme, Icon, IconName, Sizable, StyledExt, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme, Icon, IconName, StyledExt, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use ym_history::{PlayAgainSession, PlayHistory};
 use ym_i18n::{Str, t, tf};
 
 use crate::a11y::FocusList;
+use crate::action_icon::action_icon;
 use crate::graph::{AppGraph, on_core};
 use crate::local_art::{self, from_jvm_art};
 use crate::mini_player::clock;
@@ -215,12 +216,7 @@ impl PlayAgainView {
         let detail = detail.join(" · ");
         let view = cx.entity().downgrade();
         let (from_start, removed) = (session.clone(), session.queue_id.clone());
-        let more = Button::new(("play-again-more", position))
-            .ghost()
-            .small()
-            .icon(IconName::EllipsisVertical)
-            .accessibility_label(t(Str::CdMore))
-            .tooltip(t(Str::CdMore))
+        let more = action_icon(("play-again-more", position), IconName::EllipsisVertical, t(Str::CdMore))
             .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, _| {
                 let (restart, remove) = (view.clone(), view.clone());
                 let (from_start, removed) = (from_start.clone(), removed.clone());

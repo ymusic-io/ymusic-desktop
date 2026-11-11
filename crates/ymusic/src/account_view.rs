@@ -3,15 +3,15 @@
 //! Liked / Subscriptions as chips from 600 wide, rows below) that scrolls away with it.
 
 use gpui_kit::assets::IconName as Lucide;
-use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
-use gpui_kit::component::{ActiveTheme, Icon, IconName, Sizable, StyledExt, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme, Icon, IconName, StyledExt, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use ym_engine::yt::YtAccountInfo;
 use ym_i18n::{Str, t};
 
 use crate::a11y::{DragRow, FocusList, KeyboardFocusable};
+use crate::action_icon::action_icon;
 use crate::feed::{FeedView, feed_width, thumb_for};
 use crate::graph::{AppGraph, on_core};
 use crate::signin::AccountChanged;
@@ -280,20 +280,17 @@ impl Render for AccountHeader {
             .and_then(|name| name.chars().next())
             .map(|letter| letter.to_uppercase().to_string());
         let owner = self.owner.clone();
-        let more = Button::new("account-more")
-            .ghost()
-            .small()
-            .icon(IconName::EllipsisVertical)
-            .accessibility_label(t(Str::CdMore))
-            .tooltip(t(Str::CdMore))
-            .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, _| {
+        let more = action_icon("account-more", IconName::EllipsisVertical, t(Str::CdMore)).dropdown_menu_with_anchor(
+            Anchor::TopRight,
+            move |menu, _, _| {
                 let owner = owner.clone();
                 menu.item(PopupMenuItem::new(t(Str::AccountSignOut)).on_click(move |_, _, cx| {
                     if let Some(owner) = &owner {
                         owner.update(cx, |view, cx| view.sign_out(cx)).ok();
                     }
                 }))
-            });
+            },
+        );
         let card = h_flex()
             .pl_4()
             .pr_2()
