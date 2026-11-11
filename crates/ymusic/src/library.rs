@@ -502,8 +502,13 @@ fn art_or_icon(icon: Lucide, art: Option<SharedString>, icon_size: Pixels, cx: &
     }
 }
 
+/// Song cells per row at a content `width`; 1 below the grid width.
+pub fn song_columns(width: f32) -> usize {
+    if width < GRID_MIN_WIDTH { 1 } else { ((width - 2. * GRID_PADDING) / SONG_MIN).floor().max(1.) as usize }
+}
+
 /// Splits `cells` into rows of `columns` equal cells, padding a short last row.
-fn grid_rows(cells: Vec<AnyElement>, columns: usize) -> Vec<AnyElement> {
+pub fn grid_rows(cells: Vec<AnyElement>, columns: usize) -> Vec<AnyElement> {
     let mut rows = Vec::new();
     let mut cells = cells.into_iter().peekable();
     while cells.peek().is_some() {
@@ -519,9 +524,75 @@ fn grid_rows(cells: Vec<AnyElement>, columns: usize) -> Vec<AnyElement> {
     rows
 }
 
+/// A local song cell (thumbnail, title, artist · album, a More menu) that plays through `play`.
+pub fn song_cell<V: EventEmitter<QueueLocal>>(
+focus: &FocusList,
+index: usize,
+item: &MediaItem,
+play: fn(&mut V, usize, &mut Context<V>),
+cx: &mut Context<V>,
+) -> AnyElement {
+    let theme = cx.theme().clone();
+    let detail = [item.artist.clone(), item.album.clone()].into_iter().flatten().collect::<Vec<_>>().join(" · ");
+    let label = [Some(item.title.clone()), item.artist.clone(), item.duration_ms.map(clock)]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(", ");
+    let view = cx.entity().downgrade();
+    let local = QueueItem::from_local(item);
+    let path = std::path::PathBuf::from(&item.uri);
+    let more = Button::new(("song-more", index))
+        .ghost()
+        .small()
+        .icon(IconName::EllipsisVertical)
+        .accessibility_label(t(Str::CdMore))
+        .tooltip(t(Str::CdMore))
+        .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, _| {
+            let (play_view, next, last) = (view.clone(), view.clone(), view.clone());
+            let (next_item, last_item, path) = (local.clone(), local.clone(), path.clone());
+            menu.item(PopupMenuItem::new(t(Str::MenuPlay)).on_click(move |_, _, cx| {
+                play_view.update(cx, |view, cx| play(view, index, cx)).ok();
+            }))
+            .item(PopupMenuItem::new(t(Str::QueueNext)).on_click(move |_, _, cx| {
+                next.update(cx, |_, cx| cx.emit(QueueLocal { item: next_item.clone(), next: true })).ok();
+            }))
+            .item(PopupMenuItem::new(t(Str::QueueLast)).on_click(move |_, _, cx| {
+                last.update(cx, |_, cx| cx.emit(QueueLocal { item: last_item.clone(), next: false })).ok();
+            }))
+            .separator()
+            .item(PopupMenuItem::new(reveal_label()).on_click(move |_, _, cx| cx.reveal_path(&path)))
+        });
+    focus
+        .item(index, h_flex().id(("local-item", index)).role(Role::ListItem).aria_label(label), cx)
+        .pl_4()
+        .pr_1()
+        .py_2()
+        .gap_4()
+        .items_start()
+        .cursor_pointer()
+        .rounded(px(10.))
+        .hover(|style| style.bg(theme.secondary))
+        .child(LibraryView::thumb(
+            if item.video_codec.is_some() { Lucide::Film } else { Lucide::Music },
+            crate::local_art::art_url(item, crate::local_art::ROW_PX),
+            item.duration_ms,
+            cx,
+        ))
+        .child(v_flex().flex_1().min_w_0().child(div().text_sm().line_clamp(2).child(item.title.clone())).when(
+            !detail.is_empty(),
+            |column| {
+                column.child(div().pt_1().text_xs().text_color(theme.muted_foreground).truncate().child(detail))
+            },
+        ))
+        .child(div().pt(px(2.)).child(more))
+        .on_click(cx.listener(move |view, _, _, cx| play(view, index, cx)))
+        .into_any_element()
+}
+
 impl LibraryView {
     /// A 56 thumbnail: the art, else the file kind's icon, with the duration badged at the bottom-end.
-    fn thumb(icon: Lucide, art: Option<SharedString>, duration_ms: Option<i64>, cx: &App) -> Div {
+    pub fn thumb(icon: Lucide, art: Option<SharedString>, duration_ms: Option<i64>, cx: &App) -> Div {
         let theme = cx.theme();
         div()
             .relative()
@@ -552,62 +623,7 @@ impl LibraryView {
     }
 
     fn song_cell(&self, index: usize, item: &MediaItem, cx: &mut Context<Self>) -> AnyElement {
-        let theme = cx.theme().clone();
-        let detail = [item.artist.clone(), item.album.clone()].into_iter().flatten().collect::<Vec<_>>().join(" · ");
-        let label = [Some(item.title.clone()), item.artist.clone(), item.duration_ms.map(clock)]
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>()
-            .join(", ");
-        let view = cx.entity().downgrade();
-        let local = QueueItem::from_local(item);
-        let path = std::path::PathBuf::from(&item.uri);
-        let more = Button::new(("song-more", index))
-            .ghost()
-            .small()
-            .icon(IconName::EllipsisVertical)
-            .accessibility_label(t(Str::CdMore))
-            .tooltip(t(Str::CdMore))
-            .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, _| {
-                let (play, next, last) = (view.clone(), view.clone(), view.clone());
-                let (next_item, last_item, path) = (local.clone(), local.clone(), path.clone());
-                menu.item(PopupMenuItem::new(t(Str::MenuPlay)).on_click(move |_, _, cx| {
-                    play.update(cx, |view, cx| view.play(index, cx)).ok();
-                }))
-                .item(PopupMenuItem::new(t(Str::QueueNext)).on_click(move |_, _, cx| {
-                    next.update(cx, |_, cx| cx.emit(QueueLocal { item: next_item.clone(), next: true })).ok();
-                }))
-                .item(PopupMenuItem::new(t(Str::QueueLast)).on_click(move |_, _, cx| {
-                    last.update(cx, |_, cx| cx.emit(QueueLocal { item: last_item.clone(), next: false })).ok();
-                }))
-                .separator()
-                .item(PopupMenuItem::new(reveal_label()).on_click(move |_, _, cx| cx.reveal_path(&path)))
-            });
-        self.song_focus
-            .item(index, h_flex().id(("local-item", index)).role(Role::ListItem).aria_label(label), cx)
-            .pl_4()
-            .pr_1()
-            .py_2()
-            .gap_4()
-            .items_start()
-            .cursor_pointer()
-            .rounded(px(10.))
-            .hover(|style| style.bg(theme.secondary))
-            .child(Self::thumb(
-                if item.video_codec.is_some() { Lucide::Film } else { Lucide::Music },
-                crate::local_art::art_url(item, crate::local_art::ROW_PX),
-                item.duration_ms,
-                cx,
-            ))
-            .child(v_flex().flex_1().min_w_0().child(div().text_sm().line_clamp(2).child(item.title.clone())).when(
-                !detail.is_empty(),
-                |column| {
-                    column.child(div().pt_1().text_xs().text_color(theme.muted_foreground).truncate().child(detail))
-                },
-            ))
-            .child(div().pt(px(2.)).child(more))
-            .on_click(cx.listener(move |view, _, _, cx| view.play(index, cx)))
-            .into_any_element()
+        song_cell(&self.song_focus, index, item, Self::play, cx)
     }
 
     /// A grid card: square art, the title (2 lines) and a subtitle; `grid` false draws a list row.
@@ -857,7 +873,7 @@ impl Render for LibraryView {
         let width = crate::feed::feed_width(window);
         let grid = width >= GRID_MIN_WIDTH;
         let card_columns = ((width - 2. * GRID_PADDING) / CARD_MAX).ceil().max(2.) as usize;
-        let song_columns = ((width - 2. * GRID_PADDING) / SONG_MIN).floor().max(1.) as usize;
+        let song_columns = song_columns(width);
 
         let selected = Tab::ALL.iter().position(|tab| *tab == self.tab).unwrap_or(0);
         let view = cx.entity().downgrade();

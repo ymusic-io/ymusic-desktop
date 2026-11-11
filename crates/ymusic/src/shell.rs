@@ -27,7 +27,8 @@ use crate::now_playing::{NowPlaying, NowPlayingEvent};
 use crate::play_again::{PlayAgainView, ResumeQueue};
 use crate::play_history::HistoryRecorder;
 use crate::playback::{Playback, QueueItem};
-use crate::search_view::{SearchEvent, SearchView};
+use crate::library_search::{LibrarySearchEvent, LibrarySearchView};
+use crate::search_view::{SearchEvent, SearchMode, SearchView};
 use crate::settings_view::SettingsView;
 use crate::signin_dialog::{SignInEvent, SignInView};
 use crate::sponsor_block::SponsorBlock;
@@ -222,6 +223,7 @@ impl DiscoverTab {
 enum Layer {
     Feed { view: Entity<FeedView>, title: SharedString },
     Search(Entity<SearchView>),
+    LibrarySearch(Entity<LibrarySearchView>),
     Results { view: Entity<FeedView>, query: String },
     SignIn(Entity<SignInView>),
 }
@@ -787,6 +789,11 @@ impl Shell {
     }
 
     fn back(&mut self, cx: &mut Context<Self>) {
+        if let Some(Layer::LibrarySearch(view)) = self.stacks.get(&self.section).and_then(|stack| stack.pushed.last())
+            && view.clone().update(cx, |view, cx| view.back(cx))
+        {
+            return;
+        }
         if self.stacks.entry(self.section).or_default().pushed.pop().is_some() {
             cx.notify();
         }
@@ -820,8 +827,14 @@ impl Shell {
         }
     }
 
+    /// The section's own search: YouTube on Discover, YouTube Music on YT Music, local files on Library.
     fn open_search(&mut self, query: String, window: &mut Window, cx: &mut Context<Self>) {
-        let view = cx.new(|cx| SearchView::new(&query, window, cx));
+        let mode = match self.section {
+            Section::Library => return self.open_library_search(window, cx),
+            Section::YtMusic => SearchMode::Music,
+            _ => SearchMode::YouTube,
+        };
+        let view = cx.new(|cx| SearchView::new(&query, mode, window, cx));
         let events = cx.subscribe(&view, |shell, _, event: &SearchEvent, cx| match event {
             SearchEvent::Submit(query) => shell.show_results(query.clone(), cx),
             SearchEvent::Back => shell.back(cx),
@@ -830,13 +843,42 @@ impl Shell {
         self.push_layer(Layer::Search(view), cx);
     }
 
-    /// Results replace the search input they came from.
+    fn open_library_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let store = cx.global::<AppGraph>().media.clone();
+        let view = cx.new(|cx| LibrarySearchView::new(store, window, cx));
+        let events = cx.subscribe(&view, |shell, _, event: &LibrarySearchEvent, cx| match event {
+            LibrarySearchEvent::Back => shell.back(cx),
+            LibrarySearchEvent::SearchOnline(query) => {
+                shell.select_section(Section::Discover, cx);
+                shell.show_results(query.clone(), cx);
+            }
+        });
+        let play = cx.subscribe(&view, |shell, _, event: &PlayLocal, cx| {
+            let (items, index) = (event.items.clone(), event.index);
+            shell.playback.update(cx, |playback, cx| playback.play_queue(items, index, cx));
+        });
+        let queue = cx.subscribe(&view, |shell, _, event: &QueueLocal, cx| {
+            let (item, next) = (event.item.clone(), event.next);
+            shell.playback.update(cx, |playback, cx| {
+                if next { playback.queue_next(item, cx) } else { playback.queue_last(item, cx) }
+            });
+        });
+        self._subscriptions.extend([events, play, queue]);
+        self.push_layer(Layer::LibrarySearch(view), cx);
+    }
+
+    /// Results replace the search input they came from, and search the section's service.
     fn show_results(&mut self, query: String, cx: &mut Context<Self>) {
         let stack = self.stacks.entry(self.section).or_default();
         if matches!(stack.pushed.last(), Some(Layer::Search(_))) {
             stack.pushed.pop();
         }
-        let view = self.feed_view(FeedSource::Search(query.clone()), None, cx);
+        let source = if self.section == Section::YtMusic {
+            FeedSource::MusicSearch(query.clone())
+        } else {
+            FeedSource::Search(query.clone())
+        };
+        let view = self.feed_view(source, None, cx);
         self.push_layer(Layer::Results { view, query }, cx);
     }
 
@@ -892,6 +934,7 @@ impl Shell {
         let top = self.stacks.get(&self.section).and_then(|stack| stack.pushed.last());
         match top {
             Some(Layer::Search(view)) => return view.clone().into_any_element(),
+            Some(Layer::LibrarySearch(view)) => return view.clone().into_any_element(),
             Some(Layer::SignIn(view)) => return view.clone().into_any_element(),
             Some(Layer::Feed { view, title }) => {
                 let view = view.clone();
@@ -1398,7 +1441,7 @@ impl Shell {
                 let searchable = matches!(shell.section, Section::Discover | Section::YtMusic | Section::Library);
                 let searching = matches!(
                     shell.stacks.get(&shell.section).and_then(|stack| stack.pushed.last()),
-                    Some(Layer::Search(_))
+                    Some(Layer::Search(_) | Layer::LibrarySearch(_))
                 );
                 if searchable && !searching {
                     shell.open_search(String::new(), window, cx);

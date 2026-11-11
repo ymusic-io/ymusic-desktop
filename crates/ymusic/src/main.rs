@@ -10,6 +10,7 @@ mod feedback_view;
 mod graph;
 mod http_client;
 mod library;
+mod library_search;
 mod local_art;
 mod local_engine;
 mod media_session;

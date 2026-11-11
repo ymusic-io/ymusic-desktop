@@ -21,6 +21,13 @@ const HISTORY_LIMIT: usize = 500;
 const TYPED_HISTORY_MATCHES: usize = 5;
 const SHOWN_SUGGESTIONS: usize = 12;
 
+/// Which service the field searches; the history is shared.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum SearchMode {
+    YouTube,
+    Music,
+}
+
 pub enum SearchEvent {
     Submit(String),
     Back,
@@ -28,6 +35,7 @@ pub enum SearchEvent {
 
 pub struct SearchView {
     input: Entity<InputState>,
+    mode: SearchMode,
     suggestions: Vec<String>,
     /// Newest first.
     history: Vec<String>,
@@ -39,9 +47,13 @@ pub struct SearchView {
 impl EventEmitter<SearchEvent> for SearchView {}
 
 impl SearchView {
-    pub fn new(query: &str, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(query: &str, mode: SearchMode, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let hint = match mode {
+            SearchMode::YouTube => t(Str::SearchYoutube),
+            SearchMode::Music => t(Str::YtmusicSearchHint),
+        };
         let input = cx.new(|cx| {
-            let mut state = InputState::new(window, cx).placeholder(t(Str::SearchYoutube));
+            let mut state = InputState::new(window, cx).placeholder(hint);
             state.set_value(query.to_owned(), window, cx);
             state
         });
@@ -60,6 +72,7 @@ impl SearchView {
         };
         let mut view = Self {
             input,
+            mode,
             suggestions: Vec::new(),
             history,
             generation: 0,
@@ -149,14 +162,21 @@ impl SearchView {
             return;
         }
         let graph = cx.global::<AppGraph>();
-        let (engine, log) = (graph.engine(), graph.log.fork("search"));
+        let (engine, log, mode) = (graph.engine(), graph.log.fork("search"), self.mode);
         let executor = cx.background_executor().clone();
         cx.spawn(async move |this, cx| {
             executor.timer(SUGGEST_DEBOUNCE).await;
             if this.read_with(cx, |view, _| view.generation != generation).unwrap_or(true) {
                 return;
             }
-            let fetch = cx.update(|cx| on_core(cx, async move { engine.search_suggestions(&query, &log).await }));
+            let fetch = cx.update(|cx| {
+                on_core(cx, async move {
+                    match mode {
+                        SearchMode::YouTube => engine.search_suggestions(&query, &log).await,
+                        SearchMode::Music => engine.music_search_suggestions(&query, &log).await,
+                    }
+                })
+            });
             let result = fetch.await;
             this.update(cx, |view, cx| {
                 if view.generation == generation

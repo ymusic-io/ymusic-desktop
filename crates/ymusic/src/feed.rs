@@ -40,6 +40,7 @@ pub enum FeedSource {
     Channel(String),
     MusicBrowse(String),
     Search(String),
+    MusicSearch(String),
 }
 
 impl FeedSource {
@@ -84,6 +85,10 @@ impl FeedSource {
             Self::Search(query) => {
                 let query = continuation.is_none().then_some(query.as_str());
                 engine.search(query, None, continuation, &log).await
+            }
+            Self::MusicSearch(query) => {
+                let query = continuation.is_none().then_some(query.as_str());
+                engine.music_search(query, None, continuation, &log).await
             }
         }
     }
