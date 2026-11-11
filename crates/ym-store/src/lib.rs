@@ -12,8 +12,8 @@ use rusqlite::{Connection, OptionalExtension, Row, params};
 
 pub use scan::{DescribedFile, ScanError, ScanReport, describe_file, is_media_file, scan_folder};
 
-/// The YMusicV4 media-store schema after its five migrations (SQLDelight version 6), so a file
-/// from the JVM app opens unchanged.
+/// `:media-store`'s schema (SQLDelight version 6): the `.sq` files for a new file, the five
+/// `migrations/n.sqm` for an older one from the JVM app.
 const SCHEMA_VERSION: i32 = 6;
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS bucket (
@@ -75,6 +75,64 @@ CREATE TABLE IF NOT EXISTS playlistItem (
 );
 CREATE INDEX IF NOT EXISTS playlistItem_order ON playlistItem(playlistId, sortKey);
 ";
+
+const MIGRATIONS: [&str; 5] = [
+    "ALTER TABLE mediaItem ADD COLUMN genre TEXT;",
+    "ALTER TABLE bucket ADD COLUMN excluded INTEGER NOT NULL DEFAULT 0;",
+    "
+DELETE FROM playlist WHERE id <= 0;
+ALTER TABLE mediaItem ADD COLUMN playCount INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE mediaItem ADD COLUMN lastPlayedAt INTEGER;
+CREATE INDEX mediaItem_lastPlayedAt ON mediaItem(lastPlayedAt);
+CREATE INDEX mediaItem_playCount ON mediaItem(playCount);
+",
+    "
+CREATE TABLE mediaItem_new (
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    bucketId             INTEGER REFERENCES bucket(id) ON DELETE CASCADE,
+    uri                  TEXT    NOT NULL UNIQUE,
+    title                TEXT    NOT NULL,
+    mimeType             TEXT    NOT NULL,
+    artist               TEXT,
+    album                TEXT,
+    genre                TEXT,
+    trackNumber          INTEGER,
+    year                 INTEGER,
+    durationMs           INTEGER,
+    audioCodec           TEXT,
+    videoCodec           TEXT,
+    subtitleCodec        TEXT,
+    bitrate              INTEGER,
+    width                INTEGER,
+    height               INTEGER,
+    thumbnailStreamIndex INTEGER,
+    youtubeVid           TEXT,
+    youtubeItags         TEXT,
+    fileSize             INTEGER NOT NULL,
+    lastModified         INTEGER NOT NULL,
+    deleted              INTEGER NOT NULL DEFAULT 0,
+    createdAt            INTEGER NOT NULL,
+    updatedAt            INTEGER NOT NULL
+);
+INSERT INTO mediaItem_new (
+    id, bucketId, uri, title, mimeType, artist, album, genre, trackNumber, year, durationMs,
+    audioCodec, videoCodec, subtitleCodec, bitrate, width, height, thumbnailStreamIndex,
+    youtubeVid, youtubeItags, fileSize, lastModified, deleted, createdAt, updatedAt
+)
+SELECT
+    id, bucketId, uri, title, mimeType, artist, album, genre, trackNumber, year, durationMs,
+    audioCodec, videoCodec, subtitleCodec, bitrate, width, height, thumbnailStreamIndex,
+    youtubeVid, youtubeItags, fileSize, lastModified, deleted, createdAt, updatedAt
+FROM mediaItem;
+DROP TABLE mediaItem;
+ALTER TABLE mediaItem_new RENAME TO mediaItem;
+CREATE INDEX mediaItem_bucketId     ON mediaItem(bucketId);
+CREATE INDEX mediaItem_fileSize     ON mediaItem(fileSize);
+CREATE INDEX mediaItem_updatedAt    ON mediaItem(updatedAt);
+CREATE INDEX mediaItem_youtubeVid   ON mediaItem(youtubeVid);
+",
+    "ALTER TABLE mediaItem ADD COLUMN loudnessGainDb REAL;",
+];
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -163,7 +221,7 @@ fn item_from_row(row: &Row<'_>) -> rusqlite::Result<MediaItem> {
     Ok(MediaItem {
         id: row.get(0)?,
         bucket_id: row.get(1)?,
-        uri: row.get(2)?,
+        uri: path_of(row.get(2)?),
         title: row.get(3)?,
         mime_type: row.get(4)?,
         artist: row.get(5)?,
@@ -191,7 +249,7 @@ fn bucket_from_row(row: &Row<'_>) -> rusqlite::Result<Bucket> {
     Ok(Bucket {
         id: row.get(0)?,
         parent_id: row.get(1)?,
-        uri: row.get(2)?,
+        uri: path_of(row.get(2)?),
         name: row.get(3)?,
         alias_name: row.get(4)?,
         excluded: row.get::<_, i64>(5)? != 0,
@@ -200,6 +258,36 @@ fn bucket_from_row(row: &Row<'_>) -> rusqlite::Result<Bucket> {
 }
 
 const BUCKET_COLUMNS: &str = "id, parentId, uri, name, aliasName, excluded, createdAt";
+
+/// The URI a row holds for `path`: rows keep the JVM app's `file://` URIs, while this API speaks
+/// filesystem paths.
+pub fn file_uri(path: &str) -> String {
+    ym_common::file_uri::to_file_uri(path)
+}
+
+fn uri_of(path: &str) -> String {
+    file_uri(path)
+}
+
+fn path_of(uri: String) -> String {
+    ym_common::file_uri::file_uri_path(&uri).unwrap_or(uri)
+}
+
+/// Rows earlier builds wrote with bare paths take the URI form; a path whose URI row already exists
+/// loses its duplicate item row.
+fn adopt_file_uris(db: &Connection) -> rusqlite::Result<()> {
+    for table in ["bucket", "mediaItem"] {
+        let bare: Vec<(i64, String)> = db
+            .prepare(&format!("SELECT id, uri FROM {table} WHERE uri NOT LIKE 'file:%'"))?
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<rusqlite::Result<_>>()?;
+        for (id, path) in bare {
+            db.execute(&format!("UPDATE OR IGNORE {table} SET uri = ?1 WHERE id = ?2"), params![uri_of(&path), id])?;
+        }
+    }
+    db.execute("DELETE FROM mediaItem WHERE uri NOT LIKE 'file:%'", [])?;
+    Ok(())
+}
 
 fn now_millis() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_millis() as i64)
@@ -216,20 +304,27 @@ impl MediaStore {
             let _ = std::fs::create_dir_all(parent);
         }
         let db = Connection::open(path)?;
-        db.execute_batch("PRAGMA foreign_keys = ON;")?;
+        db.pragma_update(None, "journal_mode", "WAL")?;
+        db.pragma_update(None, "synchronous", "NORMAL")?;
+        db.busy_timeout(std::time::Duration::from_secs(5))?;
         let version: i32 = db.query_row("PRAGMA user_version", [], |row| row.get(0))?;
         if version > SCHEMA_VERSION {
             return Err(StoreError::NewerSchema { found: version });
         }
-        db.execute_batch(SCHEMA)?;
-        if version < SCHEMA_VERSION {
-            db.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
-        }
+        db.execute_batch("PRAGMA foreign_keys = ON;")?;
+        ym_common::sqlite::open_schema(
+            &db,
+            SCHEMA_VERSION as i64,
+            |db| db.execute_batch(SCHEMA),
+            |db, found| ym_common::sqlite::run_migrations(db, found, &MIGRATIONS),
+        )?;
+        adopt_file_uris(&db)?;
         Ok(Self { db: Mutex::new(db) })
     }
 
     /// The bucket for `uri`, created (or revived from a tombstone) under `parent_id`.
     pub fn upsert_bucket(&self, uri: &str, name: &str, parent_id: Option<i64>) -> Result<i64, StoreError> {
+        let uri = &uri_of(uri);
         let db = self.db.lock().unwrap();
         let now = now_millis();
         if let Some(id) =
@@ -275,15 +370,25 @@ impl MediaStore {
         Ok(())
     }
 
+    /// A live item by its row id (the JVM app's `art://pic/<id>`).
+    pub fn item(&self, id: i64) -> Result<Option<MediaItem>, StoreError> {
+        let db = self.db.lock().unwrap();
+        let sql = format!("SELECT {ITEM_COLUMNS} FROM mediaItem WHERE id = ?1 AND deleted = 0");
+        Ok(db.query_row(&sql, params![id], item_from_row).optional()?)
+    }
+
     /// Including soft-deleted rows, so a returning file revives its item.
     pub fn find_item_by_uri(&self, uri: &str) -> Result<Option<(MediaItem, bool)>, StoreError> {
         let db = self.db.lock().unwrap();
         let sql = format!("SELECT {ITEM_COLUMNS}, deleted FROM mediaItem WHERE uri = ?1");
-        Ok(db.query_row(&sql, params![uri], |row| Ok((item_from_row(row)?, row.get::<_, i64>(23)? != 0))).optional()?)
+        Ok(db
+            .query_row(&sql, params![uri_of(uri)], |row| Ok((item_from_row(row)?, row.get::<_, i64>(23)? != 0)))
+            .optional()?)
     }
 
     /// Inserts `item` (its `id` ignored) or rewrites the row with its `uri`, reviving it.
     pub fn save_item(&self, item: &MediaItem) -> Result<i64, StoreError> {
+        let uri = uri_of(&item.uri);
         let db = self.db.lock().unwrap();
         let now = now_millis();
         let changed = db.execute(
@@ -311,13 +416,13 @@ impl MediaStore {
                 item.file_size,
                 item.last_modified,
                 now,
-                item.uri,
+                uri,
                 item.youtube_vid,
                 item.loudness_gain_db
             ],
         )?;
         if changed > 0 {
-            return Ok(db.query_row("SELECT id FROM mediaItem WHERE uri = ?1", params![item.uri], |row| row.get(0))?);
+            return Ok(db.query_row("SELECT id FROM mediaItem WHERE uri = ?1", params![uri], |row| row.get(0))?);
         }
         db.execute(
             "INSERT INTO mediaItem(bucketId, uri, title, mimeType, artist, album, genre, trackNumber, year, \
@@ -326,7 +431,7 @@ impl MediaStore {
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?20, ?21, ?22)",
             params![
                 item.bucket_id,
-                item.uri,
+                uri,
                 item.title,
                 item.mime_type,
                 item.artist,
@@ -354,6 +459,7 @@ impl MediaStore {
 
     /// Soft-deletes the bucket's items whose uri is not in `present`. Returns how many.
     pub fn delete_missing_items(&self, bucket_id: i64, present: &[String]) -> Result<usize, StoreError> {
+        let present: HashSet<String> = present.iter().map(|path| uri_of(path)).collect();
         let db = self.db.lock().unwrap();
         let mut statement = db.prepare("SELECT id, uri FROM mediaItem WHERE bucketId = ?1 AND deleted = 0")?;
         let missing: Vec<i64> = statement
@@ -442,6 +548,7 @@ impl MediaStore {
         Ok(())
     }
 
+    /// The excluded folders as stored: `file://` URIs, to match against [`file_uri`].
     pub fn excluded_bucket_uris(&self) -> Result<HashSet<String>, StoreError> {
         let db = self.db.lock().unwrap();
         let mut statement = db.prepare("SELECT uri FROM bucket WHERE excluded = 1 AND deleted = 0")?;
@@ -451,7 +558,8 @@ impl MediaStore {
 
     /// Points the item at its file's new `uri` (a rename or move); a soft-deleted row already holding
     /// `uri` gives way, a live one is an error.
-    pub fn relocate_item(&self, item_id: i64, uri: &str) -> Result<(), StoreError> {
+    pub fn relocate_item(&self, item_id: i64, path: &str) -> Result<(), StoreError> {
+        let uri = uri_of(path);
         let mut db = self.db.lock().unwrap();
         let transaction = db.transaction()?;
         let holder: Option<(i64, i64)> = transaction
@@ -461,7 +569,7 @@ impl MediaStore {
             .optional()?;
         if let Some((other, deleted)) = holder.filter(|(other, _)| *other != item_id) {
             if deleted == 0 {
-                return Err(StoreError::UriTaken(uri.to_owned()));
+                return Err(StoreError::UriTaken(path.to_owned()));
             }
             transaction.execute("DELETE FROM mediaItem WHERE id = ?1", params![other])?;
         }

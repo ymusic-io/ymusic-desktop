@@ -7,6 +7,7 @@ publish.workspace = true
 
 [dependencies]
 rusqlite.workspace = true
+ym-common = { path = "../ym-common" }
 thiserror.workspace = true
 ym-mse = { path = "../ym-mse" }
 

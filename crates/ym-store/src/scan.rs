@@ -165,7 +165,7 @@ pub fn scan_folder(store: &MediaStore, root: &Path, cancel: &AtomicBool) -> Resu
             if metadata.is_dir() {
                 let uri = path.to_string_lossy();
                 let child = store.upsert_bucket(&uri, &name, Some(bucket_id))?;
-                if !excluded.contains(uri.as_ref()) {
+                if !excluded.contains(&crate::file_uri(&uri)) {
                     pending.push((path, child));
                 }
                 continue;
