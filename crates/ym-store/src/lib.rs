@@ -82,6 +82,8 @@ pub enum StoreError {
     Db(#[from] rusqlite::Error),
     #[error("media store schema {found} is newer than this build ({SCHEMA_VERSION})")]
     NewerSchema { found: i32 },
+    #[error("media store: another live item already has {0}")]
+    UriTaken(String),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -445,6 +447,30 @@ impl MediaStore {
         let mut statement = db.prepare("SELECT uri FROM bucket WHERE excluded = 1 AND deleted = 0")?;
         let rows = statement.query_map([], |row| row.get(0))?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Points the item at its file's new `uri` (a rename or move); a soft-deleted row already holding
+    /// `uri` gives way, a live one is an error.
+    pub fn relocate_item(&self, item_id: i64, uri: &str) -> Result<(), StoreError> {
+        let mut db = self.db.lock().unwrap();
+        let transaction = db.transaction()?;
+        let holder: Option<(i64, i64)> = transaction
+            .query_row("SELECT id, deleted FROM mediaItem WHERE uri = ?1", params![uri], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .optional()?;
+        if let Some((other, deleted)) = holder.filter(|(other, _)| *other != item_id) {
+            if deleted == 0 {
+                return Err(StoreError::UriTaken(uri.to_owned()));
+            }
+            transaction.execute("DELETE FROM mediaItem WHERE id = ?1", params![other])?;
+        }
+        transaction.execute(
+            "UPDATE mediaItem SET uri = ?1, updatedAt = ?2 WHERE id = ?3",
+            params![uri, now_millis(), item_id],
+        )?;
+        transaction.commit()?;
+        Ok(())
     }
 
     /// Drops the item row for good (its file is gone).
