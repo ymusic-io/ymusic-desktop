@@ -102,6 +102,12 @@ R92001 - Library playlist: a new playlist could not be created
 R92002 - local playlist from downloads: the playlist could not be created or filled
 R93000 - settings: a setting could not be saved
 R93001 - settings: the UI language could not be saved
+R94000 - library: the local playlists could not be read for the add-to-playlist picker
+R94001 - library: a local playlist change failed (create, rename, delete, add to, remove from)
+R94002 - library: saving a local playlist's arrangement failed
+R94003 - library: deleting a file from disk failed (file removal or its media-store row)
+R94004 - library: removing, excluding or including a folder failed (media store)
+R94005 - library: a Top tracks play-history row could not be removed
 R95000 - now playing: a local queue item could not be looked up in the library to open its artist or album
 R96000 - single instance: another process holds the data dir's instance lock but took no request
 R96001 - single instance: the lock, loopback listener or port file could not be set up

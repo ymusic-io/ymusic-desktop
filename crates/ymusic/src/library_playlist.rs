@@ -1,0 +1,890 @@
+//! Local playlists' dialogs (JVM `LibraryScreen.kt` / `ArrangePlaylistDialog.kt`): add songs to a
+//! playlist, name a new one or rename it, the delete confirms (playlist, file on disk) and Arrange
+//! songs, which edits a working copy with undo and writes it on Save.
+
+use std::rc::Rc;
+
+use gpui_kit::assets::IconName as Lucide;
+use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants};
+use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::{ActiveTheme, Disableable, Icon, IconName, Sizable, WindowExt, h_flex, v_flex};
+use gpui_kit::prelude::FluentBuilder;
+use gpui_kit::*;
+use ym_i18n::{Str, t, tf};
+use ym_store::{MediaItem, MediaStore, Playlist, PlaylistItemDetail};
+
+use crate::a11y::FocusList;
+use crate::graph::{AppGraph, on_core};
+use crate::spinner::Spinner;
+
+/// Runs after a dialog changed the library, so the opener reloads.
+pub type Changed = Rc<dyn Fn(&mut Window, &mut App)>;
+
+/// Runs `work` against the media store on a blocking worker.
+pub fn store_call<T, E, F>(cx: &App, work: F) -> impl Future<Output = Result<T, String>> + use<T, E, F>
+where
+    T: Send + 'static,
+    E: std::fmt::Display + Send + 'static,
+    F: FnOnce(&MediaStore) -> Result<T, E> + Send + 'static,
+{
+    let store = cx.global::<AppGraph>().media.clone();
+    let task = on_core(cx, async move { tokio::task::spawn_blocking(move || work(&store)).await });
+    async move {
+        match task.await {
+            Some(Ok(Ok(value))) => Ok(value),
+            Some(Ok(Err(error))) => Err(error.to_string()),
+            Some(Err(error)) => Err(error.to_string()),
+            None => Err("the core runtime stopped".to_owned()),
+        }
+    }
+}
+
+/// Logs a failed library change and tells the user its code.
+pub fn report(code: &'static str, what: &str, error: &str, window: &mut Window, cx: &mut App) {
+    cx.global::<AppGraph>().log.fork("library").warn(&format!("{code} {what}: {error}"), None);
+    window.push_notification(tf(Str::ErrorGeneric, &[&code]), cx);
+}
+
+fn notify_changed(changed: &Option<Changed>, window: &mut Window, cx: &mut App) {
+    if let Some(changed) = changed {
+        changed(window, cx);
+    }
+}
+
+fn pick_row(id: impl Into<ElementId>, icon: Icon, label: String, accent: bool, cx: &App) -> Stateful<Div> {
+    let theme = cx.theme();
+    h_flex()
+        .id(id)
+        .role(Role::Button)
+        .aria_label(label.clone())
+        .gap_4()
+        .px_4()
+        .py_2()
+        .items_center()
+        .rounded(px(8.))
+        .cursor_pointer()
+        .hover(|style| style.bg(theme.secondary))
+        .text_color(if accent { theme.primary } else { theme.foreground })
+        .child(icon.size(px(20.)))
+        .child(div().flex_1().min_w_0().truncate().text_sm().child(label))
+}
+
+/// The user's playlists plus New playlist…; picking one appends `codes` and closes.
+pub struct AddToLocalPlaylist {
+    codes: Vec<String>,
+    playlists: Option<Vec<Playlist>>,
+    failed: bool,
+    changed: Option<Changed>,
+    focus: FocusList,
+    focused_first: bool,
+    busy: bool,
+}
+
+impl AddToLocalPlaylist {
+    pub fn open(codes: Vec<String>, changed: Option<Changed>, window: &mut Window, cx: &mut App) {
+        let view = cx.new(|cx| {
+            let mut view = Self {
+                codes,
+                playlists: None,
+                failed: false,
+                changed,
+                focus: FocusList::modal(None, cx),
+                focused_first: false,
+                busy: false,
+            };
+            view.load(cx);
+            view
+        });
+        window.open_dialog(cx, move |dialog, _, _| {
+            let confirm = view.clone();
+            dialog.title(t(Str::CdAddToPlaylist)).width(px(420.)).child(view.clone()).on_ok(move |_, window, cx| {
+                confirm.update(cx, |view, cx| view.activate_focused(window, cx));
+                false
+            })
+        });
+    }
+
+    /// The dialog's Enter: picks the focused row.
+    fn activate_focused(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(row) = (0..self.focus_count()).find(|row| self.focus.handle(*row, cx).is_focused(window)) {
+            self.activate(row, window, cx);
+        }
+    }
+
+    /// Row 0 is New playlist…, then the playlists in order.
+    fn activate(&mut self, row: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if self.busy {
+            return;
+        }
+        let Some(playlists) = self.playlists.clone() else { return };
+        match row.checked_sub(1) {
+            None => {
+                window.close_dialog(cx);
+                let names = playlists.into_iter().map(|playlist| playlist.name).collect();
+                let mode = NameMode::Create { codes: self.codes.clone(), name: String::new() };
+                PlaylistNameDialog::open(mode, names, self.changed.clone(), window, cx);
+            }
+            Some(index) => {
+                if let Some(playlist) = playlists.get(index) {
+                    self.add(playlist.id, window, cx);
+                }
+            }
+        }
+    }
+
+    fn load(&mut self, cx: &mut Context<Self>) {
+        let request = store_call(cx, |store| store.playlists());
+        cx.spawn(async move |this, cx| {
+            let result = request.await;
+            this.update(cx, |view, cx| {
+                match result {
+                    Ok(playlists) => view.playlists = Some(playlists),
+                    Err(error) => {
+                        cx.global::<AppGraph>()
+                            .log
+                            .fork("library")
+                            .warn(&format!("R94000 playlists read failed: {error}"), None);
+                        view.failed = true;
+                        view.playlists = Some(Vec::new());
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn add(&mut self, playlist_id: i64, window: &mut Window, cx: &mut Context<Self>) {
+        if self.busy {
+            return;
+        }
+        self.busy = true;
+        let codes = self.codes.clone();
+        let request = store_call(cx, move |store| store.add_codes_to_playlist(playlist_id, &codes));
+        cx.spawn_in(window, async move |this, cx| {
+            let result = request.await;
+            this.update_in(cx, |view, window, cx| {
+                view.busy = false;
+                match result {
+                    Ok(()) => {
+                        window.close_dialog(cx);
+                        notify_changed(&view.changed, window, cx);
+                    }
+                    Err(error) => report("R94001", "adding to a playlist failed", &error, window, cx),
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+}
+
+impl Render for AddToLocalPlaylist {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let Some(playlists) = self.playlists.clone() else {
+            return h_flex().justify_center().py_6().child(Spinner::new()).into_any_element();
+        };
+        if !self.focused_first {
+            self.focused_first = true;
+            let first = self.focus.handle(0, cx);
+            window.defer(cx, move |window, cx| window.focus(&first, cx));
+        }
+        let theme = cx.theme().clone();
+        if self.failed {
+            return div()
+                .px_4()
+                .py_4()
+                .text_sm()
+                .text_color(theme.muted_foreground)
+                .child(tf(Str::ErrorGeneric, &[&"R94000"]))
+                .into_any_element();
+        }
+        let new_row =
+            pick_row("new-local-playlist", Icon::new(IconName::Plus), t(Str::AddToPlaylistNew).to_owned(), true, cx)
+                .on_click(cx.listener(|view, _, window, cx| view.activate(0, window, cx)));
+        let mut list = v_flex()
+            .id("local-playlists")
+            .max_h(px(420.))
+            .overflow_y_scroll()
+            .pb_2()
+            .child(self.focus.item(0, new_row, cx));
+        for (index, playlist) in playlists.into_iter().enumerate() {
+            let row =
+                pick_row(("local-playlist", index), Icon::new(Lucide::ListMusic), playlist.name.clone(), false, cx)
+                    .text_color(theme.foreground)
+                    .on_click(cx.listener(move |view, _, window, cx| view.activate(index + 1, window, cx)));
+            list = list.child(self.focus.item(index + 1, row, cx));
+        }
+        let count = self.focus_count();
+        self.focus.container(list, 0..count, cx).into_any_element()
+    }
+}
+
+impl AddToLocalPlaylist {
+    fn focus_count(&self) -> usize {
+        self.playlists.as_ref().map_or(0, Vec::len) + 1
+    }
+}
+
+pub enum NameMode {
+    /// A new playlist holding `codes`, its name field starting at `name`.
+    Create {
+        codes: Vec<String>,
+        name: String,
+    },
+    Rename(Playlist),
+}
+
+/// Create or rename: confirm stays off while the name is blank or taken (case-insensitive).
+pub struct PlaylistNameDialog {
+    mode: NameMode,
+    existing: Vec<String>,
+    name: Entity<InputState>,
+    changed: Option<Changed>,
+    busy: bool,
+    focused: bool,
+    cancel: FocusHandle,
+    _subscription: Subscription,
+}
+
+impl PlaylistNameDialog {
+    pub fn open(mode: NameMode, existing: Vec<String>, changed: Option<Changed>, window: &mut Window, cx: &mut App) {
+        let (title, initial) = match &mode {
+            NameMode::Create { name, .. } => (Str::PlaylistCreateTitle, name.clone()),
+            NameMode::Rename(playlist) => (Str::PlaylistRenameTitle, playlist.name.clone()),
+        };
+        let existing = match &mode {
+            NameMode::Rename(playlist) => {
+                let own = playlist.name.to_lowercase();
+                existing.into_iter().filter(|name| name.to_lowercase() != own).collect()
+            }
+            NameMode::Create { .. } => existing,
+        };
+        let view = cx.new(|cx| {
+            let name =
+                cx.new(|cx| InputState::new(window, cx).placeholder(t(Str::PlaylistNameHint)).default_value(initial));
+            let subscription = cx.subscribe_in(&name, window, |view: &mut Self, _, event: &InputEvent, window, cx| {
+                if matches!(event, InputEvent::PressEnter { .. }) {
+                    view.submit(window, cx);
+                }
+                cx.notify();
+            });
+            Self {
+                mode,
+                existing,
+                name,
+                changed,
+                busy: false,
+                focused: false,
+                cancel: cx.focus_handle(),
+                _subscription: subscription,
+            }
+        });
+        window.open_dialog(cx, move |dialog, _, _| {
+            let submit = view.clone();
+            dialog.title(t(title)).width(px(420.)).child(view.clone()).on_ok(move |_, window, cx| {
+                submit.update(cx, |view, cx| {
+                    if view.cancel.is_focused(window) {
+                        window.close_dialog(cx);
+                    } else {
+                        view.submit(window, cx);
+                    }
+                });
+                false
+            })
+        });
+    }
+
+    fn trimmed(&self, cx: &App) -> String {
+        self.name.read(cx).value().trim().to_owned()
+    }
+
+    fn duplicate(&self, cx: &App) -> bool {
+        let name = self.trimmed(cx).to_lowercase();
+        !name.is_empty() && self.existing.iter().any(|existing| existing.to_lowercase() == name)
+    }
+
+    fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let name = self.trimmed(cx);
+        if self.busy || name.is_empty() || self.duplicate(cx) {
+            return;
+        }
+        self.busy = true;
+        let target = match &self.mode {
+            NameMode::Create { codes, .. } => Ok(codes.clone()),
+            NameMode::Rename(playlist) => Err(playlist.id),
+        };
+        let request = store_call(cx, move |store| match target {
+            Ok(codes) => {
+                let playlist = store.create_playlist(&name)?;
+                store.add_codes_to_playlist(playlist.id, &codes)
+            }
+            Err(id) => store.rename_playlist(id, &name),
+        });
+        cx.notify();
+        cx.spawn_in(window, async move |this, cx| {
+            let result = request.await;
+            this.update_in(cx, |view, window, cx| {
+                view.busy = false;
+                match result {
+                    Ok(()) => {
+                        window.close_dialog(cx);
+                        notify_changed(&view.changed, window, cx);
+                    }
+                    Err(error) => report("R94001", "saving a playlist failed", &error, window, cx),
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+}
+
+impl Render for PlaylistNameDialog {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if !self.focused {
+            self.focused = true;
+            let name = self.name.clone();
+            window.defer(cx, move |window, cx| {
+                name.update(cx, |input, cx| {
+                    input.focus(window, cx);
+                    let end = input.value().len();
+                    input.set_selected_range(end..end, cx);
+                })
+            });
+        }
+        let theme = cx.theme().clone();
+        let duplicate = self.duplicate(cx);
+        let can_submit = !self.busy && !self.trimmed(cx).is_empty() && !duplicate;
+        let confirm = match self.mode {
+            NameMode::Create { .. } => Str::PlaylistCreateConfirm,
+            NameMode::Rename(_) => Str::PlaylistRenameConfirm,
+        };
+        v_flex()
+            .gap_2()
+            .px_4()
+            .pb_2()
+            .child(Input::new(&self.name))
+            .when(duplicate, |column| {
+                column.child(
+                    div()
+                        .id("playlist-name-taken")
+                        .text_xs()
+                        .text_color(theme.danger)
+                        .role(Role::Alert)
+                        .aria_label(t(Str::PlaylistNameExists))
+                        .child(t(Str::PlaylistNameExists)),
+                )
+            })
+            .child(
+                h_flex()
+                    .justify_end()
+                    .gap_2()
+                    .pt_2()
+                    .child(
+                        Button::new("playlist-name-cancel")
+                            .track_focus(&self.cancel)
+                            .outline()
+                            .label(t(Str::DialogCancel))
+                            .disabled(self.busy)
+                            .on_click(|_, window, cx| window.close_dialog(cx)),
+                    )
+                    .child(if self.busy {
+                        div().p_2().child(Spinner::new().small()).into_any_element()
+                    } else {
+                        Button::new("playlist-name-confirm")
+                            .primary()
+                            .label(t(confirm))
+                            .disabled(!can_submit)
+                            .on_click(cx.listener(|view, _, window, cx| view.submit(window, cx)))
+                            .into_any_element()
+                    }),
+            )
+    }
+}
+
+/// "Delete playlist?": the playlist goes, its songs stay in the library.
+pub fn confirm_delete_playlist(playlist: Playlist, changed: Option<Changed>, window: &mut Window, cx: &mut App) {
+    window.open_alert_dialog(cx, move |alert, _, _| {
+        let (changed, id) = (changed.clone(), playlist.id);
+        alert
+            .title(t(Str::PlaylistDeleteTitle))
+            .description(tf(Str::PlaylistDeleteMessage, &[&playlist.name]))
+            .ok_text(t(Str::DeleteFromDiskConfirm))
+            .ok_variant(ButtonVariant::Danger)
+            .cancel_text(t(Str::DialogCancel))
+            .show_cancel(true)
+            .on_ok(move |_, window, cx| {
+                let changed = changed.clone();
+                let request = store_call(cx, move |store| store.delete_playlist(id));
+                window
+                    .spawn(cx, async move |cx| {
+                        let result = request.await;
+                        cx.update(|window, cx| match result {
+                            Ok(()) => notify_changed(&changed, window, cx),
+                            Err(error) => report("R94001", "deleting a playlist failed", &error, window, cx),
+                        })
+                        .ok();
+                    })
+                    .detach();
+                true
+            })
+    });
+}
+
+/// "Delete file?": the file is removed from disk (one already gone counts as removed), then its row.
+pub fn confirm_delete_from_disk(item: MediaItem, changed: Option<Changed>, window: &mut Window, cx: &mut App) {
+    window.open_alert_dialog(cx, move |alert, _, _| {
+        let (changed, item_id, path) = (changed.clone(), item.id, std::path::PathBuf::from(&item.uri));
+        alert
+            .title(t(Str::DeleteFromDiskTitle))
+            .description(tf(Str::DeleteFromDiskMessage, &[&item.title]))
+            .ok_text(t(Str::DeleteFromDiskConfirm))
+            .ok_variant(ButtonVariant::Danger)
+            .cancel_text(t(Str::DialogCancel))
+            .show_cancel(true)
+            .on_ok(move |_, window, cx| {
+                let (changed, path) = (changed.clone(), path.clone());
+                let request = store_call(cx, move |store| {
+                    match std::fs::remove_file(&path) {
+                        Ok(()) => {}
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(error) => return Err(format!("{}: {error}", path.display())),
+                    }
+                    store.delete_item(item_id).map_err(|error| error.to_string())
+                });
+                window
+                    .spawn(cx, async move |cx| {
+                        let result = request.await;
+                        cx.update(|window, cx| match result {
+                            Ok(()) => notify_changed(&changed, window, cx),
+                            Err(error) => report("R94003", "deleting a file from disk failed", &error, window, cx),
+                        })
+                        .ok();
+                    })
+                    .detach();
+                true
+            })
+    });
+}
+
+#[derive(Clone)]
+struct DraggedSong {
+    index: usize,
+    title: String,
+}
+
+impl Render for DraggedSong {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme();
+        div()
+            .px_3()
+            .py_2()
+            .rounded(px(8.))
+            .bg(theme.popover)
+            .border_1()
+            .border_color(theme.border)
+            .text_sm()
+            .max_w(px(320.))
+            .truncate()
+            .child(self.title.clone())
+    }
+}
+
+/// The working copy: the first `stack` rows are the stack Move to top builds, and a move across its
+/// edge grows or shrinks it. Every edit but a stack reset can be undone.
+struct ArrangeState {
+    original: Vec<String>,
+    items: Vec<PlaylistItemDetail>,
+    stack: usize,
+    history: Vec<(Vec<PlaylistItemDetail>, usize)>,
+}
+
+impl ArrangeState {
+    fn record(&mut self) {
+        self.history.push((self.items.clone(), self.stack));
+    }
+
+    fn move_to_top(&mut self, index: usize) {
+        if index < self.stack || index >= self.items.len() {
+            return;
+        }
+        self.record();
+        let item = self.items.remove(index);
+        self.items.insert(self.stack, item);
+        self.stack += 1;
+    }
+
+    fn remove(&mut self, index: usize) {
+        if index >= self.items.len() {
+            return;
+        }
+        self.record();
+        self.items.remove(index);
+        if index < self.stack {
+            self.stack -= 1;
+        }
+    }
+
+    fn move_item(&mut self, from: usize, to: usize) {
+        if from == to || from >= self.items.len() || to >= self.items.len() {
+            return;
+        }
+        self.record();
+        let item = self.items.remove(from);
+        self.items.insert(to, item);
+        if from < self.stack && to >= self.stack {
+            self.stack -= 1;
+        } else if from >= self.stack && to < self.stack {
+            self.stack += 1;
+        }
+    }
+
+    fn undo(&mut self) {
+        if let Some((items, stack)) = self.history.pop() {
+            self.items = items;
+            self.stack = stack;
+        }
+    }
+
+    fn removed_codes(&self) -> Vec<String> {
+        let kept: std::collections::HashSet<&String> = self.items.iter().map(|item| &item.code).collect();
+        self.original.iter().filter(|code| !kept.contains(code)).cloned().collect()
+    }
+}
+
+/// Reorder (drag the handle, Alt+Up/Down, Move to top) and remove a playlist's songs; nothing is
+/// written until Save.
+pub struct ArrangePlaylist {
+    playlist_id: i64,
+    state: ArrangeState,
+    changed: Option<Changed>,
+    busy: bool,
+    /// The footer and stack chip at `CONTROL_*`, then per row its item, Move to top and Remove.
+    focus: FocusList,
+    scroll: ScrollHandle,
+    focused_first: bool,
+}
+
+const CONTROL_UNDO: usize = 0;
+const CONTROL_CANCEL: usize = 1;
+const CONTROL_SAVE: usize = 2;
+const CONTROL_STACK: usize = 3;
+const CONTROL_ROWS: usize = 4;
+
+fn row_stop(index: usize) -> usize {
+    CONTROL_ROWS + index * 3
+}
+
+impl ArrangePlaylist {
+    pub fn open(
+        playlist_id: i64,
+        items: Vec<PlaylistItemDetail>,
+        changed: Option<Changed>,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let view = cx.new(|cx| {
+            let scroll = ScrollHandle::new();
+            Self {
+                playlist_id,
+                state: ArrangeState {
+                    original: items.iter().map(|item| item.code.clone()).collect(),
+                    items,
+                    stack: 0,
+                    history: Vec::new(),
+                },
+                changed,
+                busy: false,
+                focus: FocusList::modal(Some(scroll.clone()), cx),
+                scroll,
+                focused_first: false,
+            }
+        });
+        window.open_dialog(cx, move |dialog, _, _| {
+            let confirm = view.clone();
+            dialog.title(t(Str::ArrangeSongs)).width(px(560.)).overlay_closable(false).child(view.clone()).on_ok(
+                move |_, window, cx| {
+                    confirm.update(cx, |view, cx| view.activate_focused(window, cx));
+                    false
+                },
+            )
+        });
+    }
+
+    /// The dialog's Enter: presses the focused control; on a row it does nothing.
+    fn activate_focused(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let count = row_stop(self.state.items.len());
+        let Some(control) = (0..count).find(|control| self.focus.handle(*control, cx).is_focused(window)) else {
+            return;
+        };
+        match control {
+            CONTROL_UNDO => self.edit(cx, ArrangeState::undo),
+            CONTROL_CANCEL if !self.busy => window.close_dialog(cx),
+            CONTROL_SAVE => self.save(window, cx),
+            CONTROL_STACK => self.edit(cx, |state| state.stack = 0),
+            CONTROL_CANCEL => {}
+            row_control => {
+                let index = (row_control - CONTROL_ROWS) / 3;
+                match (row_control - CONTROL_ROWS) % 3 {
+                    1 => self.edit(cx, |state| state.move_to_top(index)),
+                    2 => self.edit(cx, |state| state.remove(index)),
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    fn edit(&mut self, cx: &mut Context<Self>, change: impl FnOnce(&mut ArrangeState)) {
+        if !self.busy {
+            change(&mut self.state);
+            cx.notify();
+        }
+    }
+
+    /// Moves a row with the keyboard and keeps focus on it.
+    fn shift(&mut self, index: usize, down: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let target = if down { index + 1 } else { index.wrapping_sub(1) };
+        if target >= self.state.items.len() {
+            return;
+        }
+        self.edit(cx, |state| state.move_item(index, target));
+        let handle = self.focus.handle(row_stop(target), cx);
+        window.focus(&handle, cx);
+    }
+
+    fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.busy {
+            return;
+        }
+        self.busy = true;
+        let playlist_id = self.playlist_id;
+        let removed = self.state.removed_codes();
+        let arranged: Vec<String> = self.state.items.iter().map(|item| item.code.clone()).collect();
+        let request = store_call(cx, move |store| {
+            for code in &removed {
+                store.remove_from_playlist(playlist_id, code)?;
+            }
+            let shown: std::collections::HashSet<&String> = arranged.iter().collect();
+            let unresolved: Vec<String> =
+                store.playlist_codes(playlist_id)?.into_iter().filter(|code| !shown.contains(code)).collect();
+            let order: Vec<String> = arranged.iter().cloned().chain(unresolved).collect();
+            store.reorder_playlist(playlist_id, &order)
+        });
+        cx.notify();
+        cx.spawn_in(window, async move |this, cx| {
+            let result = request.await;
+            this.update_in(cx, |view, window, cx| {
+                view.busy = false;
+                match result {
+                    Ok(()) => {
+                        window.close_dialog(cx);
+                        notify_changed(&view.changed, window, cx);
+                    }
+                    Err(error) => {
+                        cx.global::<AppGraph>().log.fork("arrange-playlist").warn(
+                            &format!("R94002 saving the arrangement of playlist {playlist_id} failed: {error}"),
+                            None,
+                        );
+                        window.push_notification(tf(Str::ErrorGeneric, &[&"R94002"]), cx);
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn row(&self, index: usize, item: &PlaylistItemDetail, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme().clone();
+        let song = &item.item;
+        let stacked = index < self.state.stack;
+        let detail = [song.artist.clone(), song.album.clone()].into_iter().flatten().collect::<Vec<_>>().join(" · ");
+        let dragged = DraggedSong { index, title: song.title.clone() };
+        let handle = div()
+            .id(("arrange-handle", index))
+            .size(px(40.))
+            .flex_shrink_0()
+            .flex()
+            .items_center()
+            .justify_center()
+            .cursor_grab()
+            .tooltip(|window, cx| gpui_kit::component::tooltip::Tooltip::new(t(Str::CdDragToReorder)).build(window, cx))
+            .child(Icon::new(Lucide::GripVertical).size(px(20.)).text_color(theme.muted_foreground))
+            .on_drag(dragged, |dragged, _, _, cx| cx.new(|_| dragged.clone()));
+        let thumb = div()
+            .relative()
+            .size(px(44.))
+            .flex_shrink_0()
+            .child(
+                div()
+                    .size_full()
+                    .rounded(px(6.))
+                    .overflow_hidden()
+                    .bg(theme.secondary)
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(crate::library::art_or_icon(
+                        Lucide::Music,
+                        crate::local_art::art_url(song, crate::local_art::ROW_PX),
+                        px(18.),
+                        cx,
+                    )),
+            )
+            .when(stacked, |thumb| {
+                thumb.child(
+                    div()
+                        .absolute()
+                        .top(px(-4.))
+                        .left(px(-4.))
+                        .size(px(18.))
+                        .rounded_full()
+                        .bg(theme.primary)
+                        .text_color(theme.primary_foreground)
+                        .text_size(px(11.))
+                        .font_weight(FontWeight::BOLD)
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child((index + 1).to_string()),
+                )
+            });
+        let top = Button::new(("arrange-top", index))
+            .ghost()
+            .icon(Lucide::ArrowUpToLine)
+            .accessibility_label(t(Str::CdMoveToTop))
+            .tooltip(t(Str::CdMoveToTop))
+            .disabled(stacked || self.busy)
+            .on_click(cx.listener(move |view, _, _, cx| view.edit(cx, |state| state.move_to_top(index))));
+        let remove = Button::new(("arrange-remove", index))
+            .ghost()
+            .icon(Lucide::CircleMinus)
+            .accessibility_label(t(Str::MenuRemoveFromPlaylist))
+            .tooltip(t(Str::MenuRemoveFromPlaylist))
+            .disabled(self.busy)
+            .on_click(cx.listener(move |view, _, _, cx| view.edit(cx, |state| state.remove(index))));
+        let label = [Some(song.title.clone()), (!detail.is_empty()).then(|| detail.clone())]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join(", ");
+        let stop = row_stop(index);
+        let row = h_flex()
+            .id(("arrange-row", index))
+            .role(Role::ListItem)
+            .aria_label(label)
+            .gap_3()
+            .px_2()
+            .py_1()
+            .items_center()
+            .rounded(px(8.))
+            .when(stacked, |row| row.bg(theme.primary.opacity(0.08)))
+            .drag_over::<DraggedSong>(move |style, _, _, cx| style.bg(cx.theme().secondary))
+            .on_drop(cx.listener(move |view, dragged: &DraggedSong, _, cx| {
+                let from = dragged.index;
+                view.edit(cx, |state| state.move_item(from, index));
+            }))
+            .on_key_down(cx.listener(move |view, event: &KeyDownEvent, window, cx| {
+                let keystroke = &event.keystroke;
+                if keystroke.modifiers.alt && matches!(keystroke.key.as_str(), "up" | "down") {
+                    view.shift(index, keystroke.key == "down", window, cx);
+                    cx.stop_propagation();
+                }
+            }))
+            .child(handle)
+            .child(thumb)
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .pl_1()
+                    .child(div().text_sm().truncate().child(song.title.clone()))
+                    .when(!detail.is_empty(), |column| {
+                        column.child(div().text_xs().text_color(theme.muted_foreground).truncate().child(detail))
+                    }),
+            )
+            .child(self.focus.button(stop + 1, top, cx))
+            .child(self.focus.button(stop + 2, remove, cx));
+        self.focus.item(stop, row, cx).into_any_element()
+    }
+}
+
+impl Render for ArrangePlaylist {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme().clone();
+        if !self.focused_first && !self.state.items.is_empty() {
+            self.focused_first = true;
+            let first = self.focus.handle(row_stop(0), cx);
+            window.defer(cx, move |window, cx| window.focus(&first, cx));
+        }
+        let items = self.state.items.clone();
+        let rows: Vec<AnyElement> = items.iter().enumerate().map(|(index, item)| self.row(index, item, cx)).collect();
+        let stacking = (self.state.stack > 0).then(|| {
+            let label = tf(Str::ArrangeStacking, &[&self.state.stack]);
+            let chip = Button::new("arrange-reset-stacking")
+                .small()
+                .outline()
+                .rounded_full()
+                .label(label.clone())
+                .icon(IconName::Close)
+                .accessibility_label(format!("{label}, {}", t(Str::CdResetStacking)))
+                .tooltip(t(Str::CdResetStacking))
+                .on_click(cx.listener(|view, _, _, cx| view.edit(cx, |state| state.stack = 0)));
+            h_flex().px_2().pb_2().child(self.focus.button(CONTROL_STACK, chip, cx))
+        });
+        let list = div()
+            .id("arrange-rows")
+            .max_h(px(440.))
+            .overflow_y_scroll()
+            .track_scroll(&self.scroll)
+            .child(v_flex().gap_1().children(rows));
+        let footer = h_flex()
+            .gap_2()
+            .pt_3()
+            .px_2()
+            .border_t_1()
+            .border_color(theme.border)
+            .child(
+                self.focus.button(
+                    CONTROL_UNDO,
+                    Button::new("arrange-undo")
+                        .ghost()
+                        .label(t(Str::DialogUndo))
+                        .disabled(self.busy || self.state.history.is_empty())
+                        .on_click(cx.listener(|view, _, _, cx| view.edit(cx, ArrangeState::undo))),
+                    cx,
+                ),
+            )
+            .child(div().flex_1())
+            .child(
+                self.focus.button(
+                    CONTROL_CANCEL,
+                    Button::new("arrange-cancel")
+                        .outline()
+                        .label(t(Str::DialogCancel))
+                        .disabled(self.busy)
+                        .on_click(|_, window, cx| window.close_dialog(cx)),
+                    cx,
+                ),
+            )
+            .child(if self.busy {
+                div().p_2().child(Spinner::new().small()).into_any_element()
+            } else {
+                self.focus
+                    .button(
+                        CONTROL_SAVE,
+                        Button::new("arrange-save")
+                            .primary()
+                            .label(t(Str::DialogSave))
+                            .on_click(cx.listener(|view, _, window, cx| view.save(window, cx))),
+                        cx,
+                    )
+                    .into_any_element()
+            });
+        v_flex().pb_2().children(stacking).child(list).child(footer)
+    }
+}

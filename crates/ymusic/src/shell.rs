@@ -20,7 +20,7 @@ use crate::downloads_view::{DownloadsView, RevealInLibrary};
 use crate::feed::{FeedAction, FeedSource, FeedView, ItemAction, Navigate, Play};
 use crate::feedback_view::FeedbackView;
 use crate::graph::{AppGraph, on_core};
-use crate::library::{LibraryView, PlayLocal, QueueLocal};
+use crate::library::{GroupKind, LibraryView, PlayLocal, QueueLocal};
 use crate::media_session::MediaSession;
 use crate::mini_player::{MiniPlayer, ToggleNowPlaying};
 use crate::now_playing::{NowPlaying, NowPlayingEvent};
@@ -328,8 +328,11 @@ impl Shell {
                     let view = shell.library_view(cx);
                     let (album, name) = (*album, name.clone());
                     view.update(cx, |library, cx| match name {
-                        Some(name) => library.open_group(album, name, cx),
-                        None => library.select_tab_index(if album { 3 } else { 2 }, cx),
+                        Some(name) => {
+                            let kind = if album { GroupKind::Album } else { GroupKind::Artist };
+                            library.reveal_group(kind, name, cx)
+                        }
+                        None => library.select_tab_index(if album { 4 } else { 3 }, cx),
                     });
                 }
                 NowPlayingEvent::SignIn => {
@@ -542,7 +545,7 @@ impl Shell {
     }
 
     /// Debug builds only: `YMUSIC_DEV_ROUTE` opens a surface at start (`trending`, `music`,
-    /// `search:<query>`, `open:<app link>`, `musictab:<n>`, `play:<youtube url>`, `nowplaying:<url>`, `library:<dir>`, `localplay:<dir>`, `details:<videoId>`, `addtoplaylist:<videoId>`, `sleeptimer`, `signin-paste:<file>`, `devicelink`, `signout`,
+    /// `search:<query>`, `open:<app link>`, `musictab:<n>`, `play:<youtube url>`, `nowplaying:<url>`, `library:<dir>`, `localplay:<dir>`, `libraryact:<a;b>` (`LibraryView::dev_action`), `details:<videoId>`, `addtoplaylist:<videoId>`, `sleeptimer`, `signin-paste:<file>`, `devicelink`, `signout`,
     /// `download:<FORMAT>:<videoId>` into `YMUSIC_DEV_DOWNLOAD_DIR` or the chosen folder), for
     /// screenshots and checks without driving the UI. `YMUSIC_DEV_CAPTIONS=1|<vssId>` turns captions on (with that track), `YMUSIC_DEV_QUALITY=<token>` picks a quality, `YMUSIC_DEV_TRAY_POPUP=1|hidden` opens the tray popup.
     pub fn apply_dev_route(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -673,6 +676,11 @@ impl Shell {
                 let view = self.library_view(cx);
                 let index = index.parse().unwrap_or(0);
                 view.update(cx, |library, cx| library.select_tab_index(index, cx));
+            }
+            Some(("libraryact", actions)) => {
+                self.section = Section::Library;
+                let view = self.library_view(cx);
+                view.update(cx, |library, cx| library.queue_dev_actions(actions, cx));
             }
             Some(("signin-paste", path)) => self.dev_sign_in_paste(path.into(), cx),
             Some(("playlistdialog", spec)) => {
@@ -1191,6 +1199,16 @@ impl Shell {
             LibrarySearchEvent::SearchOnline(query) => {
                 shell.select_section(Section::Discover, cx);
                 shell.show_results(query.clone(), cx);
+            }
+            LibrarySearchEvent::GoTo(kind, name) => {
+                shell.back(cx);
+                let (kind, name) = (*kind, name.clone());
+                shell.library_view(cx).update(cx, |library, cx| library.reveal_group(kind, name, cx));
+            }
+            LibrarySearchEvent::ShowInFolder(bucket_id) => {
+                shell.back(cx);
+                let bucket_id = *bucket_id;
+                shell.library_view(cx).update(cx, |library, cx| library.reveal_folder(bucket_id, cx));
             }
         });
         let play = cx.subscribe(&view, |shell, _, event: &PlayLocal, cx| {

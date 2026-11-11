@@ -67,7 +67,12 @@ gpui_kit::assets::icon_assets!(
         SquarePlay,
         Trash,
         ThumbsDown,
-        Pin
+        Pin,
+        ListMusic,
+        ArrowUpToLine,
+        CircleMinus,
+        Flame,
+        SquarePen
     ]
 );
 

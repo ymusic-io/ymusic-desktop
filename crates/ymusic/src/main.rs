@@ -15,6 +15,7 @@ mod graph;
 mod http_client;
 mod instance;
 mod library;
+mod library_playlist;
 mod library_search;
 mod local_art;
 mod local_engine;

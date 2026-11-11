@@ -14,15 +14,23 @@ use ym_store::{MediaItem, MediaStore};
 
 use crate::a11y::FocusList;
 use crate::graph::{AppGraph, on_core};
-use crate::library::{LibraryView, PlayLocal, QueueLocal, grid_rows, song_cell, song_columns};
+use crate::library::{
+    GroupKind, LibraryView, PlayLocal, QueueLocal, SongAction, SongMenu, SongMenuHost, grid_rows, song_cell,
+    song_columns,
+};
 use crate::playback::QueueItem;
 
 pub enum LibrarySearchEvent {
     Back,
     SearchOnline(String),
+    /// "Go to artist / album" on a match: the Library opens that group.
+    GoTo(GroupKind, String),
+    /// "Show in folder" on a match: the Library opens that folder.
+    ShowInFolder(i64),
 }
 
 pub struct LibrarySearchView {
+    store: Arc<MediaStore>,
     input: Entity<InputState>,
     all: Vec<MediaItem>,
     /// The open artist or album: its name and songs.
@@ -49,6 +57,24 @@ impl LibrarySearchView {
                 cx.notify();
             }
         });
+        let scroll = ScrollHandle::new();
+        let mut view = Self {
+            store,
+            input,
+            all: Vec::new(),
+            drill: None,
+            songs: Vec::new(),
+            scroll: scroll.clone(),
+            focus: FocusList::new(Some(scroll.clone())),
+            song_focus: FocusList::new(Some(scroll)),
+            _subscription: subscription,
+        };
+        view.load(cx);
+        view
+    }
+
+    fn load(&mut self, cx: &mut Context<Self>) {
+        let store = self.store.clone();
         let load = on_core(cx, async move { tokio::task::spawn_blocking(move || store.all_items()).await });
         cx.spawn(async move |this, cx| {
             let result = load.await;
@@ -68,17 +94,6 @@ impl LibrarySearchView {
             .ok();
         })
         .detach();
-        let scroll = ScrollHandle::new();
-        Self {
-            input,
-            all: Vec::new(),
-            drill: None,
-            songs: Vec::new(),
-            scroll: scroll.clone(),
-            focus: FocusList::new(Some(scroll.clone())),
-            song_focus: FocusList::new(Some(scroll)),
-            _subscription: subscription,
-        }
     }
 
     /// Closes an open artist or album first; true when it did.
@@ -163,11 +178,30 @@ impl LibrarySearchView {
     }
 
     fn song_block(&self, columns: usize, cx: &mut Context<Self>) -> AnyElement {
-        let cells: Vec<AnyElement> =
-            self.songs.iter().enumerate().map(|(index, item)| song_cell(&self.song_focus, index, item, Self::play, cx)).collect();
+        let menu = SongMenu { show_in_folder: true, ..SongMenu::default() };
+        let cells: Vec<AnyElement> = self
+            .songs
+            .iter()
+            .enumerate()
+            .map(|(index, item)| song_cell(&self.song_focus, index, item, Self::play, menu, cx))
+            .collect();
         let count = cells.len();
         let rows = if columns > 1 { grid_rows(cells, columns) } else { cells };
         self.song_focus.container(v_flex().children(rows), 0..count, cx).into_any_element()
+    }
+}
+
+impl SongMenuHost for LibrarySearchView {
+    fn song_action(&mut self, action: SongAction, _: &mut Window, cx: &mut Context<Self>) {
+        match action {
+            SongAction::GoTo(kind, name) => cx.emit(LibrarySearchEvent::GoTo(kind, name)),
+            SongAction::ShowInFolder(bucket_id) => cx.emit(LibrarySearchEvent::ShowInFolder(bucket_id)),
+            SongAction::Changed => {
+                self.drill = None;
+                self.load(cx);
+            }
+            SongAction::RemoveFromPlaylist(_) | SongAction::RemoveFromHistory(_) => {}
+        }
     }
 }
 
@@ -215,7 +249,11 @@ impl Render for LibrarySearchView {
             let online = query.clone();
             let online_row = self
                 .focus
-                .item(0, div().id("search-online").role(Role::Button).aria_label(tf(Str::LibrarySearchOnline, &[&query])), cx)
+                .item(
+                    0,
+                    div().id("search-online").role(Role::Button).aria_label(tf(Str::LibrarySearchOnline, &[&query])),
+                    cx,
+                )
                 .px_4()
                 .py_3()
                 .cursor_pointer()
@@ -245,13 +283,19 @@ impl Render for LibrarySearchView {
                 }
             }
             if self.songs.is_empty() && artists.is_empty() && albums.is_empty() {
-                column = column
-                    .child(div().p_4().text_color(theme.muted_foreground).child(t(Str::LibrarySearchNoMatches)));
+                column =
+                    column.child(div().p_4().text_color(theme.muted_foreground).child(t(Str::LibrarySearchNoMatches)));
             }
             self.focus.container(column, 0..focus_count, cx).into_any_element()
         };
         v_flex().size_full().child(bar).child(
-            div().id("library-search-results").flex_1().overflow_y_scroll().track_scroll(&self.scroll).pb_4().child(body),
+            div()
+                .id("library-search-results")
+                .flex_1()
+                .overflow_y_scroll()
+                .track_scroll(&self.scroll)
+                .pb_4()
+                .child(body),
         )
     }
 }
