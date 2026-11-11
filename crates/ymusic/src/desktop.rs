@@ -867,3 +867,43 @@ fn close_from_title_bar(window: &mut Window, cx: &mut App) {
         None => cx.quit(),
     }
 }
+
+/// The OS version as the JVM app reports it (`os.version`): the product version on macOS, the
+/// kernel release on Linux.
+#[cfg(target_os = "macos")]
+pub fn os_version() -> String {
+    let mut buffer = [0u8; 64];
+    let mut length = buffer.len();
+    // SAFETY: the name is NUL-terminated and `length` is the buffer's size; sysctl writes at most that.
+    let status = unsafe {
+        libc::sysctlbyname(
+            c"kern.osproductversion".as_ptr(),
+            buffer.as_mut_ptr().cast(),
+            &mut length,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if status != 0 {
+        return String::new();
+    }
+    String::from_utf8_lossy(&buffer[..length]).trim_end_matches('\0').to_owned()
+}
+
+#[cfg(target_os = "linux")]
+pub fn os_version() -> String {
+    // SAFETY: uname fills a zeroed utsname whose fields are NUL-terminated.
+    unsafe {
+        let mut name: libc::utsname = std::mem::zeroed();
+        if libc::uname(&mut name) != 0 {
+            return String::new();
+        }
+        std::ffi::CStr::from_ptr(name.release.as_ptr()).to_string_lossy().into_owned()
+    }
+}
+
+/// Hack: the JVM reports "10.0" on Windows 10 and 11 alike, and the Rust toolchain needs 10 or later.
+#[cfg(target_os = "windows")]
+pub fn os_version() -> String {
+    "10.0".to_owned()
+}

@@ -114,7 +114,7 @@ impl AppGraph {
             base_url,
             api_key: option_env!("YMUSIC_API_KEY").map(str::to_owned),
             os: ym_update::os_key().to_owned(),
-            os_version: String::new(),
+            os_version: crate::desktop::os_version(),
             arch: ym_update::arch_key().to_owned(),
             app_version_code: APP_VERSION,
             app_version_name: APP_VERSION_NAME.to_owned(),
