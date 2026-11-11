@@ -117,7 +117,8 @@ pub fn open(inputs: DownloadInputs) -> Result<DownloadService, String> {
 /// The chosen download folder; none until the user picks one.
 pub fn download_folder(settings: &dyn SettingsStore) -> Option<PathBuf> {
     let uri = settings.get_raw(DOWNLOAD_LOCATION_KEY).ok().flatten().filter(|uri| !uri.is_empty())?;
-    url::Url::parse(&uri).ok()?.to_file_path().ok()
+    // Rebuilt from components: a URI saved with a trailing slash still names the folder's Library entry.
+    Some(url::Url::parse(&uri).ok()?.to_file_path().ok()?.components().collect())
 }
 
 /// The download location as the JVM app keeps it: the folder's `file://` URI, no trailing slash.
