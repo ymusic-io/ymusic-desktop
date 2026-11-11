@@ -422,8 +422,74 @@ pub fn install_pin_button(window: &Window, log: &Logger) {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn install_pin_button(_window: &Window, _log: &Logger) {}
+
+/// Windows: "Always on top" in the window's system menu (Alt+Space, a right-click on the title bar),
+/// checked while the window floats; the native caption has no room for the JVM app's pin.
+#[cfg(target_os = "windows")]
+pub fn install_pin_button(window: &Window, log: &Logger) {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::Shell::SetWindowSubclass;
+    use windows::Win32::UI::WindowsAndMessaging::{AppendMenuW, GetSystemMenu, MF_SEPARATOR, MF_STRING};
+    use windows::core::{HSTRING, PCWSTR};
+
+    let Some(hwnd) = window_hwnd(window).map(HWND) else { return };
+    // SAFETY: gpui's live HWND, on its thread; the label outlives the call that copies it.
+    unsafe {
+        let menu = GetSystemMenu(hwnd, false);
+        if menu.is_invalid() {
+            log.warn("always on top: the window has no system menu", None);
+            return;
+        }
+        let label = HSTRING::from(t(Str::CdAlwaysOnTop));
+        let appended = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null())
+            .and_then(|()| AppendMenuW(menu, MF_STRING, PIN_COMMAND as usize, &label));
+        if let Err(error) = appended {
+            log.warn("always on top: the system menu item could not be added", Some(&error));
+            return;
+        }
+        if !SetWindowSubclass(hwnd, Some(pin_subclass), PIN_SUBCLASS, 0).as_bool() {
+            log.warn("always on top: the window could not be subclassed", None);
+        }
+    }
+}
+
+/// A system command id: below 0xF000 with the low four bits clear, which Windows keeps for itself.
+#[cfg(target_os = "windows")]
+const PIN_COMMAND: u32 = 0x0110;
+#[cfg(target_os = "windows")]
+const PIN_SUBCLASS: usize = 1;
+
+#[cfg(target_os = "windows")]
+unsafe extern "system" fn pin_subclass(
+    hwnd: windows::Win32::Foundation::HWND,
+    message: u32,
+    wparam: windows::Win32::Foundation::WPARAM,
+    lparam: windows::Win32::Foundation::LPARAM,
+    _subclass: usize,
+    _data: usize,
+) -> windows::Win32::Foundation::LRESULT {
+    use windows::Win32::Foundation::LRESULT;
+    use windows::Win32::UI::Shell::DefSubclassProc;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        CheckMenuItem, GWL_EXSTYLE, GetSystemMenu, GetWindowLongPtrW, HWND_NOTOPMOST, HWND_TOPMOST, MF_CHECKED,
+        MF_UNCHECKED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SetWindowPos, WM_SYSCOMMAND, WS_EX_TOPMOST,
+    };
+    // SAFETY: called by Windows on the window's thread with its live HWND.
+    unsafe {
+        if message == WM_SYSCOMMAND && (wparam.0 as u32 & 0xFFF0) == PIN_COMMAND {
+            let floating = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) & WS_EX_TOPMOST.0 as isize != 0;
+            let after = if floating { HWND_NOTOPMOST } else { HWND_TOPMOST };
+            if SetWindowPos(hwnd, Some(after), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE).is_ok() {
+                let check = if floating { MF_UNCHECKED } else { MF_CHECKED };
+                CheckMenuItem(GetSystemMenu(hwnd, false), PIN_COMMAND, check.0);
+            }
+            return LRESULT(0);
+        }
+        DefSubclassProc(hwnd, message, wparam, lparam)
+    }
+}
 
 gpui_kit::actions!(ymusic_dock, [DockTogglePlay, DockStop]);
 
