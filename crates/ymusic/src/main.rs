@@ -29,6 +29,7 @@ mod playback;
 mod playlist_download;
 mod queue_nav;
 mod quick_download;
+mod search_filter;
 mod search_view;
 mod settings_lists;
 mod settings_view;

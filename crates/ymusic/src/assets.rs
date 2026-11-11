@@ -72,7 +72,8 @@ gpui_kit::assets::icon_assets!(
         ArrowUpToLine,
         CircleMinus,
         Flame,
-        SquarePen
+        SquarePen,
+        Funnel
     ]
 );
 

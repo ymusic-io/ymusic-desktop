@@ -545,7 +545,7 @@ impl Shell {
     }
 
     /// Debug builds only: `YMUSIC_DEV_ROUTE` opens a surface at start (`trending`, `music`,
-    /// `search:<query>`, `open:<app link>`, `musictab:<n>`, `play:<youtube url>`, `nowplaying:<url>`, `library:<dir>`, `localplay:<dir>`, `libraryact:<a;b>` (`LibraryView::dev_action`), `details:<videoId>`, `addtoplaylist:<videoId>`, `sleeptimer`, `signin-paste:<file>`, `devicelink`, `signout`,
+    /// `search:<query>`, `searchfilter:<n>:<query>` (the filter dialog once the results land; `n` > 0 first applies that option, counted across groups from 1), `open:<app link>`, `musictab:<n>`, `play:<youtube url>`, `nowplaying:<url>`, `library:<dir>`, `localplay:<dir>`, `libraryact:<a;b>` (`LibraryView::dev_action`), `details:<videoId>`, `addtoplaylist:<videoId>`, `sleeptimer`, `signin-paste:<file>`, `devicelink`, `signout`,
     /// `download:<FORMAT>:<videoId>` into `YMUSIC_DEV_DOWNLOAD_DIR` or the chosen folder), for
     /// screenshots and checks without driving the UI. `YMUSIC_DEV_CAPTIONS=1|<vssId>` turns captions on (with that track), `YMUSIC_DEV_QUALITY=<token>` picks a quality, `YMUSIC_DEV_TRAY_POPUP=1|hidden` opens the tray popup.
     pub fn apply_dev_route(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -655,6 +655,7 @@ impl Shell {
         let Ok(route) = std::env::var("YMUSIC_DEV_ROUTE") else { return };
         match route.split_once(':') {
             Some(("search", query)) => self.show_results(query.to_owned(), cx),
+            Some(("searchfilter", spec)) => self.dev_search_filter(spec, window, cx),
             Some(("musictab", index)) => {
                 self.section = Section::YtMusic;
                 self.music_tab = MusicTab::ALL[index.parse::<usize>().unwrap_or(0).min(4)];
@@ -1225,6 +1226,40 @@ impl Shell {
         self.push_layer(Layer::LibrarySearch(view), cx);
     }
 
+    fn dev_search_filter(&mut self, spec: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let (option, query) = spec.split_once(':').unwrap_or(("0", spec));
+        let option = option.parse::<usize>().unwrap_or(0);
+        self.show_results(query.to_owned(), cx);
+        let Some(Layer::Results { view, .. }) = self.stacks.get(&self.section).and_then(|stack| stack.pushed.last())
+        else {
+            return;
+        };
+        let (view, executor) = (view.clone(), cx.background_executor().clone());
+        cx.spawn_in(window, async move |_, cx| {
+            let wait_for_groups = async |cx: &mut AsyncWindowContext| {
+                for _ in 0..60 {
+                    executor.timer(Duration::from_millis(500)).await;
+                    if view.read_with(cx, |view, _| !view.filter_groups().is_empty()) {
+                        return;
+                    }
+                }
+            };
+            wait_for_groups(cx).await;
+            if option > 0 {
+                let params = view.read_with(cx, |view, _| {
+                    view.filter_groups().iter().flat_map(|group| &group.options).nth(option - 1)?.params.clone()
+                });
+                if let Some(params) = params {
+                    view.update(cx, |view, cx| view.apply_filter(params, cx));
+                    executor.timer(Duration::from_millis(500)).await;
+                    wait_for_groups(cx).await;
+                }
+            }
+            cx.update(|window, cx| open_search_filter(&view, window, cx)).ok();
+        })
+        .detach();
+    }
+
     /// Results replace the search input they came from, and search the section's service.
     fn show_results(&mut self, query: String, cx: &mut Context<Self>) {
         let stack = self.stacks.entry(self.section).or_default();
@@ -1232,9 +1267,9 @@ impl Shell {
             stack.pushed.pop();
         }
         let source = if self.section == Section::YtMusic {
-            FeedSource::MusicSearch(query.clone())
+            FeedSource::MusicSearch(query.clone(), None)
         } else {
-            FeedSource::Search(query.clone())
+            FeedSource::Search(query.clone(), None)
         };
         let view = self.feed_view(source, None, cx);
         self.push_layer(Layer::Results { view, query }, cx);
@@ -1300,15 +1335,16 @@ impl Shell {
                 };
                 return v_flex()
                     .size_full()
-                    .child(self.detail_bar(title, None, cx))
+                    .child(self.detail_bar(title, None, None, cx))
                     .child(div().flex_1().min_h_0().child(view))
                     .into_any_element();
             }
             Some(Layer::Results { view, query }) => {
                 let (view, query) = (view.clone(), query.clone());
+                let filter = (!view.read(cx).filter_groups().is_empty()).then(|| view.clone());
                 return v_flex()
                     .size_full()
-                    .child(self.detail_bar(query.clone().into(), Some(query), cx))
+                    .child(self.detail_bar(query.clone().into(), Some(query), filter, cx))
                     .child(div().flex_1().min_h_0().child(view))
                     .into_any_element();
             }
@@ -1328,8 +1364,15 @@ impl Shell {
             .into_any_element()
     }
 
-    /// Back, title and search, for a pushed page. `search_query` reopens the input with it.
-    fn detail_bar(&self, title: SharedString, search_query: Option<String>, cx: &mut Context<Self>) -> AnyElement {
+    /// Back, title and search, for a pushed page. `search_query` reopens the input with it;
+    /// `filter` adds the search filter button for those results.
+    fn detail_bar(
+        &self,
+        title: SharedString,
+        search_query: Option<String>,
+        filter: Option<Entity<FeedView>>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let theme = cx.theme();
         h_flex()
             .gap_2()
@@ -1347,6 +1390,16 @@ impl Shell {
                     .on_click(cx.listener(|shell, _, _, cx| shell.back(cx))),
             )
             .child(div().flex_1().min_w_0().truncate().text_lg().font_semibold().child(title))
+            .when_some(filter, |bar, view| {
+                bar.child(
+                    Button::new("layer-filter")
+                        .ghost()
+                        .icon(Icon::new(Lucide::Funnel))
+                        .accessibility_label(t(Str::CdFilter))
+                        .tooltip(t(Str::CdFilter))
+                        .on_click(move |_, window, cx| open_search_filter(&view, window, cx)),
+                )
+            })
             .child(
                 Button::new("layer-search")
                     .ghost()
@@ -1905,3 +1958,16 @@ impl std::hash::Hash for FeedSource {
 }
 
 impl Eq for FeedSource {}
+
+fn open_search_filter(view: &Entity<FeedView>, window: &mut Window, cx: &mut App) {
+    let groups = view.read(cx).filter_groups().to_vec();
+    let target = view.downgrade();
+    crate::search_filter::SearchFilter::open(
+        groups,
+        move |params, _, cx| {
+            target.update(cx, |view, cx| view.apply_filter(params, cx)).ok();
+        },
+        window,
+        cx,
+    );
+}

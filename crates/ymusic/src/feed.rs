@@ -12,7 +12,7 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use ym_common::log::Logger;
-use ym_engine::yt::{YtFeedItem, YtFeedPage, YtPageHeader, YtSectionHeader, YtThumb};
+use ym_engine::yt::{YtFeedItem, YtFeedPage, YtFilterGroup, YtPageHeader, YtSectionHeader, YtThumb};
 use ym_engine::{DynamicEngine, EngineError, ErrorKind};
 use ym_i18n::{Str, t, tf};
 
@@ -43,8 +43,9 @@ pub enum FeedSource {
     Playlist(String),
     Channel(String),
     MusicBrowse(String),
-    Search(String),
-    MusicSearch(String),
+    /// A query and the filter params picked for it.
+    Search(String, Option<String>),
+    MusicSearch(String, Option<String>),
 }
 
 impl FeedSource {
@@ -86,16 +87,25 @@ impl FeedSource {
             Self::Playlist(url) => engine.playlist_detail(url, continuation, &log).await,
             Self::Channel(url) => engine.channel_detail(url, continuation, &log).await,
             Self::MusicBrowse(url) => engine.music_browse(url, continuation, &log).await,
-            Self::Search(query) => {
-                let query = continuation.is_none().then_some(query.as_str());
-                engine.search(query, None, continuation, &log).await
+            Self::Search(query, params) => {
+                let (query, params) = first_page(continuation, query, params);
+                engine.search(query, params, continuation, &log).await
             }
-            Self::MusicSearch(query) => {
-                let query = continuation.is_none().then_some(query.as_str());
-                engine.music_search(query, None, continuation, &log).await
+            Self::MusicSearch(query, params) => {
+                let (query, params) = first_page(continuation, query, params);
+                engine.music_search(query, params, continuation, &log).await
             }
         }
     }
+}
+
+/// A continuation carries the query and filter on; only the first page sends them.
+fn first_page<'a>(
+    continuation: Option<&str>,
+    query: &'a str,
+    params: &'a Option<String>,
+) -> (Option<&'a str>, Option<&'a str>) {
+    if continuation.is_some() { (None, None) } else { (Some(query), params.as_deref()) }
 }
 
 /// Play history's most-watched videos as one section that plays in order.
@@ -164,6 +174,13 @@ pub struct Navigate {
     pub title: Option<SharedString>,
 }
 
+/// A menu option that re-serves the page in place, by its position.
+#[derive(Clone, Copy, PartialEq)]
+enum Refilter {
+    Chip(usize),
+    Sort(usize),
+}
+
 enum Phase {
     Loading,
     Ready,
@@ -177,8 +194,8 @@ pub struct FeedView {
     phase: Phase,
     loading_more: bool,
     more_failed: Option<EngineError>,
-    /// The chip whose page is loading; the current page stays up until it lands.
-    refiltering: Option<usize>,
+    /// The chip or sort option whose page is loading; the current page stays up until it lands.
+    refiltering: Option<Refilter>,
     generation: u64,
     scroll: ScrollHandle,
     /// Collapsible sections the user expanded, by index.
@@ -380,6 +397,23 @@ impl FeedView {
         true
     }
 
+    /// The server's search filters; empty until a page is up, and on surfaces without them.
+    pub fn filter_groups(&self) -> &[YtFilterGroup] {
+        match self.phase {
+            Phase::Ready => &self.page.filter_groups,
+            _ => &[],
+        }
+    }
+
+    /// Re-runs the search with a filter option's params.
+    pub fn apply_filter(&mut self, params: String, cx: &mut Context<Self>) {
+        match &mut self.source {
+            FeedSource::Search(_, current) | FeedSource::MusicSearch(_, current) => *current = Some(params),
+            _ => return,
+        }
+        self.reload(cx);
+    }
+
     pub fn set_top(&mut self, top: Option<AnyView>) {
         self.top = top;
     }
@@ -398,13 +432,13 @@ impl FeedView {
         self.fetch(Some(continuation), true, cx);
     }
 
-    /// Chip `index` re-serves the page in place: the current page stays up, the chip spins, and
-    /// the new page replaces it when it lands; a failure leaves the page and says why.
-    fn refilter(&mut self, index: usize, token: String, window: &mut Window, cx: &mut Context<Self>) {
-        if self.refiltering == Some(index) {
+    /// A chip or sort option re-serves the page in place: the current page stays up, the option
+    /// spins, and the new page replaces it when it lands; a failure leaves the page and says why.
+    fn refilter(&mut self, target: Refilter, token: String, window: &mut Window, cx: &mut Context<Self>) {
+        if self.refiltering == Some(target) {
             return;
         }
-        self.refiltering = Some(index);
+        self.refiltering = Some(target);
         self.generation += 1;
         let generation = self.generation;
         let load = self.load(Some(token), cx);
@@ -419,11 +453,16 @@ impl FeedView {
                 view.loading_more = false;
                 match result {
                     Some(Ok(page)) => {
-                        let carried_chips = page.chips.is_empty();
-                        view.replace(page);
-                        if carried_chips {
-                            for (position, chip) in view.page.chips.iter_mut().enumerate() {
-                                chip.selected = position == index;
+                        let (carried_chips, carried_sort) = (page.chips.is_empty(), page.sort.is_empty());
+                        view.replace(page, true);
+                        let marked = match target {
+                            Refilter::Chip(index) if carried_chips => Some((&mut view.page.chips, index)),
+                            Refilter::Sort(index) if carried_sort => Some((&mut view.page.sort, index)),
+                            _ => None,
+                        };
+                        if let Some((options, index)) = marked {
+                            for (position, option) in options.iter_mut().enumerate() {
+                                option.selected = position == index;
                             }
                         }
                     }
@@ -463,7 +502,7 @@ impl FeedView {
                 view.loading_more = false;
                 match result {
                     Some(Ok(page)) if append => view.append(page),
-                    Some(Ok(page)) => view.replace(page),
+                    Some(Ok(page)) => view.replace(page, false),
                     Some(Err(error)) if append => view.more_failed = Some(error),
                     Some(Err(error)) => view.phase = Phase::Failed(error),
                     None => {}
@@ -474,10 +513,20 @@ impl FeedView {
         .detach();
     }
 
-    fn replace(&mut self, mut page: YtFeedPage) {
-        // A filtered re-serve omits the menus; they carry over.
-        if page.chips.is_empty() {
-            page.chips = std::mem::take(&mut self.page.chips);
+    /// `refiltered`: a chip or sort re-serve, which often omits the menus; they carry over. Any
+    /// other load is a new surface (a channel tab) and must not inherit them.
+    fn replace(&mut self, mut page: YtFeedPage, refiltered: bool) {
+        if refiltered {
+            if page.chips.is_empty() {
+                page.chips = std::mem::take(&mut self.page.chips);
+            }
+            if page.sort.is_empty() {
+                page.sort = std::mem::take(&mut self.page.sort);
+            }
+            if page.filter_groups.is_empty() {
+                page.filter_groups = std::mem::take(&mut self.page.filter_groups);
+            }
+            page.chips_wrap |= self.page.chips_wrap;
         }
         if page.page_header.is_none() {
             page.page_header = self.page.page_header.take();
@@ -809,6 +858,8 @@ struct Bands {
 }
 
 const CARD_MAX: f32 = 324.;
+/// The sort menu, after any chip.
+const CHIPS_SORT: usize = 63;
 /// The page's Show more, after any chip.
 const CHIPS_SHOW_MORE: usize = 64;
 const ROW_GAP: f32 = 16.;
@@ -1386,6 +1437,41 @@ impl FeedView {
     }
 }
 
+impl FeedView {
+    /// The server sort menu: the current order on the trigger, the options in a dropdown; picking
+    /// one re-serves the feed through its token, keeping the page up like a chip.
+    fn render_sort_menu(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let options = self.page.sort.clone();
+        let current = options.iter().find(|option| option.selected).or(options.first())?.title.clone();
+        let busy = matches!(self.refiltering, Some(Refilter::Sort(_)));
+        let view = cx.entity().downgrade();
+        let trigger = Button::new("feed-sort")
+            .outline()
+            .small()
+            .rounded_full()
+            .when(!busy, |button| button.icon(Lucide::ArrowUpDown))
+            .label(current.clone())
+            .busy(busy)
+            .accessibility_label(format!("{}, {current}", t(Str::CdSort)))
+            .track_focus(&self.chips.handle(CHIPS_SORT, cx))
+            .dropdown_menu_with_anchor(Anchor::TopLeft, move |mut menu, _, _| {
+                for (index, option) in options.iter().enumerate() {
+                    let (view, token, selected) = (view.clone(), option.token.clone(), option.selected);
+                    menu = menu.item(PopupMenuItem::new(option.title.clone()).checked(selected).on_click(
+                        move |_, window, cx| {
+                            if let Some(token) = token.clone().filter(|_| !selected) {
+                                view.update(cx, |view, cx| view.refilter(Refilter::Sort(index), token, window, cx))
+                                    .ok();
+                            }
+                        },
+                    ));
+                }
+                menu
+            });
+        Some(self.chips.wrap(CHIPS_SORT, trigger, cx).into_any_element())
+    }
+}
+
 #[derive(Clone, Copy)]
 enum MenuAction {
     PlaySingle,
@@ -1462,7 +1548,7 @@ impl Render for FeedView {
                 cx,
             ))
         });
-        if !self.page.chips.is_empty() {
+        if !self.page.chips.is_empty() || !self.page.sort.is_empty() {
             let wrap = self.page.chips_wrap;
             let mut chips =
                 h_flex().id("chips").gap_2().px_4().py_2().when(wrap, |row| row.flex_wrap()).when(!wrap, |row| {
@@ -1470,7 +1556,7 @@ impl Render for FeedView {
                 });
             for (index, chip) in self.page.chips.clone().into_iter().enumerate() {
                 let token = chip.token.clone();
-                let loading = self.refiltering == Some(index);
+                let loading = self.refiltering == Some(Refilter::Chip(index));
                 let mut button = Button::new(("chip", index)).label(chip.title.clone()).small().rounded_full();
                 button = if chip.selected { button.primary() } else { button.outline() };
                 let button = button
@@ -1478,11 +1564,14 @@ impl Render for FeedView {
                     .when(loading, |button| button.child(Spinner::new().small()))
                     .on_click(cx.listener(move |view, _, window, cx| {
                         if let Some(token) = token.clone() {
-                            view.refilter(index, token, window, cx);
+                            view.refilter(Refilter::Chip(index), token, window, cx);
                         }
                     }));
                 let row = (!wrap).then(|| self.chips_drag.scroll().clone());
                 chips = chips.child(self.chips.button_in(index, button, row, cx));
+            }
+            if let Some(sort) = self.render_sort_menu(cx) {
+                chips = chips.child(sort);
             }
             column = column.child(if wrap { div().child(chips) } else { self.chips_drag.wrap(chips) });
         } else if self.page.page_header.is_none() && !category {
