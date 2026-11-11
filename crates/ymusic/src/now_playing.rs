@@ -38,6 +38,8 @@ pub enum NowPlayingEvent {
     OpenSound,
     /// A playback failure wants a signed-in viewer.
     SignIn,
+    /// Open the video's details and comments.
+    Details(String),
 }
 
 pub struct NowPlaying {
@@ -555,6 +557,10 @@ impl NowPlaying {
             Anchor::TopRight,
             move |mut menu, _, _| {
                 if let Some(target) = &more_target {
+                    let (details, video_id) = (view.clone(), target.video_id.clone());
+                    menu = menu.item(PopupMenuItem::new(t(Str::MenuDetailsComments)).on_click(move |_, _, cx| {
+                        details.update(cx, |_, cx| cx.emit(NowPlayingEvent::Details(video_id.clone()))).ok();
+                    }));
                     let link = format!("https://youtu.be/{}", target.video_id);
                     menu = menu.item(PopupMenuItem::new(t(Str::CdShare)).on_click(move |_, window, cx| {
                         cx.write_to_clipboard(ClipboardItem::new_string(link.clone()));

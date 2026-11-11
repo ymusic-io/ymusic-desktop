@@ -64,7 +64,9 @@ gpui_kit::assets::icon_assets!(
         Clock,
         ThumbsUp,
         SquarePlay,
-        Trash
+        Trash,
+        ThumbsDown,
+        Pin
     ]
 );
 

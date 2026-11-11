@@ -32,6 +32,7 @@ mod spinner;
 mod sponsor_block;
 mod tab_row;
 mod telemetry;
+mod video_details;
 mod video_layer;
 mod youtube_session;
 

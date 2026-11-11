@@ -274,6 +274,8 @@ pub struct Shell {
     pending_sound: bool,
     /// A download dialog to open on the next frame (opening needs the window).
     pending_download: Option<DownloadTarget>,
+    /// The video whose details dialog opens on the next frame.
+    pending_details: Option<String>,
     tray: Option<crate::desktop::Tray>,
     /// The window was closed with a queue: only the tray icon is left.
     hidden_to_tray: bool,
@@ -302,6 +304,7 @@ impl Shell {
                 NowPlayingEvent::Close => shell.now_playing_open = false,
                 NowPlayingEvent::Download(target) => shell.pending_download = Some(target.clone()),
                 NowPlayingEvent::OpenSound => shell.pending_sound = true,
+                NowPlayingEvent::Details(video_id) => shell.pending_details = Some(video_id.clone()),
                 NowPlayingEvent::SignIn => {
                     shell.now_playing_open = false;
                     shell.pending_signin = true;
@@ -373,6 +376,7 @@ impl Shell {
             pending_signin: false,
             pending_sound: false,
             pending_download: None,
+            pending_details: None,
             _media_session: media_session,
             _history: history,
             _sponsor_block: sponsor_block,
@@ -447,7 +451,7 @@ impl Shell {
     }
 
     /// Debug builds only: `YMUSIC_DEV_ROUTE` opens a surface at start (`trending`, `music`,
-    /// `search:<query>`, `open:<app link>`, `musictab:<n>`, `play:<youtube url>`, `nowplaying:<url>`, `library:<dir>`, `localplay:<dir>`, `signin-paste:<file>`, `devicelink`, `signout`,
+    /// `search:<query>`, `open:<app link>`, `musictab:<n>`, `play:<youtube url>`, `nowplaying:<url>`, `library:<dir>`, `localplay:<dir>`, `details:<videoId>`, `signin-paste:<file>`, `devicelink`, `signout`,
     /// `download:<FORMAT>:<videoId>` into `YMUSIC_DEV_DOWNLOAD_DIR` or the chosen folder), for
     /// screenshots and checks without driving the UI. `YMUSIC_DEV_CAPTIONS` turns captions on, `YMUSIC_DEV_QUALITY=<token>` picks a quality.
     pub fn apply_dev_route(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -573,6 +577,7 @@ impl Shell {
                 self.play_link(url.to_owned(), cx);
             }
             _ if route == "trending" => self.discover_tab = DiscoverTab::Trending,
+            Some(("details", video_id)) => self.pending_details = Some(video_id.to_owned()),
             Some(("discovertab", index)) => {
                 self.section = Section::Discover;
                 self.discover_tab = DiscoverTab::ALL[index.parse::<usize>().unwrap_or(0).min(4)];
@@ -1580,6 +1585,14 @@ impl Render for Shell {
         }
         if std::mem::take(&mut self.pending_signin) {
             self.open_sign_in(window, cx);
+        }
+        if let Some(video_id) = self.pending_details.take() {
+            let view = crate::video_details::VideoDetailsView::open(video_id, window, cx);
+            let navigate = cx.subscribe(&view, |shell, _, event: &Navigate, cx| {
+                shell.now_playing_open = false;
+                shell.push(event.source.clone(), event.title.clone(), cx);
+            });
+            self._subscriptions.push(navigate);
         }
         let viewport = window.viewport_size();
         let (width, height) = (f32::from(viewport.width), f32::from(viewport.height));
