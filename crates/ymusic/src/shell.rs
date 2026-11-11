@@ -302,6 +302,10 @@ impl Shell {
                 NowPlayingEvent::Close => shell.now_playing_open = false,
                 NowPlayingEvent::Download(target) => shell.pending_download = Some(target.clone()),
                 NowPlayingEvent::OpenSound => shell.pending_sound = true,
+                NowPlayingEvent::SignIn => {
+                    shell.now_playing_open = false;
+                    shell.pending_signin = true;
+                }
             }
             cx.notify();
         });

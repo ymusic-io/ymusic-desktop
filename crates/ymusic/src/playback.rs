@@ -13,11 +13,10 @@ use serde_json::Value;
 use ym_engine::player::LoadRequest;
 use ym_engine::yt::{YtFeedItem, YtThumb};
 use ym_engine::{DynamicEngine, EngineError};
-use ym_i18n::{Str, tf};
+use ym_i18n::{Str, t, tf};
 use ym_mse::Presenter;
 
 use crate::audio_effects::AudioEffects;
-use crate::feed::error_text;
 use crate::graph::{AppGraph, on_core};
 use crate::local_engine::{LocalCommand, LocalEngine};
 use crate::queue_nav::{LoopMode, QueueNav};
@@ -42,7 +41,57 @@ pub enum PlayState {
     Playing,
     Paused,
     Ended,
-    Failed(String),
+    Failed(PlaybackFailure),
+}
+
+/// Why playback stopped, as the user sees it: a known category, the text the source gave (YouTube's
+/// own words for a playability verdict), or the code to report.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlaybackFailure {
+    pub code: String,
+    pub user_message: Option<String>,
+    /// Loading the item again may work.
+    pub retry: bool,
+}
+
+const SIGN_IN_STATUSES: [&str; 3] = ["LOGIN_REQUIRED", "AGE_CHECK_REQUIRED", "AGE_VERIFICATION_REQUIRED"];
+const FILE_MISSING: &str = "file_missing";
+const PO_TOKEN_REJECTED: &str = "E60065";
+
+impl PlaybackFailure {
+    pub fn code(code: &str) -> Self {
+        Self { code: code.to_owned(), user_message: None, retry: true }
+    }
+
+    fn engine(error: &EngineError) -> Self {
+        let code = if matches!(error.kind, ym_engine::ErrorKind::Network) { "network" } else { error.code.as_str() };
+        let user_message = error.details.as_ref().and_then(|details| details.user_message.clone());
+        Self { code: code.to_owned(), user_message: user_message.filter(|message| !message.is_empty()), retry: true }
+    }
+
+    /// YouTube wants a signed-in viewer for this video.
+    pub fn needs_sign_in(&self) -> bool {
+        SIGN_IN_STATUSES.contains(&self.code.as_str())
+    }
+
+    pub fn text(&self) -> String {
+        // A playabilityStatus is all caps, unlike site codes (E#####, R#####) and categories.
+        let playability = !self.code.is_empty() && self.code.chars().all(|c| c.is_ascii_uppercase() || c == '_');
+        match self.code.as_str() {
+            "captcha" => t(Str::ErrorCaptcha).to_owned(),
+            "network" => t(Str::ErrorNetwork).to_owned(),
+            "supervised_account" => t(Str::ErrorSupervisedAccount).to_owned(),
+            FILE_MISSING => t(Str::PlaybackFileMissing).to_owned(),
+            PO_TOKEN_REJECTED => t(Str::PlaybackBotguardFailed).to_owned(),
+            _ => match &self.user_message {
+                Some(message) => message.clone(),
+                None if self.needs_sign_in() => t(Str::PlaybackSignInRequired).to_owned(),
+                None if self.code == "ERROR" => t(Str::PlaybackRetryLater).to_owned(),
+                None if playability => t(Str::PlaybackUnavailable).to_owned(),
+                None => tf(Str::PlaybackFailed, &[&self.code]),
+            },
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -341,6 +390,11 @@ impl Playback {
         self.queue.push(item);
         self.queue_revision += 1;
         cx.notify();
+    }
+
+    /// Loads the current item again after a failure.
+    pub fn retry(&mut self, cx: &mut Context<Self>) {
+        self.load_current(cx);
     }
 
     /// Stops playback and empties the queue.
@@ -919,7 +973,7 @@ impl Playback {
                     self.send_local(LocalCommand::Effects(self.effects));
                 }
                 if self.local.is_none() {
-                    self.state = PlayState::Failed(tf(Str::ErrorGeneric, &[&"R90007"]));
+                    self.state = PlayState::Failed(PlaybackFailure::code("R90007"));
                     return;
                 }
                 self.active = Some(Active::Local);
@@ -967,7 +1021,12 @@ impl Playback {
         if let Some(message) = status.error {
             let log = cx.global::<AppGraph>().log.fork("playback");
             log.warn(&format!("R90007 local file failed: {message}"), None);
-            self.state = PlayState::Failed(tf(Str::ErrorGeneric, &[&"R90007"]));
+            let missing = matches!(self.current().map(|item| &item.source), Some(Source::Local(path)) if !path.exists());
+            self.state = PlayState::Failed(if missing {
+                PlaybackFailure { code: FILE_MISSING.to_owned(), user_message: None, retry: false }
+            } else {
+                PlaybackFailure::code("R90007")
+            });
             cx.notify();
             return false;
         }
@@ -994,7 +1053,7 @@ impl Playback {
         cx.spawn(async move |this, cx| {
             if let Some(Err(error)) = done.await {
                 this.update(cx, |playback, cx| {
-                    playback.state = PlayState::Failed(error_text(&error));
+                    playback.state = PlayState::Failed(PlaybackFailure::engine(&error));
                     cx.notify();
                 })
                 .ok();
@@ -1032,7 +1091,7 @@ impl Playback {
                             });
                         }
                     }
-                    Some(Err(error)) => playback.state = PlayState::Failed(error_text(&error)),
+                    Some(Err(error)) => playback.state = PlayState::Failed(PlaybackFailure::engine(&error)),
                     None => {}
                 }
                 cx.notify();
@@ -1114,17 +1173,15 @@ impl Playback {
                 Some("ended") => PlayState::Ended,
                 Some("idle") if self.loading_video.is_some() => PlayState::Buffering,
                 Some("idle") => PlayState::Idle,
-                Some("error") => PlayState::Failed(
-                    state
+                Some("error") => PlayState::Failed(PlaybackFailure {
+                    code: state.get("code").and_then(Value::as_str).unwrap_or("R90003").to_owned(),
+                    user_message: state
                         .get("userMessage")
                         .and_then(Value::as_str)
-                        .filter(|message| !message.is_empty())
-                        .map(str::to_owned)
-                        .unwrap_or_else(|| {
-                            let code = state.get("code").and_then(Value::as_str).unwrap_or("R90003");
-                            tf(Str::ErrorGeneric, &[&code])
-                        }),
-                ),
+                        .filter(|message| !message.trim().is_empty())
+                        .map(str::to_owned),
+                    retry: state.get("canRetry").and_then(Value::as_bool).unwrap_or(true),
+                }),
                 _ => self.state.clone(),
             };
             if self.state == PlayState::Ended {

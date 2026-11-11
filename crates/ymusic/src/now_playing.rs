@@ -36,6 +36,8 @@ pub enum NowPlayingEvent {
     Close,
     Download(DownloadTarget),
     OpenSound,
+    /// A playback failure wants a signed-in viewer.
+    SignIn,
 }
 
 pub struct NowPlaying {
@@ -300,6 +302,7 @@ impl NowPlaying {
             )
             .when_some(self.caption_overlay(controls, cx), |frame, captions| frame.child(captions))
             .when(controls, |frame| frame.child(overlay))
+            .when_some(self.failure_panel(controls, cx), |frame, panel| frame.child(panel))
             .into_any_element()
     }
 
@@ -361,6 +364,52 @@ impl NowPlaying {
                     menu
                 })
                 .into_any_element(),
+        )
+    }
+
+    /// The failure on a dark panel at the picture's bottom, above the controls strip while it shows:
+    /// the message, then Sign in and Retry when they apply.
+    fn failure_panel(&self, controls: bool, cx: &mut Context<Self>) -> Option<Div> {
+        let PlayState::Failed(failure) = &self.playback.read(cx).state else { return None };
+        let failure = failure.clone();
+        let accent = cx.theme().primary;
+        let action = |id: &'static str, label: &'static str| {
+            Button::new(id).ghost().small().label(label).text_color(accent).font_semibold()
+        };
+        let mut actions = h_flex().gap_1().items_center();
+        if failure.needs_sign_in() {
+            actions = actions.child(
+                action("np-error-signin", t(Str::SigninButton))
+                    .on_click(cx.listener(|_, _, _, cx| cx.emit(NowPlayingEvent::SignIn))),
+            );
+        }
+        if failure.retry {
+            actions = actions.child(action("np-error-retry", t(Str::Retry)).on_click(
+                cx.listener(|view, _, _, cx| view.playback.update(cx, |playback, cx| playback.retry(cx))),
+            ));
+        }
+        Some(
+            div().absolute().left_0().right_0().bottom(px(if controls { CAPTION_ABOVE_CONTROLS } else { 44. })).flex().justify_center().px_4().child(
+                v_flex()
+                    .items_center()
+                    .max_w(px(560.))
+                    .px(px(14.))
+                    .py_2()
+                    .rounded(px(8.))
+                    .bg(black().opacity(0.8))
+                    .child(
+                        div()
+                            .id("np-error")
+                            .role(Role::Alert)
+                            .aria_label(failure.text())
+                            .text_color(white())
+                            .text_size(px(13.))
+                            .text_center()
+                            .line_clamp(2)
+                            .child(failure.text()),
+                    )
+                    .child(actions),
+            ),
         )
     }
 

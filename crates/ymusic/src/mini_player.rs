@@ -141,7 +141,7 @@ impl MiniPlayer {
     fn subtitle(item: &QueueItem, state: &PlayState, cx: &App) -> Option<(String, Hsla)> {
         let theme = cx.theme();
         match state {
-            PlayState::Failed(message) => Some((message.clone(), theme.danger)),
+            PlayState::Failed(failure) => Some((failure.text(), theme.danger)),
             _ => item.artist.clone().map(|artist| (artist, theme.muted_foreground)),
         }
     }
