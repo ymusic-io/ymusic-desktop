@@ -9735,12 +9735,14 @@ dependencies = [
  "core-foundation 0.10.1",
  "getrandom 0.2.17",
  "hmac",
+ "libloading 0.8.9",
  "pbkdf2",
  "regex",
  "security-framework",
  "sha2 0.10.9",
  "thiserror 2.0.21",
  "tokio",
+ "windows-sys 0.61.2",
  "ym-remote-config",
 ]
 

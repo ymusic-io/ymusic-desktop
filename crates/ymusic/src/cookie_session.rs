@@ -14,11 +14,15 @@ use ym_signin::{CookieVault, PasswordSeal, VaultError};
 const COOKIE_JAR_SECRET: &str = "api-cookies.json";
 /// Where builds before the vault kept the jar in the clear; removed at boot.
 const PLAIN_COOKIES_SECRET: &str = "cookies";
-/// The JVM app's Keychain item (`UserScopeKey.kt`): the jar it sealed opens after the update.
+/// The JVM app's key item (`UserScopeKey.kt`): the Keychain item, the Secret Service attributes, the
+/// DPAPI entropy. The jar it sealed opens after the update.
 const KEYCHAIN_SERVICE: &str = "io.ymusic.desktop";
 const KEYCHAIN_ACCOUNT: &str = "cookie-key";
 /// Where the key lives when no OS key store holds it (the JVM app's Linux fallback name).
 const FALLBACK_KEY_SECRET: &str = "cookie-key.bin";
+/// The JVM app's Windows row: the key as a user-scope DPAPI blob.
+#[cfg(windows)]
+const DPAPI_KEY_SECRET: &str = "cookie-key.dpapi";
 pub const ENGINE_CACHE_DIR: &str = "engine-cache";
 /// The macOS Keychain item is bound to this app's signature, so a password adds nothing there.
 const KEY_IN_KEYCHAIN: bool = cfg!(target_os = "macos") && !cfg!(debug_assertions);
@@ -162,21 +166,78 @@ impl LockedJar {
     }
 }
 
-/// The OS user's key in release builds. Debug builds are re-signed by every build, which macOS
-/// treats as another app: a Keychain read would stop each launch on an access prompt, so they keep
-/// the key in app.db, which only keeps other OS users out (the JVM app's Linux fallback too).
-fn cookie_key(app_db: &AppDb) -> Result<[u8; 32], VaultError> {
-    if !cfg!(debug_assertions) && !cfg!(target_os = "linux") {
-        return ym_signin::os_cookie_key(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT);
+/// The OS user's key in release builds, where the JVM app keeps it (`UserScopeKey.kt`). Debug
+/// builds keep it in app.db, which only keeps other OS users out: macOS treats every re-signed build
+/// as another app, so a Keychain read would stop each launch on an access prompt, and on every OS a
+/// development build stays off the installed app's key.
+fn cookie_key(app_db: &AppDb, log: &Logger) -> Result<[u8; 32], VaultError> {
+    if cfg!(debug_assertions) {
+        return app_db_key(app_db);
     }
-    if let Some(key) =
-        app_db.secret(FALLBACK_KEY_SECRET).ok().flatten().and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
-    {
+    os_key(app_db, log)
+}
+
+#[cfg(target_os = "macos")]
+fn os_key(_app_db: &AppDb, _log: &Logger) -> Result<[u8; 32], VaultError> {
+    ym_signin::os_cookie_key(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT)
+}
+
+/// The desktop keyring when one answers, else app.db. A fallback key, once made, stays the source: a
+/// keyring that turns up later must not orphan the jar sealed under it.
+#[cfg(target_os = "linux")]
+fn os_key(app_db: &AppDb, log: &Logger) -> Result<[u8; 32], VaultError> {
+    use ym_signin::SecretServiceError;
+    if let Some(key) = stored_key(app_db, FALLBACK_KEY_SECRET)? {
         return Ok(key);
     }
+    match ym_signin::secret_service_cookie_key(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT) {
+        Ok(key) => Ok(key),
+        Err(error @ SecretServiceError::Unavailable(_)) => {
+            log.warn("R90450 no Secret Service, the cookie key falls back to app.db", Some(&error));
+            app_db_key(app_db)
+        }
+        Err(error @ SecretServiceError::Failed(_)) => Err(VaultError::KeyStore(error.to_string())),
+    }
+}
+
+/// A DPAPI blob in app.db that opens only for this Windows user. A blob that does not open is an
+/// error, never replaced.
+#[cfg(windows)]
+fn os_key(app_db: &AppDb, _log: &Logger) -> Result<[u8; 32], VaultError> {
+    let entropy = format!("{KEYCHAIN_SERVICE}/{KEYCHAIN_ACCOUNT}");
+    let unprotect = |blob: &[u8]| key_bytes(ym_signin::dpapi_unprotect(blob, entropy.as_bytes())?);
+    if let Some(blob) = app_db.secret(DPAPI_KEY_SECRET).map_err(db_error)? {
+        return unprotect(&blob);
+    }
     let key = ym_signin::random_key();
-    app_db.put_secret(FALLBACK_KEY_SECRET, &key).map_err(|error| VaultError::KeyStore(error.to_string()))?;
-    Ok(key)
+    let blob = ym_signin::dpapi_protect(&key, entropy.as_bytes())?;
+    let kept = app_db.secret_or_put(DPAPI_KEY_SECRET, &blob).map_err(db_error)?;
+    if kept == blob { Ok(key) } else { unprotect(&kept) }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
+fn os_key(app_db: &AppDb, _log: &Logger) -> Result<[u8; 32], VaultError> {
+    app_db_key(app_db)
+}
+
+fn db_error(error: rusqlite::Error) -> VaultError {
+    VaultError::KeyStore(format!("app.db: {error}"))
+}
+
+fn key_bytes(bytes: Vec<u8>) -> Result<[u8; 32], VaultError> {
+    bytes.try_into().map_err(|_| VaultError::KeyStore("stored cookie key has the wrong size".into()))
+}
+
+fn stored_key(app_db: &AppDb, name: &str) -> Result<Option<[u8; 32]>, VaultError> {
+    app_db.secret(name).map_err(db_error)?.map(key_bytes).transpose()
+}
+
+/// The plain key in app.db, created when there is none.
+fn app_db_key(app_db: &AppDb) -> Result<[u8; 32], VaultError> {
+    if let Some(key) = stored_key(app_db, FALLBACK_KEY_SECRET)? {
+        return Ok(key);
+    }
+    key_bytes(app_db.secret_or_put(FALLBACK_KEY_SECRET, &ym_signin::random_key()).map_err(db_error)?)
 }
 
 /// The persistent jar sealed in app.db under the OS user's key. Without that key the launch runs
@@ -186,7 +247,7 @@ fn cookie_key(app_db: &AppDb) -> Result<[u8; 32], VaultError> {
 pub fn open(app_db: Arc<AppDb>, data_dir: &Path, log: &Logger) -> Result<CookieOpen, CookieStoreError> {
     let log = log.fork("cookies");
     let _ = app_db.delete_secret(PLAIN_COOKIES_SECRET);
-    let user_key = match cookie_key(&app_db) {
+    let user_key = match cookie_key(&app_db, &log) {
         Ok(key) => Some(key),
         Err(error) => {
             log.warn("R90013 OS cookie key unavailable, this launch runs as a guest", Some(&error));

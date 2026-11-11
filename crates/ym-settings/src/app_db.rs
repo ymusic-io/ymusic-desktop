@@ -63,6 +63,14 @@ impl AppDb {
             .execute("INSERT OR REPLACE INTO secret(name, value) VALUES (?1, ?2)", params![name, value])?;
         Ok(())
     }
+
+    /// `value` unless `name` already holds one, then that one: two first launches agree on one key.
+    /// Blocking.
+    pub fn secret_or_put(&self, name: &str, value: &[u8]) -> rusqlite::Result<Vec<u8>> {
+        let db = self.db.lock().unwrap();
+        db.execute("INSERT OR IGNORE INTO secret(name, value) VALUES (?1, ?2)", params![name, value])?;
+        db.query_row("SELECT value FROM secret WHERE name = ?1", params![name], |row| row.get(0))
+    }
 }
 
 impl AppDb {

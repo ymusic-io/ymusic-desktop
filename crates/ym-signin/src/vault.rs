@@ -12,7 +12,7 @@ const NONCE_LEN: usize = 12;
 const SALT_LEN: usize = 16;
 /// OWASP's 2023 floor for PBKDF2-HMAC-SHA256.
 const ITERATIONS: u32 = 600_000;
-const KEY_LEN: usize = 32;
+pub(crate) const KEY_LEN: usize = 32;
 
 #[derive(Debug, thiserror::Error)]
 pub enum VaultError {
@@ -190,9 +190,4 @@ pub fn os_cookie_key(service: &str, account: &str) -> Result<[u8; KEY_LEN], Vaul
         Err(error) => return Err(keychain_error(error)),
     };
     stored.try_into().map_err(|_| VaultError::KeyStore("keychain item has the wrong size".into()))
-}
-
-#[cfg(not(target_os = "macos"))]
-pub fn os_cookie_key(_service: &str, _account: &str) -> Result<[u8; KEY_LEN], VaultError> {
-    Err(VaultError::KeyStore("no OS key store on this platform yet".into()))
 }
