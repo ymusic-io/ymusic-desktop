@@ -4,6 +4,7 @@ mod account_view;
 mod assets;
 mod audio_effects;
 mod caption_style;
+mod cookie_guide;
 mod cookie_lock;
 mod cookie_session;
 mod desktop;

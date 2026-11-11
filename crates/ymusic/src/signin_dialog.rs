@@ -5,15 +5,14 @@
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Textarea, TextareaState};
-use gpui_kit::component::{
-    ActiveTheme, Disableable, Icon, IconName, Selectable, Sizable, StyledExt, WindowExt, h_flex, v_flex,
-};
+use gpui_kit::component::{ActiveTheme, Disableable, Icon, IconName, StyledExt, WindowExt, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use ym_i18n::{Str, t, tf};
 use ym_signin::DeviceLinkOffer;
 
 use crate::a11y::KeyboardFocusable;
+use crate::cookie_guide::CookieGuide;
 use crate::cookie_lock::{ProtectEvent, ProtectStep};
 use crate::graph::{AppGraph, on_core};
 use crate::signin::SignInError;
@@ -42,39 +41,12 @@ enum Link {
     Unavailable,
 }
 
-#[derive(Clone, Copy, PartialEq)]
-enum Browser {
-    Chrome,
-    Firefox,
-    Safari,
-}
-
-impl Browser {
-    const ALL: [Browser; 3] = [Browser::Chrome, Browser::Firefox, Browser::Safari];
-
-    fn label(self) -> &'static str {
-        t(match self {
-            Browser::Chrome => Str::SigninPasteBrowserChrome,
-            Browser::Firefox => Str::SigninPasteBrowserFirefox,
-            Browser::Safari => Str::SigninPasteBrowserSafari,
-        })
-    }
-
-    fn hint(self) -> &'static str {
-        t(match self {
-            Browser::Chrome => Str::SigninPasteHint,
-            Browser::Firefox => Str::SigninPasteHintFirefox,
-            Browser::Safari => Str::SigninPasteHintSafari,
-        })
-    }
-}
-
 pub struct SignInView {
     link: Link,
     /// Shown under the code: why the QR ended, or why a paste was refused.
     error: Option<String>,
     paste_mode: bool,
-    browser: Browser,
+    guide: Entity<CookieGuide>,
     paste: Entity<TextareaState>,
     submitting: bool,
     /// Signed in; the password step is up, or about to be built.
@@ -93,7 +65,7 @@ impl SignInView {
             link: if guest { Link::Unavailable } else { Link::Starting },
             error: None,
             paste_mode: false,
-            browser: if cfg!(target_os = "macos") { Browser::Safari } else { Browser::Chrome },
+            guide: cx.new(CookieGuide::new),
             paste,
             submitting: false,
             protecting: false,
@@ -104,6 +76,11 @@ impl SignInView {
             view.start_link(cx);
         }
         view
+    }
+
+    /// Debug: straight to pasting cookies.
+    pub fn dev_paste(&mut self) {
+        self.paste_mode = true;
     }
 
     /// Debug: straight to the password step, as after a sign-in.
@@ -352,22 +329,10 @@ impl SignInView {
 
     fn render_paste(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let theme = cx.theme().clone();
-        let mut browsers = h_flex().gap_2().justify_center();
-        for (index, browser) in Browser::ALL.into_iter().enumerate() {
-            let selected = browser == self.browser;
-            let chip =
-                Button::new(("signin-browser", index)).small().rounded_full().label(browser.label()).selected(selected);
-            let chip = if selected { chip.primary() } else { chip.outline() };
-            browsers = browsers.child(chip.on_click(cx.listener(move |view, _, _, cx| {
-                view.browser = browser;
-                cx.notify();
-            })));
-        }
         let blank = self.paste.read(cx).value().trim().is_empty();
         vec![
             div().w_full().text_center().font_semibold().child(t(Str::SigninOrPaste)).into_any_element(),
-            browsers.into_any_element(),
-            div().w_full().text_sm().text_color(theme.muted_foreground).child(self.browser.hint()).into_any_element(),
+            self.guide.clone().into_any_element(),
             v_flex()
                 .w_full()
                 .gap_1()

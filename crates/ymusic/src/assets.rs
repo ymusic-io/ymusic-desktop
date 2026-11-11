@@ -73,7 +73,8 @@ gpui_kit::assets::icon_assets!(
         CircleMinus,
         Flame,
         SquarePen,
-        Funnel
+        Funnel,
+        MousePointer2
     ]
 );
 
