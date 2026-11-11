@@ -9,7 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, OptionalExtension, Row, params};
 
-pub use scan::{ScanError, ScanReport, is_media_file, scan_folder};
+pub use scan::{DescribedFile, ScanError, ScanReport, describe_file, is_media_file, scan_folder};
 
 /// The YMusicV4 media-store schema after its five migrations (SQLDelight version 6), so a file
 /// from the JVM app opens unchanged.

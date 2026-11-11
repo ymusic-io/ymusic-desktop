@@ -60,6 +60,73 @@ fn mime_type(path: &Path, has_video: bool) -> String {
     format!("{kind}/{subtype}")
 }
 
+fn file_name(path: &Path) -> String {
+    path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default()
+}
+
+fn file_stem(path: &Path) -> String {
+    path.file_stem().map_or_else(|| file_name(path), |stem| stem.to_string_lossy().into_owned())
+}
+
+fn item_from_probe(path: &Path, uri: String, probe: ym_mse::Probe) -> MediaItem {
+    let name = file_name(path);
+    MediaItem {
+        title: probe.title.clone().unwrap_or_else(|| file_stem(path)),
+        mime_type: mime_type(path, probe.video_codec.is_some()),
+        artist: probe.artist,
+        album: probe.album,
+        genre: probe.genre,
+        track_number: probe.track_number,
+        year: probe.year,
+        duration_ms: probe.duration_ms,
+        audio_codec: probe.audio_codec,
+        video_codec: probe.video_codec,
+        subtitle_codec: probe.subtitle_codec,
+        bitrate: probe.bitrate,
+        width: probe.width,
+        height: probe.height,
+        thumbnail_stream_index: probe.thumbnail_stream,
+        youtube_vid: probe
+            .composers
+            .iter()
+            .find_map(|composer| video_id_from_composer(composer))
+            .or_else(|| video_id_from_file_name(&name)),
+        loudness_gain_db: probe.composers.iter().find_map(|composer| gain_from_composer(composer)),
+        uri,
+        ..MediaItem::default()
+    }
+}
+
+/// A file outside the Library, as an unsaved item.
+pub struct DescribedFile {
+    pub item: MediaItem,
+    /// libav's error when the file could not be probed: the item then carries only its name.
+    pub probe_error: Option<i32>,
+}
+
+/// Blocking: describes `path` by its own tags, for playing a file that is not in the Library.
+pub fn describe_file(path: &Path) -> std::io::Result<DescribedFile> {
+    let metadata = std::fs::metadata(path)?;
+    let uri = path.to_string_lossy().into_owned();
+    let (item, probe_error) = match ym_mse::probe(path) {
+        Ok(probe) => (item_from_probe(path, uri, probe), None),
+        Err(code) => {
+            let item =
+                MediaItem { title: file_stem(path), mime_type: mime_type(path, false), uri, ..MediaItem::default() };
+            (item, Some(code))
+        }
+    };
+    let modified = metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+        .map_or(0, |elapsed| elapsed.as_millis() as i64);
+    Ok(DescribedFile {
+        item: MediaItem { file_size: metadata.len() as i64, last_modified: modified, ..item },
+        probe_error,
+    })
+}
+
 /// Blocking and long: run on a worker. `cancel` stops between files; per-file failures are
 /// collected in the report, a store failure aborts the scan.
 pub fn scan_folder(store: &MediaStore, root: &Path, cancel: &AtomicBool) -> Result<ScanReport, StoreError> {
@@ -121,37 +188,11 @@ pub fn scan_folder(store: &MediaStore, root: &Path, cancel: &AtomicBool) -> Resu
             }
             match ym_mse::probe(&path) {
                 Ok(probe) if probe.has_audio || probe.video_codec.is_some() => {
-                    let fallback_title = path
-                        .file_stem()
-                        .map(|stem| stem.to_string_lossy().into_owned())
-                        .unwrap_or_else(|| name.clone());
                     store.save_item(&MediaItem {
                         bucket_id: Some(bucket_id),
-                        title: probe.title.clone().unwrap_or(fallback_title),
-                        mime_type: mime_type(&path, probe.video_codec.is_some()),
-                        artist: probe.artist,
-                        album: probe.album,
-                        genre: probe.genre,
-                        track_number: probe.track_number,
-                        year: probe.year,
-                        duration_ms: probe.duration_ms,
-                        audio_codec: probe.audio_codec,
-                        video_codec: probe.video_codec,
-                        subtitle_codec: probe.subtitle_codec,
-                        bitrate: probe.bitrate,
-                        width: probe.width,
-                        height: probe.height,
-                        thumbnail_stream_index: probe.thumbnail_stream,
-                        youtube_vid: probe
-                            .composers
-                            .iter()
-                            .find_map(|composer| video_id_from_composer(composer))
-                            .or_else(|| video_id_from_file_name(&name)),
-                        loudness_gain_db: probe.composers.iter().find_map(|composer| gain_from_composer(composer)),
                         file_size: size,
                         last_modified: modified,
-                        uri,
-                        ..MediaItem::default()
+                        ..item_from_probe(&path, uri, probe)
                     })?;
                     if existing.is_some() {
                         report.updated += 1;
