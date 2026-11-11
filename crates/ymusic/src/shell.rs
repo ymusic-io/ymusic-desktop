@@ -284,6 +284,7 @@ pub struct Shell {
     /// The window's device pixels per logical pixel, as of the last frame.
     scale_factor: f32,
     window: AnyWindowHandle,
+    dock_menu: crate::desktop::DockMenu,
     /// The window was closed with a queue: only the tray icon is left.
     hidden_to_tray: bool,
     /// The pending write of the window's bounds; replaced on every resize or move.
@@ -366,6 +367,17 @@ impl Shell {
                 None
             }
         };
+        let (dock_commands, mut dock_receiver) = futures::channel::mpsc::unbounded();
+        let dock_menu = crate::desktop::DockMenu::new(dock_commands, cx);
+        cx.spawn_in(window, async move |this, cx| {
+            use futures::StreamExt;
+            while let Some(command) = dock_receiver.next().await {
+                if this.update_in(cx, |shell, window, cx| shell.tray_command(command, window, cx)).is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
         let tray_state = cx.observe(&playback, |shell, _, cx| shell.update_tray(cx));
         Self::listen_incoming(window, cx);
         crate::video_layer::forward_accessibility_focus(window);
@@ -420,6 +432,7 @@ impl Shell {
             tray,
             scale_factor: window.scale_factor(),
             window: window.window_handle(),
+            dock_menu,
             hidden_to_tray: false,
             _save_bounds: None,
             _subscriptions: vec![toggle, now_playing_events, visibility, activation, bounds, tray_state],
@@ -476,9 +489,10 @@ impl Shell {
     }
 
     fn update_tray(&mut self, cx: &mut Context<Self>) {
-        let Some(tray) = self.tray.as_mut() else { return };
         let playback = self.playback.read(cx);
         let (has_queue, playing) = (!playback.queue.is_empty(), playback.is_playing());
+        self.dock_menu.update(has_queue, playing, cx);
+        let Some(tray) = self.tray.as_mut() else { return };
         if let Err(error) = tray.update(has_queue, playing, self.hidden_to_tray) {
             cx.global::<AppGraph>().log.warn("tray icon could not be updated", Some(error.as_ref()));
         }

@@ -194,6 +194,51 @@ pub fn set_dock_visible(visible: bool) {
 #[cfg(not(target_os = "macos"))]
 pub fn set_dock_visible(_visible: bool) {}
 
+gpui_kit::actions!(ymusic_dock, [DockTogglePlay, DockStop]);
+
+/// The Dock icon's menu (JVM `DockMenu`): Pause/Resume and Stop while there is a queue; the Dock
+/// adds its own Quit. Its entries arrive as tray commands.
+#[derive(Default)]
+pub struct DockMenu {
+    shown: Option<(bool, bool)>,
+}
+
+impl DockMenu {
+    pub fn new(commands: futures::channel::mpsc::UnboundedSender<TrayCommand>, cx: &mut App) -> Self {
+        let toggle = commands.clone();
+        cx.on_action(move |_: &DockTogglePlay, _| {
+            let _ = toggle.unbounded_send(TrayCommand::TogglePlay);
+        });
+        cx.on_action(move |_: &DockStop, _| {
+            let _ = commands.unbounded_send(TrayCommand::Stop);
+        });
+        Self::default()
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn update(&mut self, has_queue: bool, playing: bool, cx: &App) {
+        if self.shown == Some((has_queue, playing)) {
+            return;
+        }
+        self.shown = Some((has_queue, playing));
+        let items = if has_queue {
+            vec![
+                MenuItem::action(t(if playing { Str::TrayPause } else { Str::TrayResume }), DockTogglePlay),
+                MenuItem::action(t(Str::TrayStop), DockStop),
+            ]
+        } else {
+            Vec::new()
+        };
+        cx.set_dock_menu(items);
+    }
+
+    /// gpui turns a dock menu into Jump List tasks on Windows, which this app does not handle.
+    #[cfg(not(target_os = "macos"))]
+    pub fn update(&mut self, has_queue: bool, playing: bool, _cx: &App) {
+        self.shown = Some((has_queue, playing));
+    }
+}
+
 /// What a tray click or menu entry asks for.
 pub enum TrayCommand {
     Open,
