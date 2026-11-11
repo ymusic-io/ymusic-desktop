@@ -1262,9 +1262,7 @@ impl Shell {
                 div()
                     .size(px(logo))
                     .flex_shrink_0()
-                    .rounded_full()
-                    .overflow_hidden()
-                    .child(img(crate::assets::LOGO_SVG_PATH).size_full()),
+                    .child(img(crate::assets::LOGO_SVG_PATH).size_full().rounded_full()),
             )
             .child(v_flex().min_w_0().child(div().font_semibold().child(t(Str::AppName))).child(
                 div().text_xs().text_color(theme.muted_foreground).child(format!("v{}", env!("CARGO_PKG_VERSION"))),
