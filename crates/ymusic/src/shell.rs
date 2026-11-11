@@ -34,6 +34,8 @@ use crate::signin_dialog::{SignInEvent, SignInView};
 use crate::sponsor_block::SponsorBlock;
 use crate::tab_row::tab_row;
 
+mod incoming;
+
 const RAIL_COLLAPSED: f32 = 72.;
 const DRAWER_ICON_START: f32 = 20.;
 /// Centres the expanded rail's section icons on the collapsed rail's centre line.
@@ -365,6 +367,7 @@ impl Shell {
             }
         };
         let tray_state = cx.observe(&playback, |shell, _, cx| shell.update_tray(cx));
+        Self::listen_incoming(window, cx);
         crate::video_layer::forward_accessibility_focus(window);
         window.on_next_frame(|window, _| crate::video_layer::sync_accessibility_focus(window));
         // A window minimized to the tray can come back from the dock too.

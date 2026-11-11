@@ -13,6 +13,7 @@ mod feedback_view;
 mod fps_badge;
 mod graph;
 mod http_client;
+mod instance;
 mod library;
 mod library_search;
 mod local_art;
@@ -63,6 +64,23 @@ fn main() {
         .unwrap_or_else(|| dirs::data_local_dir().unwrap_or_else(std::env::temp_dir).join("YMusicRust"));
     let log_setup = crate::telemetry::logger(&data_dir);
     let log = log_setup.log.clone();
+    let launch = crate::instance::Request::from_args(std::env::args_os().skip(1));
+    let (inbox_sender, inbox) = futures::channel::mpsc::unbounded();
+    let instance_log = log.fork("instance");
+    match crate::instance::claim(&data_dir, &launch, inbox_sender.clone(), &instance_log) {
+        Ok(crate::instance::Claim::HandedOver) => return,
+        // A player task (Jump List) with no app running has nothing to control.
+        Ok(crate::instance::Claim::Owner) if launch.command != crate::instance::Command::Show => return,
+        Ok(crate::instance::Claim::Owner) => {}
+        Err(error @ crate::instance::ClaimError::NoAnswer(_)) => {
+            instance_log.capture_error("another instance holds the lock but did not answer", &error);
+            std::process::exit(1);
+        }
+        Err(error) => instance_log.warn("single-instance setup failed, starting without it", Some(&error)),
+    }
+    if !launch.is_empty() {
+        let _ = inbox_sender.unbounded_send(launch);
+    }
     let tokio =
         tokio::runtime::Builder::new_multi_thread().enable_all().thread_name("ym-core").build().expect("tokio runtime");
     let http = HttpClients::new().expect("HTTP client");
@@ -91,8 +109,19 @@ fn main() {
             shell.update(cx, |shell, cx| shell.show_window(cx));
         }
     });
+    // macOS delivers ymusic:// links and Finder's Open With as open-URL events, a cold launch's
+    // included, before the window exists.
+    app.on_open_urls(move |urls| {
+        let _ = inbox_sender.unbounded_send(crate::instance::Request::from_urls(urls));
+    });
     app.run(move |cx| {
         init(cx);
+        cx.set_global(crate::instance::Inbox(inbox));
+        cx.on_app_quit(|_| {
+            crate::instance::stop_accepting();
+            async {}
+        })
+        .detach();
         cx.set_global(crate::local_art::SharedLocalArt(local_art));
         crate::shortcuts::bind(cx);
         crate::a11y::init(cx);

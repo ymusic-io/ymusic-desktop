@@ -361,10 +361,27 @@ impl Playback {
             None => {
                 self.queue = vec![QueueItem::from_feed(&item)];
                 self.index = 0;
-                self.fetch_radio(item.id.clone(), cx);
+                self.fetch_radio(item.id.clone(), None, cx);
             }
         }
         self.new_queue();
+        self.load_current(cx);
+    }
+
+    /// Plays a linked video from `start_ms`: the link's playlist continues after it, else its radio.
+    pub fn play_link(
+        &mut self,
+        item: YtFeedItem,
+        playlist_url: Option<String>,
+        start_ms: Option<i64>,
+        cx: &mut Context<Self>,
+    ) {
+        self.queue_continuation = None;
+        self.queue = vec![QueueItem::from_feed(&item)];
+        self.index = 0;
+        self.fetch_radio(item.id.clone(), playlist_url, cx);
+        self.new_queue();
+        self.start_position_ms = start_ms.unwrap_or(0).max(0);
         self.load_current(cx);
     }
 
@@ -1325,11 +1342,17 @@ impl Playback {
         });
     }
 
-    fn fetch_radio(&mut self, video_id: String, cx: &mut Context<Self>) {
+    /// The queue after `video_id`: `playlist`'s items when it came from one, else its radio.
+    fn fetch_radio(&mut self, video_id: String, playlist: Option<String>, cx: &mut Context<Self>) {
         let graph = cx.global::<AppGraph>();
         let (engine, log) = (graph.engine(), graph.log.fork("queue"));
         self.loading_queue = true;
-        let fetch = on_core(cx, async move { engine.start_radio_queue(&video_id, &log).await });
+        let fetch = on_core(cx, async move {
+            match playlist {
+                Some(url) => engine.playlist_queue(&url, &video_id, 0, &log).await,
+                None => engine.start_radio_queue(&video_id, &log).await,
+            }
+        });
         cx.spawn(async move |this, cx| {
             let result = fetch.await;
             this.update(cx, |playback, cx| {

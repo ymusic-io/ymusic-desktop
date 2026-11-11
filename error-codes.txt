@@ -103,3 +103,6 @@ R92002 - local playlist from downloads: the playlist could not be created or fil
 R93000 - settings: a setting could not be saved
 R93001 - settings: the UI language could not be saved
 R95000 - now playing: a local queue item could not be looked up in the library to open its artist or album
+R96000 - single instance: another process holds the data dir's instance lock but took no request
+R96001 - single instance: the lock, loopback listener or port file could not be set up
+R96002 - open with: none of the files the OS asked the app to open could be read
