@@ -281,6 +281,7 @@ pub struct Shell {
     tray: Option<crate::desktop::Tray>,
     /// The window's device pixels per logical pixel, as of the last frame.
     scale_factor: f32,
+    window: AnyWindowHandle,
     /// The window was closed with a queue: only the tray icon is left.
     hidden_to_tray: bool,
     /// The pending write of the window's bounds; replaced on every resize or move.
@@ -328,16 +329,11 @@ impl Shell {
         let shell_handle = cx.entity().downgrade();
         window.on_window_should_close(cx, move |window, cx| {
             let Some(shell) = shell_handle.upgrade() else { return true };
-            // Without a tray icon a hidden window could never come back.
-            if shell.read(cx).tray.is_none() || shell.read(cx).playback.read(cx).queue.is_empty() {
-                Self::quit(window, cx);
-                return true;
-            }
-            shell.update(cx, |shell, cx| shell.hide_to_tray(cx));
-            false
+            shell.update(cx, |shell, cx| shell.close_requested(window, cx))
         });
         cx.set_global(ShellHandle(cx.entity().downgrade()));
-        let tray = match crate::desktop::Tray::new() {
+        let graph = cx.global::<AppGraph>();
+        let tray = match crate::desktop::Tray::new(&graph.tokio, graph.log.fork("tray")) {
             Ok((tray, mut commands)) => {
                 cx.spawn_in(window, async move |this, cx| {
                     use futures::StreamExt;
@@ -358,6 +354,12 @@ impl Shell {
         let tray_state = cx.observe(&playback, |shell, _, cx| shell.update_tray(cx));
         crate::video_layer::forward_accessibility_focus(window);
         window.on_next_frame(|window, _| crate::video_layer::sync_accessibility_focus(window));
+        // A window minimized to the tray can come back from the dock too.
+        let activation = cx.observe_window_activation(window, |shell, window, cx| {
+            if shell.hidden_to_tray && window.is_window_active() {
+                shell.window_shown(cx);
+            }
+        });
         let visibility = cx.observe_window_visibility(window, |shell, visibility, window, cx| {
             let hidden = !visibility.is_visible() && crate::video_layer::window_out_of_sight(window);
             shell.playback.update(cx, |playback, cx| playback.set_window_hidden(hidden, cx));
@@ -401,26 +403,59 @@ impl Shell {
             idle_escape_at: None,
             tray,
             scale_factor: window.scale_factor(),
+            window: window.window_handle(),
             hidden_to_tray: false,
             _save_bounds: None,
-            _subscriptions: vec![toggle, now_playing_events, visibility, bounds, tray_state],
+            _subscriptions: vec![toggle, now_playing_events, visibility, activation, bounds, tray_state],
         }
     }
 
+    /// The close button: with music queued and a tray icon up the window goes to the tray, else the
+    /// app quits. True when the window may close.
+    fn close_requested(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        // Without a tray icon a hidden window could never come back.
+        let tray_up = self.tray.as_ref().is_some_and(|tray| tray.available());
+        if !tray_up || self.playback.read(cx).queue.is_empty() {
+            Self::quit(window, cx);
+            return true;
+        }
+        self.hide_to_tray(window, cx);
+        false
+    }
+
     /// The window was closed with music still queued: it goes away, playback and the tray icon stay.
-    fn hide_to_tray(&mut self, cx: &mut Context<Self>) {
+    fn hide_to_tray(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.hidden_to_tray = true;
         crate::desktop::set_dock_visible(false);
-        cx.hide();
+        // gpui cannot hide a window on Linux (`hide` is a no-op there), only minimize it.
+        if cfg!(target_os = "linux") {
+            window.minimize_window();
+        } else {
+            cx.hide();
+        }
         self.update_tray(cx);
     }
 
     pub fn show_window(&mut self, cx: &mut Context<Self>) {
+        if cfg!(target_os = "linux") {
+            // The compositor may refuse to raise the minimized window (GNOME on Wayland without a
+            // fresh input serial), so it counts as back only once it is active.
+            let window = self.window;
+            // The caller may be inside this window's update; activating it has to wait for that.
+            cx.defer(move |cx| {
+                window.update(cx, |_, window, _| window.activate_window()).ok();
+            });
+            return;
+        }
+        cx.activate(true);
+        self.window_shown(cx);
+    }
+
+    fn window_shown(&mut self, cx: &mut Context<Self>) {
         if self.hidden_to_tray {
             self.hidden_to_tray = false;
             crate::desktop::set_dock_visible(true);
         }
-        cx.activate(true);
         self.update_tray(cx);
     }
 
@@ -453,6 +488,11 @@ impl Shell {
                 }
             }
             TrayCommand::Quit => Self::quit(window, cx),
+            TrayCommand::Lost => {
+                if self.hidden_to_tray {
+                    self.show_window(cx);
+                }
+            }
         }
     }
 

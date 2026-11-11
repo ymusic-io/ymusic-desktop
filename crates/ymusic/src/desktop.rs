@@ -5,7 +5,6 @@ use std::time::Duration;
 
 use gpui_kit::*;
 use ym_common::log::Logger;
-#[cfg(any(target_os = "macos", target_os = "windows"))]
 use ym_i18n::{Str, t};
 use ym_settings::SettingsStore;
 
@@ -54,7 +53,6 @@ pub fn save_bounds(window: &Window, settings: std::sync::Arc<dyn SettingsStore>,
 }
 
 const LOGO_PNG: &[u8] = include_bytes!("../assets/ymusic-512.png");
-#[cfg(any(target_os = "macos", target_os = "windows"))]
 const TRAY_PNG: &[u8] = include_bytes!("../assets/ymusic-tray.png");
 
 /// The Dock shows the app's logo even when it runs outside an app bundle.
@@ -109,12 +107,14 @@ pub fn set_dock_visible(visible: bool) {
 pub fn set_dock_visible(_visible: bool) {}
 
 /// What a tray click or menu entry asks for.
-#[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
 pub enum TrayCommand {
     Open,
     TogglePlay,
     Stop,
     Quit,
+    /// The tray host went away: a window hidden to it has no way back but this.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    Lost,
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -130,7 +130,10 @@ pub struct Tray {
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 impl Tray {
     /// A hidden tray icon whose commands arrive on the returned channel.
-    pub fn new() -> anyhow::Result<(Self, futures::channel::mpsc::UnboundedReceiver<TrayCommand>)> {
+    pub fn new(
+        _tokio: &tokio::runtime::Handle,
+        _log: Logger,
+    ) -> anyhow::Result<(Self, futures::channel::mpsc::UnboundedReceiver<TrayCommand>)> {
         use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
         use tray_icon::{TrayIconBuilder, TrayIconEvent};
         let image = image::load_from_memory(TRAY_PNG)?.into_rgba8();
@@ -188,18 +191,162 @@ impl Tray {
         }
         Ok(())
     }
+
+    /// Whether a window hidden now could be brought back from the tray.
+    pub fn available(&self) -> bool {
+        true
+    }
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
-pub struct Tray;
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy, Default)]
+struct TrayState {
+    has_queue: bool,
+    playing: bool,
+    window_hidden: bool,
+}
 
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
-impl Tray {
-    pub fn new() -> anyhow::Result<(Self, futures::channel::mpsc::UnboundedReceiver<TrayCommand>)> {
-        anyhow::bail!("no tray on this platform yet")
+/// The StatusNotifierItem; its properties read the shared state, so a poke re-reads the newest.
+#[cfg(target_os = "linux")]
+struct SniTray {
+    state: std::sync::Arc<std::sync::Mutex<TrayState>>,
+    commands: futures::channel::mpsc::UnboundedSender<TrayCommand>,
+    available: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    icons: Vec<ksni::Icon>,
+}
+
+#[cfg(target_os = "linux")]
+impl SniTray {
+    fn state(&self) -> TrayState {
+        self.state.lock().map(|state| *state).unwrap_or_default()
     }
 
-    pub fn update(&mut self, _has_queue: bool, _playing: bool, _window_hidden: bool) -> anyhow::Result<()> {
+    fn send(&self, command: TrayCommand) {
+        let _ = self.commands.unbounded_send(command);
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl ksni::Tray for SniTray {
+    fn id(&self) -> String {
+        "ymusic".into()
+    }
+
+    fn title(&self) -> String {
+        t(Str::AppName).into()
+    }
+
+    fn status(&self) -> ksni::Status {
+        let state = self.state();
+        if state.has_queue || state.window_hidden { ksni::Status::Active } else { ksni::Status::Passive }
+    }
+
+    fn icon_pixmap(&self) -> Vec<ksni::Icon> {
+        self.icons.clone()
+    }
+
+    fn tool_tip(&self) -> ksni::ToolTip {
+        ksni::ToolTip { title: t(Str::AppName).into(), ..Default::default() }
+    }
+
+    fn activate(&mut self, _x: i32, _y: i32) {
+        self.send(TrayCommand::Open);
+    }
+
+    fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
+        use ksni::menu::{MenuItem, StandardItem};
+        let state = self.state();
+        let item = |label: Str, enabled: bool, command: fn() -> TrayCommand| -> MenuItem<Self> {
+            StandardItem {
+                label: t(label).into(),
+                enabled,
+                activate: Box::new(move |tray: &mut Self| tray.send(command())),
+                ..Default::default()
+            }
+            .into()
+        };
+        vec![
+            item(Str::CdOpenApp, true, || TrayCommand::Open),
+            MenuItem::Separator,
+            item(if state.playing { Str::TrayPause } else { Str::TrayResume }, state.has_queue, || {
+                TrayCommand::TogglePlay
+            }),
+            item(Str::TrayStop, state.has_queue, || TrayCommand::Stop),
+            MenuItem::Separator,
+            item(Str::TrayQuit, true, || TrayCommand::Quit),
+        ]
+    }
+
+    fn watcher_online(&self) {
+        self.available.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn watcher_offline(&self, _reason: ksni::OfflineReason) -> bool {
+        self.available.store(false, std::sync::atomic::Ordering::Relaxed);
+        self.send(TrayCommand::Lost);
+        true
+    }
+}
+
+/// A StatusNotifierItem over D-Bus (GNOME needs the AppIndicator extension, KDE has it built in).
+#[cfg(target_os = "linux")]
+pub struct Tray {
+    state: std::sync::Arc<std::sync::Mutex<TrayState>>,
+    handle: std::sync::Arc<std::sync::Mutex<Option<ksni::Handle<SniTray>>>>,
+    available: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    tokio: tokio::runtime::Handle,
+}
+
+#[cfg(target_os = "linux")]
+impl Tray {
+    /// Registers with the StatusNotifierWatcher in the background; until that succeeds the tray is
+    /// not [`available`](Self::available). Commands arrive on the returned channel.
+    pub fn new(
+        tokio: &tokio::runtime::Handle,
+        log: Logger,
+    ) -> anyhow::Result<(Self, futures::channel::mpsc::UnboundedReceiver<TrayCommand>)> {
+        use ksni::TrayMethods;
+        let image = image::load_from_memory(TRAY_PNG)?.into_rgba8();
+        let (width, height) = image.dimensions();
+        let argb = image.pixels().flat_map(|pixel| {
+            let [red, green, blue, alpha] = pixel.0;
+            [alpha, red, green, blue]
+        });
+        let icon = ksni::Icon { width: width as i32, height: height as i32, data: argb.collect() };
+        let (sender, receiver) = futures::channel::mpsc::unbounded();
+        let state = std::sync::Arc::new(std::sync::Mutex::new(TrayState::default()));
+        let available = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let handle = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let sni = SniTray { state: state.clone(), commands: sender, available: available.clone(), icons: vec![icon] };
+        let (slot, registered) = (handle.clone(), available.clone());
+        tokio.spawn(async move {
+            match sni.spawn().await {
+                Ok(spawned) => {
+                    if let Ok(mut slot) = slot.lock() {
+                        *slot = Some(spawned);
+                    }
+                    registered.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+                Err(error) => log.warn("tray icon could not be registered", Some(&error)),
+            }
+        });
+        Ok((Self { state, handle, available, tokio: tokio.clone() }, receiver))
+    }
+
+    /// Shown while there is a queue to control or the window is hidden (the only way back then).
+    pub fn update(&mut self, has_queue: bool, playing: bool, window_hidden: bool) -> anyhow::Result<()> {
+        if let Ok(mut state) = self.state.lock() {
+            *state = TrayState { has_queue, playing, window_hidden };
+        }
+        let handle = self.handle.lock().ok().and_then(|handle| handle.clone());
+        if let Some(handle) = handle {
+            self.tokio.spawn(async move { handle.update(|_| ()).await });
+        }
         Ok(())
+    }
+
+    /// Whether a window hidden now could be brought back from the tray.
+    pub fn available(&self) -> bool {
+        self.available.load(std::sync::atomic::Ordering::Relaxed)
     }
 }
