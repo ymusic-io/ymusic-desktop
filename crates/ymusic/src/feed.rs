@@ -17,9 +17,11 @@ use ym_engine::{DynamicEngine, EngineError, ErrorKind};
 use ym_i18n::{Str, t, tf};
 
 use crate::a11y::{DragRow, FocusList, focusable};
+use crate::download_dialog::DownloadTarget;
 use crate::graph::{AppGraph, on_core};
 use crate::local_playlist::LocalPlaylistFromDownloads;
 use crate::playlist_download::PlaylistDownload;
+use crate::quick_download::saved_preset;
 use crate::spinner::Spinner;
 use crate::tab_row::tab_row;
 
@@ -884,7 +886,7 @@ impl FeedView {
             .icon(Icon::new(IconName::EllipsisVertical))
             .accessibility_label(t(Str::CdMore))
             .tooltip(t(Str::CdMore))
-            .dropdown_menu_with_anchor(Anchor::TopRight, move |mut menu, _, _| {
+            .dropdown_menu_with_anchor(Anchor::TopRight, move |mut menu, _, cx| {
                 let video = target.kind == "video";
                 let mut actions: Vec<(Str, MenuAction)> = Vec::new();
                 if video {
@@ -912,6 +914,13 @@ impl FeedView {
                         let item = item.clone();
                         view.update(cx, |view, cx| view.menu_action(item, action, window, cx)).ok();
                     }));
+                    if matches!(action, MenuAction::Feed(FeedAction::Download)) {
+                        let item = target.clone();
+                        let label = tf(Str::QuickDownloadMenu, &[&saved_preset(cx).short_label()]);
+                        menu = menu.item(PopupMenuItem::new(label).on_click(move |_, window, cx| {
+                            crate::quick_download::launch(DownloadTarget::from_feed(&item), window, cx);
+                        }));
+                    }
                 }
                 menu
             })

@@ -594,6 +594,17 @@ impl Render for SettingsView {
                 .on_click(cx.listener(|view, _, _, cx| view.choose_folder(cx))),
             cx,
         )];
+        let downloads = downloads.into_iter().chain([row(
+            t(Str::SettingsQuickDownload),
+            None,
+            Button::new("quick-download")
+                .small()
+                .ghost()
+                .label(crate::quick_download::saved_preset(cx).label())
+                .on_click(|_, window, cx| crate::quick_download::QuickPresetEditor::open(window, cx)),
+            cx,
+        )]);
+        let downloads: Vec<AnyElement> = downloads.collect();
         let account = vec![row(account_title, account_hint, account_control, cx)];
         let privacy = vec![
             self.toggle(

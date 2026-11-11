@@ -659,6 +659,20 @@ impl Shell {
                     .detach();
                 }
             }
+            Some(("quickdownload", video_id)) => {
+                self.section = Section::Downloads;
+                let target = DownloadTarget {
+                    video_id: video_id.to_owned(),
+                    title: video_id.to_owned(),
+                    artist: None,
+                    thumbnail_url: None,
+                };
+                window.defer(cx, move |window, cx| crate::quick_download::launch(target, window, cx));
+            }
+            _ if route == "quickpreset" => {
+                self.section = Section::Settings;
+                window.defer(cx, crate::quick_download::QuickPresetEditor::open);
+            }
             Some(("downloaddialog", video_id)) => {
                 self.pending_download = Some(DownloadTarget {
                     video_id: video_id.to_owned(),

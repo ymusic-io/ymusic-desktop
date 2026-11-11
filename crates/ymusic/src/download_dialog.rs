@@ -4,6 +4,7 @@
 use std::path::PathBuf;
 
 use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::component::{ActiveTheme, Disableable, Sizable, StyledExt, WindowExt, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder;
@@ -15,7 +16,7 @@ use ym_i18n::{Str, t, tf};
 use crate::downloads::{DOWNLOAD_LOCATION_KEY, download_folder, offline_ids};
 use crate::downloads_view::{size_label, task_error_text};
 use crate::graph::{AppGraph, on_core};
-use crate::quick_download::confirm_redownload;
+use crate::quick_download::{QuickPreset, confirm_redownload, save_preset};
 use crate::spinner::Spinner;
 
 /// The video to download, as the card showed it.
@@ -58,6 +59,8 @@ pub struct DownloadPicker {
     caption: Option<String>,
     folder: Option<PathBuf>,
     already_downloaded: bool,
+    /// Also keep these picks as the Quick download preset; unticked on every open, by design.
+    save_as_quick: bool,
 }
 
 impl DownloadPicker {
@@ -111,6 +114,7 @@ impl DownloadPicker {
             caption: None,
             folder,
             already_downloaded: false,
+            save_as_quick: false,
         }
     }
 
@@ -178,7 +182,32 @@ impl DownloadPicker {
         }
     }
 
+    /// These picks as languages, for other videos.
+    fn quick_preset(&self, options: &DownloadOptions) -> QuickPreset {
+        QuickPreset {
+            format: self.format(),
+            height: self.video.then_some(self.height),
+            audio_language: None,
+            caption_language: self
+                .caption
+                .as_ref()
+                .and_then(|key| options.captions.iter().find(|caption| caption.key() == *key))
+                .map(|caption| caption.language_code.clone()),
+            audio_quality: options
+                .audio
+                .iter()
+                .find(|option| option.format == self.audio_format)
+                .and_then(|option| option.pick(self.quality))
+                .map_or(self.quality, |picked| picked.quality),
+        }
+    }
+
     fn start(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.save_as_quick
+            && let Phase::Ready(options) = &self.phase
+        {
+            save_preset(&self.quick_preset(options), cx);
+        }
         let target = self.target.clone();
         self.service.enqueue(DownloadRequest {
             video_id: target.video_id,
@@ -448,6 +477,15 @@ impl Render for DownloadPicker {
                 ),
             cx,
         ));
+
+        body = body.child(
+            Checkbox::new("save-as-quick").checked(self.save_as_quick).label(t(Str::DownloadSaveQuick)).on_click(
+                cx.listener(|picker, checked: &bool, _, cx| {
+                    picker.save_as_quick = *checked;
+                    cx.notify();
+                }),
+            ),
+        );
 
         let size = self.estimated_bytes(&options).map(size_label);
         let label = match size {
