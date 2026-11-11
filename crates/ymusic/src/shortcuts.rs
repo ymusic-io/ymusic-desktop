@@ -26,6 +26,8 @@ actions!(
         SelectTab4,
         SelectTab5,
         SelectTab6,
+        /// Open the sign-in screen (dispatched by the sign-in buttons, no key).
+        OpenSignIn,
     ]
 );
 

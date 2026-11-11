@@ -29,6 +29,7 @@ use crate::play_history::HistoryRecorder;
 use crate::playback::{Playback, QueueItem};
 use crate::search_view::{SearchEvent, SearchView};
 use crate::settings_view::SettingsView;
+use crate::signin_dialog::{SignInEvent, SignInView};
 use crate::sponsor_block::SponsorBlock;
 use crate::tab_row::tab_row;
 
@@ -222,6 +223,7 @@ enum Layer {
     Feed { view: Entity<FeedView>, title: SharedString },
     Search(Entity<SearchView>),
     Results { view: Entity<FeedView>, query: String },
+    SignIn(Entity<SignInView>),
 }
 
 #[derive(Default)]
@@ -790,6 +792,34 @@ impl Shell {
         }
     }
 
+    fn open_sign_in(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if matches!(self.stacks.get(&self.section).and_then(|stack| stack.pushed.last()), Some(Layer::SignIn(_))) {
+            return;
+        }
+        let view = cx.new(|cx| SignInView::new(window, cx));
+        let events = cx.subscribe(&view, |shell, view, event: &SignInEvent, cx| {
+            for stack in shell.stacks.values_mut() {
+                stack.pushed.retain(|layer| !matches!(layer, Layer::SignIn(open) if *open == view));
+            }
+            if matches!(event, SignInEvent::Done) {
+                shell.account_changed(cx);
+            }
+            cx.notify();
+        });
+        self._subscriptions.push(events);
+        self.push_layer(Layer::SignIn(view), cx);
+    }
+
+    /// Everything that shows who is signed in re-checks.
+    fn account_changed(&mut self, cx: &mut Context<Self>) {
+        for view in [self.account.clone(), self.music_library.clone()].into_iter().flatten() {
+            view.update(cx, |view, cx| view.refresh(cx));
+        }
+        if let Some(settings) = &self.settings {
+            settings.update(cx, |settings, cx| settings.refresh_account(cx));
+        }
+    }
+
     fn open_search(&mut self, query: String, window: &mut Window, cx: &mut Context<Self>) {
         let view = cx.new(|cx| SearchView::new(&query, window, cx));
         let events = cx.subscribe(&view, |shell, _, event: &SearchEvent, cx| match event {
@@ -862,6 +892,7 @@ impl Shell {
         let top = self.stacks.get(&self.section).and_then(|stack| stack.pushed.last());
         match top {
             Some(Layer::Search(view)) => return view.clone().into_any_element(),
+            Some(Layer::SignIn(view)) => return view.clone().into_any_element(),
             Some(Layer::Feed { view, title }) => {
                 let view = view.clone();
                 // A channel's name arrives with its page header.
@@ -1321,6 +1352,9 @@ impl Shell {
             self.now_playing_open = false;
         } else if self.drawer_open {
             self.drawer_open = false;
+        } else if let Some(Layer::SignIn(view)) = self.stacks.get(&self.section).and_then(|stack| stack.pushed.last()) {
+            view.clone().update(cx, |view, cx| view.back(cx));
+            return;
         } else if self.idle_escape_at.take().is_some_and(|at| at.elapsed() <= DOUBLE_ESCAPE) {
             self.back(cx);
             return;
@@ -1372,6 +1406,7 @@ impl Shell {
             }))
             .on_action(cx.listener(|_, _: &ToggleFullscreen, window, _| window.toggle_fullscreen()))
             .on_action(cx.listener(|shell, _: &Escape, window, cx| shell.escape(window, cx)))
+            .on_action(cx.listener(|shell, _: &OpenSignIn, window, cx| shell.open_sign_in(window, cx)))
             .on_action(cx.listener(|shell, _: &SelectTab1, _, cx| shell.select_tab(0, cx)))
             .on_action(cx.listener(|shell, _: &SelectTab2, _, cx| shell.select_tab(1, cx)))
             .on_action(cx.listener(|shell, _: &SelectTab3, _, cx| shell.select_tab(2, cx)))
@@ -1393,7 +1428,7 @@ impl Render for Shell {
             crate::sound_panel::SoundPanel::open(self.playback.clone(), window, cx);
         }
         if std::mem::take(&mut self.pending_signin) {
-            crate::signin_dialog::SignInDialog::open(window, cx, |_| {});
+            self.open_sign_in(window, cx);
         }
         let viewport = window.viewport_size();
         let (width, height) = (f32::from(viewport.width), f32::from(viewport.height));
@@ -1416,8 +1451,16 @@ impl Render for Shell {
             self.now_playing.read(cx).hide_video();
         }
         self.playback.update(cx, |playback, cx| playback.set_video_hidden(!now_playing, cx));
+        // Sign-in covers the whole window, rail and player bar included.
+        let signing_in = match self.stacks.get(&self.section).and_then(|stack| stack.pushed.last()) {
+            Some(Layer::SignIn(view)) if !now_playing => Some(view.clone()),
+            _ => None,
+        };
+        let covered = now_playing || signing_in.is_some();
         let body = if now_playing {
             self.now_playing.clone().into_any_element()
+        } else if let Some(view) = signing_in {
+            view.into_any_element()
         } else {
             let main = self.render_main(rail_mode, wide, cx);
             h_flex()
@@ -1426,14 +1469,14 @@ impl Render for Shell {
                 .child(div().flex_1().min_w_0().h_full().child(main))
                 .into_any_element()
         };
-        let drawer = (self.drawer_open && !now_playing).then(|| self.render_drawer(cx));
+        let drawer = (self.drawer_open && !covered).then(|| self.render_drawer(cx));
         let root = self.shortcut_listeners(v_flex(), cx);
         root.relative()
             .size_full()
             .when(!now_playing, |shell| shell.bg(cx.theme().background))
             .child(crate::a11y::frame_marker())
             .child(div().flex_1().min_h_0().w_full().child(body))
-            .when(!now_playing, |shell| shell.child(self.mini_player.clone()))
+            .when(!covered, |shell| shell.child(self.mini_player.clone()))
             .children(drawer)
     }
 }

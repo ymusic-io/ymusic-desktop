@@ -92,10 +92,7 @@ impl AccountView {
     }
 
     fn sign_in(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let view = cx.entity().downgrade();
-        crate::signin_dialog::SignInDialog::open(window, cx, move |cx| {
-            view.update(cx, |view, cx| view.refresh(cx)).ok();
-        });
+        window.dispatch_action(Box::new(crate::shortcuts::OpenSignIn), cx);
     }
 
     fn sign_out(&mut self, cx: &mut Context<Self>) {

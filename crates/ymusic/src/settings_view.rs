@@ -14,7 +14,6 @@ use ym_settings::SettingsStore;
 
 use crate::downloads::{DOWNLOAD_LOCATION_KEY, download_folder};
 use crate::graph::{AppGraph, on_core};
-use crate::signin_dialog::SignInDialog;
 use crate::sponsor_block::SPONSOR_BLOCK_KEY;
 
 pub const THEME_KEY: &str = "app.theme";
@@ -271,20 +270,12 @@ impl Render for SettingsView {
                 .loading(self.signing_out)
                 .on_click(cx.listener(|view, _, _, cx| view.sign_out(cx)))
                 .into_any_element(),
-            _ => {
-                let entity = cx.entity().downgrade();
-                Button::new("sign-in")
-                    .small()
-                    .primary()
-                    .label(t(Str::SigninButton))
-                    .on_click(move |_, window, cx| {
-                        let view = entity.clone();
-                        SignInDialog::open(window, cx, move |cx| {
-                            view.update(cx, |view, cx| view.refresh_account(cx)).ok();
-                        });
-                    })
-                    .into_any_element()
-            }
+            _ => Button::new("sign-in")
+                .small()
+                .primary()
+                .label(t(Str::SigninButton))
+                .on_click(|_, window, cx| window.dispatch_action(Box::new(crate::shortcuts::OpenSignIn), cx))
+                .into_any_element(),
         };
         let account_title = match &self.account {
             Some(account) if account.signed_in => {

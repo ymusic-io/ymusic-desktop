@@ -96,3 +96,4 @@ R90019 - sign-in: the cookies could not be stored or the link failed for a reaso
 R90020 - top tracks: play history could not be read
 R90021 - sponsorblock: the per-video whitelist could not be saved
 R90022 - downloads: a finished file could not be deleted from disk
+R90023 - sign-in: the device-link QR could not be drawn
