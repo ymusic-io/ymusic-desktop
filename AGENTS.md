@@ -32,6 +32,8 @@ One sentence each; detail lives in the crate's own README.
 
 `YMUSIC_REMOTE_CONFIG_URL`, `YMUSIC_BUNDLE_PUBLIC_KEY`, `YMUSIC_API_KEY` and `YMUSIC_SENTRY_DSN` are read at compile time (private release inputs; unset = embedded bundles and defaults only, and no QR sign-in). Locally they come from the gitignored `secret.properties` at the workspace root (keys in `secret.properties.example`, values from YMusicV4's `secrets.properties`/`local.properties`); an env var of the same name wins. Never commit `secret.properties`. The embedded bundle revisions come from YMusicV4's `Versions.engineJsVersion` / `playerJsVersion`.
 
+Linux builds link `ffmpeg-build/out/linux-<arch>` and need the development packages `libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libxcb1-dev libfreetype-dev libfontconfig-dev libpulse-dev`.
+
 ## Rules
 
 ### Style
