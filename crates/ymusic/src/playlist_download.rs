@@ -168,8 +168,8 @@ impl PlaylistDownload {
         self.pickable().filter(|video| self.checked.contains(&video.id)).cloned().collect()
     }
 
-    fn choose_folder(&mut self, cx: &mut Context<Self>) {
-        let pick = pick_download_folder(cx);
+    fn choose_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let pick = pick_download_folder(window, cx);
         cx.spawn(async move |this, cx| {
             let Some(folder) = pick.await else { return };
             this.update(cx, |view, cx| {
@@ -239,7 +239,7 @@ impl PlaylistDownload {
     /// Queues `picked` with the preset (numbered by playlist position when asked), adds them to
     /// the target Library playlist, then closes. Without a usable folder the picker comes first.
     fn start(&mut self, picked: Vec<YtFeedItem>, window: &mut Window, cx: &mut Context<Self>) {
-        let folder = usable_download_folder(cx);
+        let folder = usable_download_folder(window, cx);
         cx.spawn_in(window, async move |this, cx| {
             if folder.await.is_none() {
                 return;
@@ -386,7 +386,7 @@ impl PlaylistDownload {
             .icon(Icon::new(Lucide::Folder))
             .label(folder_label.clone())
             .accessibility_label(format!("{}, {folder_label}", t(Str::DownloadSaveTo)))
-            .on_click(cx.listener(|view, _, _, cx| view.choose_folder(cx)));
+            .on_click(cx.listener(|view, _, window, cx| view.choose_folder(window, cx)));
         let target_label =
             self.target.as_ref().map_or(t(Str::PlaylistSelectLibrary).to_owned(), |playlist| playlist.name.clone());
         let view = cx.entity().downgrade();

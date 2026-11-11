@@ -221,7 +221,7 @@ impl DownloadsView {
             }
             Some(Playability::Unavailable) => self.unavailable_dialog(id, window, cx),
             None if code == "folder" => {
-                let pick = pick_download_folder(cx);
+                let pick = pick_download_folder(window, cx);
                 cx.spawn(async move |this, cx| {
                     if pick.await.is_some() {
                         this.update(cx, |view, _| view.service.retry(&id)).ok();
@@ -272,6 +272,7 @@ impl DownloadsView {
             }
             "format" => Self::other_format(&task, window, cx),
             "addto" => AddToLocalPlaylist::open(vec![task.video_id.clone()], None, window, cx),
+            "removedisk" => self.remove_from_disk(task, window, cx),
             "rename" => {
                 if let Some(file) = file_path(&task) {
                     RenameFileDialog::open(file, None, window, cx);
@@ -451,13 +452,30 @@ const CARD_MIN: f32 = 340.;
 const THUMB: f32 = 56.;
 
 impl DownloadsView {
-    /// Deletes the finished file, then the task; a failed delete keeps the task and says so.
+    /// Deletes the finished file and its Library row, then the task; a failed delete keeps the task
+    /// and says so.
     fn remove_from_disk(&mut self, task: DownloadTask, window: &mut Window, cx: &mut Context<Self>) {
         let Some(path) = file_path(&task) else {
             self.service.remove(&task.id);
             return;
         };
-        let delete = on_core(cx, async move { tokio::task::spawn_blocking(move || std::fs::remove_file(&path)).await });
+        let graph = cx.global::<AppGraph>();
+        let (media, log) = (graph.media.clone(), graph.log.fork("downloads"));
+        let delete = on_core(cx, async move {
+            tokio::task::spawn_blocking(move || {
+                let removed = std::fs::remove_file(&path);
+                if removed.as_ref().is_ok()
+                    || removed.as_ref().is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+                {
+                    let row = media.find_item_by_uri(&path.to_string_lossy());
+                    if let Err(error) = row.and_then(|row| row.map_or(Ok(()), |(item, _)| media.delete_item(item.id))) {
+                        log.warn("the deleted download's Library row could not be removed", Some(&error));
+                    }
+                }
+                removed
+            })
+            .await
+        });
         cx.spawn_in(window, async move |this, cx| {
             let result = delete.await;
             this.update_in(cx, |view, window, cx| match result {

@@ -363,7 +363,7 @@ pub fn launch(target: DownloadTarget, window: &mut Window, cx: &mut App) {
 }
 
 fn enqueue(target: DownloadTarget, window: &mut Window, cx: &mut App) {
-    let folder = usable_download_folder(cx);
+    let folder = usable_download_folder(window, cx);
     window
         .spawn(cx, async move |cx| {
             if folder.await.is_none() {

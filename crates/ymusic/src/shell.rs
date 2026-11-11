@@ -788,7 +788,15 @@ impl Shell {
                 });
             }
             Some(("download", spec)) => {
-                self.section = Section::Downloads;
+                // `YMUSIC_DEV_DOWNLOAD_LIBRARY_TAB=<n>` watches that Library tab instead of the queue.
+                match std::env::var("YMUSIC_DEV_DOWNLOAD_LIBRARY_TAB").ok().and_then(|tab| tab.parse().ok()) {
+                    Some(index) => {
+                        self.section = Section::Library;
+                        let view = self.library_view(cx);
+                        view.update(cx, |library, cx| library.select_tab_index(index, cx));
+                    }
+                    None => self.section = Section::Downloads,
+                }
                 self.dev_download(spec, cx);
             }
             _ if route == "devicelink" => self.dev_device_link(cx),
@@ -1028,11 +1036,12 @@ impl Shell {
         self.playback.update(cx, |playback, cx| playback.set_effects(effects, cx));
     }
 
-    /// Debug route: probes and downloads one video, logging every queue change.
+    /// Debug route: probes and downloads one video, logging every queue change. A
+    /// `YMUSIC_DEV_DOWNLOAD_DIR` is added to the Library as a picked download folder is.
     fn dev_download(&mut self, spec: &str, cx: &mut Context<Self>) {
         let graph = cx.global::<AppGraph>();
-        let (downloads, settings, log) =
-            (graph.downloads.clone(), graph.settings.clone(), graph.log.fork("dev-download"));
+        let (downloads, settings, media, log) =
+            (graph.downloads.clone(), graph.settings.clone(), graph.media.clone(), graph.log.fork("dev-download"));
         let (format, video_id) = spec.split_once(':').unwrap_or(("M4A", spec));
         let Some(format) = ym_download::DownloadFormat::from_name(format) else {
             log.warn(&format!("unknown download format {format}"), None);
@@ -1047,6 +1056,20 @@ impl Shell {
                 )
             {
                 log.warn(&format!("the dev download folder could not be saved: {error}"), None);
+            }
+            if let Some(dir) = std::env::var_os("YMUSIC_DEV_DOWNLOAD_DIR").map(std::path::PathBuf::from) {
+                let (media, register_log) = (media.clone(), log.clone());
+                let registered =
+                    tokio::task::spawn_blocking(move || {
+                        match crate::downloads::register_download_folder(&media, &dir) {
+                            Ok(()) => crate::downloads::scan_download_folder(&media, &dir, &register_log),
+                            Err(error) => register_log
+                                .warn("the dev download folder could not be added to the Library", Some(&error)),
+                        }
+                    });
+                if let Err(error) = registered.await {
+                    log.warn("the dev download folder could not be added to the Library", Some(&error));
+                }
             }
             let mut changes = downloads.subscribe();
             match downloads.probe(&video_id).await {

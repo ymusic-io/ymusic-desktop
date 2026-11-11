@@ -256,23 +256,6 @@ fn sort_songs(items: &mut [MediaItem], state: SortState) {
     }
 }
 
-/// Why a folder cannot take downloads, from a test write.
-fn probe_download_folder(folder: &std::path::Path) -> Result<(), Str> {
-    if !folder.is_dir() {
-        return Err(Str::DownloadLocationMissing);
-    }
-    let probe = folder.join(".ymusic-write-test");
-    match std::fs::write(&probe, b"") {
-        Ok(()) => {
-            let _ = std::fs::remove_file(&probe);
-            Ok(())
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => Err(Str::DownloadLocationReadOnly),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Err(Str::DownloadLocationMissing),
-        Err(_) => Err(Str::DownloadLocationCannotCreate),
-    }
-}
-
 pub struct LibraryView {
     store: Arc<MediaStore>,
     history: Arc<ym_history::PlayHistory>,
@@ -803,7 +786,7 @@ impl LibraryView {
                 let value = if clear {
                     String::new()
                 } else {
-                    probe_download_folder(&folder)?;
+                    crate::downloads::probe_download_folder(&folder)?;
                     crate::downloads::folder_uri(&folder)
                 };
                 if let Err(error) = settings.put_raw(crate::downloads::DOWNLOAD_LOCATION_KEY, value) {

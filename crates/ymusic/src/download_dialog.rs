@@ -14,7 +14,7 @@ use ym_download::options::DownloadOptions;
 use ym_download::{AudioQuality, DownloadError, DownloadFormat, DownloadRequest, DownloadService, names};
 use ym_i18n::{Str, t, tf};
 
-use crate::downloads::{DOWNLOAD_LOCATION_KEY, download_folder, offline_ids};
+use crate::downloads::{download_folder, offline_ids};
 use crate::downloads_view::{size_label, task_error_text};
 use crate::graph::{AppGraph, on_core};
 use crate::quick_download::{QuickPreset, confirm_redownload, save_preset};
@@ -74,11 +74,23 @@ pub struct DownloadPicker {
 
 impl DownloadPicker {
     /// Opens the dialog for `target`.
+    /// Without a usable download folder the picker comes first; a cancel opens nothing.
     pub fn open(target: DownloadTarget, window: &mut Window, cx: &mut App) {
-        let picker = cx.new(|cx| DownloadPicker::new(target, window, cx));
-        window.open_dialog(cx, move |dialog, _, _| {
-            dialog.title(t(Str::DownloadTitle)).width(px(560.)).child(picker.clone())
-        });
+        let folder = crate::downloads::usable_download_folder(window, cx);
+        window
+            .spawn(cx, async move |cx| {
+                if folder.await.is_none() {
+                    return;
+                }
+                cx.update(|window, cx| {
+                    let picker = cx.new(|cx| DownloadPicker::new(target, window, cx));
+                    window.open_dialog(cx, move |dialog, _, _| {
+                        dialog.title(t(Str::DownloadTitle)).width(px(560.)).child(picker.clone())
+                    });
+                })
+                .ok();
+            })
+            .detach();
     }
 
     fn new(target: DownloadTarget, window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -189,22 +201,11 @@ impl DownloadPicker {
         }
     }
 
-    fn choose_folder(&mut self, cx: &mut Context<Self>) {
-        let pick = rfd::AsyncFileDialog::new().set_title(t(Str::FolderPickerTitle)).pick_folder();
+    fn choose_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let pick = crate::downloads::pick_download_folder(window, cx);
         cx.spawn(async move |this, cx| {
             let Some(folder) = pick.await else { return };
-            let folder = folder.path().to_path_buf();
             this.update(cx, |picker, cx| {
-                {
-                    let graph = cx.global::<AppGraph>();
-                    let (settings, log) = (graph.settings.clone(), graph.log.fork("downloads"));
-                    let uri = crate::downloads::folder_uri(&folder);
-                    graph.tokio.spawn_blocking(move || {
-                        if let Err(error) = settings.put_raw(DOWNLOAD_LOCATION_KEY, uri) {
-                            log.warn(&format!("the download folder could not be saved: {error}"), None);
-                        }
-                    });
-                }
                 picker.folder = Some(folder);
                 cx.notify();
             })
@@ -576,7 +577,7 @@ impl Render for DownloadPicker {
                         .small()
                         .ghost()
                         .label(t(Str::MenuDownloadLocation))
-                        .on_click(cx.listener(|picker, _, _, cx| picker.choose_folder(cx))),
+                        .on_click(cx.listener(|picker, _, window, cx| picker.choose_folder(window, cx))),
                 ),
             cx,
         ));

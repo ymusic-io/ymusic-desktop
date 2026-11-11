@@ -7,7 +7,7 @@ use std::sync::atomic::AtomicBool;
 
 use futures::future::BoxFuture;
 use gpui_kit::component::WindowExt;
-use gpui_kit::{App, Window};
+use gpui_kit::{App, AppContext, Window};
 use serde_json::Value;
 use ym_common::log::Logger;
 use ym_download::spec::ResolvedVideo;
@@ -136,24 +136,124 @@ pub fn save_download_folder(folder: &Path, cx: &App) {
     });
 }
 
-/// The OS folder picker; a pick becomes the download location. None when canceled.
-pub fn pick_download_folder(cx: &mut App) -> impl Future<Output = Option<PathBuf>> + use<> {
-    let pick = rfd::AsyncFileDialog::new().set_title(t(Str::FolderPickerTitle)).pick_folder();
-    let saver = cx.to_async();
-    async move {
-        let folder = pick.await?.path().to_path_buf();
-        saver.update(|cx| save_download_folder(&folder, cx));
-        Some(folder)
+/// Why a folder cannot take downloads, from a test write.
+pub fn probe_download_folder(folder: &Path) -> Result<(), Str> {
+    if !folder.is_dir() {
+        return Err(Str::DownloadLocationMissing);
+    }
+    let probe = folder.join(".ymusic-write-test");
+    match std::fs::write(&probe, b"") {
+        Ok(()) => {
+            let _ = std::fs::remove_file(&probe);
+            Ok(())
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => Err(Str::DownloadLocationReadOnly),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Err(Str::DownloadLocationMissing),
+        Err(_) => Err(Str::DownloadLocationCannotCreate),
     }
 }
 
-/// The download folder while it still exists, else the picker first (a cancel gives none).
-pub fn usable_download_folder(
-    cx: &mut App,
-) -> futures::future::Either<futures::future::Ready<Option<PathBuf>>, impl Future<Output = Option<PathBuf>> + use<>> {
-    match download_folder(cx.global::<AppGraph>().settings.as_ref()).filter(|folder| folder.is_dir()) {
-        Some(folder) => futures::future::Either::Left(futures::future::ready(Some(folder))),
-        None => futures::future::Either::Right(pick_download_folder(cx)),
+/// Blocking: makes `folder` a Library folder (a new one becomes a root, an excluded one is included
+/// again), the JVM app's `pickAndRegisterFolder`. Finished downloads are filed under its bucket.
+pub fn register_download_folder(media: &MediaStore, folder: &Path) -> Result<(), ym_store::StoreError> {
+    let path = folder.to_string_lossy();
+    match media.find_bucket_by_uri(&path)? {
+        Some(bucket) if bucket.excluded => media.set_bucket_excluded(bucket.id, false),
+        Some(_) => Ok(()),
+        None => {
+            let name = folder
+                .file_name()
+                .map_or_else(|| path.clone().into_owned(), |name| name.to_string_lossy().into_owned());
+            media.upsert_bucket(&path, &name, None).map(|_| ())
+        }
+    }
+}
+
+/// Blocking and long: what is already in the download folder shows up in the Library.
+pub fn scan_download_folder(media: &MediaStore, folder: &Path, log: &Logger) {
+    match ym_store::scan_folder(media, folder, &AtomicBool::new(false)) {
+        Ok(report) => {
+            for error in &report.errors {
+                log.warn(&format!("scan skipped {}: {}", error.path.display(), error.message), None);
+            }
+        }
+        Err(error) => log.warn("scanning the download folder failed", Some(&error)),
+    }
+}
+
+/// After a test write, registers `folder` in the Library and saves it as the download location;
+/// the folder's scan then runs on its own. The error is the message to show.
+pub fn assign_download_folder(folder: PathBuf, cx: &App) -> impl Future<Output = Result<(), String>> + use<> {
+    let graph = cx.global::<AppGraph>();
+    let (media, settings, log) = (graph.media.clone(), graph.settings.clone(), graph.log.fork("download-folder"));
+    let assign = on_core(cx, async move {
+        tokio::task::spawn_blocking(move || {
+            probe_download_folder(&folder).map_err(|problem| t(problem).to_owned())?;
+            if let Err(error) = register_download_folder(&media, &folder) {
+                log.warn("R90600 the download folder could not be added to the Library", Some(&error));
+                return Err(tf(Str::ErrorGeneric, &[&"R90600"]));
+            }
+            if let Err(error) = settings.put_raw(DOWNLOAD_LOCATION_KEY, folder_uri(&folder)) {
+                log.warn(&format!("the download folder could not be saved: {error}"), None);
+            }
+            tokio::task::spawn_blocking(move || scan_download_folder(&media, &folder, &log));
+            Ok(())
+        })
+        .await
+    });
+    async move {
+        match assign.await {
+            Some(Ok(result)) => result,
+            _ => Err(tf(Str::ErrorGeneric, &[&"R90600"])),
+        }
+    }
+}
+
+/// The OS folder picker; a pick that can hold downloads becomes the download location (and a
+/// Library folder). None when canceled or refused, the reason shown in `window`.
+pub fn pick_download_folder(window: &mut Window, cx: &mut App) -> impl Future<Output = Option<PathBuf>> + use<> {
+    let pick = rfd::AsyncFileDialog::new().set_title(t(Str::FolderPickerTitle)).pick_folder();
+    let (handle, mut async_cx) = (window.window_handle(), cx.to_async());
+    async move {
+        let folder = pick.await?.path().to_path_buf();
+        let assign = async_cx.update(|cx| assign_download_folder(folder.clone(), cx));
+        match assign.await {
+            Ok(()) => Some(folder),
+            Err(problem) => {
+                let _ = async_cx.update_window(handle, |_, window, cx| window.push_notification(problem, cx));
+                None
+            }
+        }
+    }
+}
+
+/// Blocking: the download folder while it still exists as a Library folder that is not excluded.
+fn usable_folder(settings: &dyn SettingsStore, media: &MediaStore, log: &Logger) -> Option<PathBuf> {
+    let folder = download_folder(settings).filter(|folder| folder.is_dir())?;
+    match media.find_bucket_by_uri(&folder.to_string_lossy()) {
+        Ok(Some(bucket)) if !bucket.excluded => Some(folder),
+        Ok(_) => None,
+        Err(error) => {
+            log.warn("the download folder's Library entry could not be read", Some(&error));
+            None
+        }
+    }
+}
+
+/// The download folder while it is usable, else the picker first (a cancel gives none): the JVM
+/// app's start-time gate, so a removed or excluded Library folder is picked again.
+pub fn usable_download_folder(window: &mut Window, cx: &mut App) -> impl Future<Output = Option<PathBuf>> + use<> {
+    let graph = cx.global::<AppGraph>();
+    let (settings, media, log) = (graph.settings.clone(), graph.media.clone(), graph.log.fork("downloads"));
+    let check = on_core(cx, async move {
+        tokio::task::spawn_blocking(move || usable_folder(settings.as_ref(), &media, &log)).await
+    });
+    let (handle, mut async_cx) = (window.window_handle(), cx.to_async());
+    async move {
+        if let Some(Ok(Some(folder))) = check.await {
+            return Some(folder);
+        }
+        async_cx.update_window(handle, |_, window, cx| pick_download_folder(window, cx)).ok()?.await
     }
 }
 
@@ -209,24 +309,28 @@ pub fn offline_ids(cx: &App) -> impl Future<Output = HashSet<String>> + use<> {
     async move { load.await.unwrap_or_default() }
 }
 
-/// A file in a Library folder shows up there: that folder's next scan picks it up, so run it now.
+/// Files a finished download under its folder's Library bucket, probed like a scanned file; a
+/// folder outside the Library adds nothing (the JVM app's `registerCompletedDownload`).
 fn add_to_library(media: &MediaStore, file: &Path, log: &Logger) {
-    let roots = match media.root_buckets() {
-        Ok(roots) => roots,
+    let Some(folder) = file.parent() else { return };
+    let bucket = match media.find_bucket_by_uri(&folder.to_string_lossy()) {
+        Ok(Some(bucket)) if !bucket.excluded => bucket,
+        Ok(_) => {
+            log.info("a finished download is outside the Library folders");
+            return;
+        }
         Err(error) => {
-            log.warn("library folders could not be read for a finished download", Some(&error));
+            log.capture_error("registering a finished download in the library failed", &error);
             return;
         }
     };
-    let Some(root) = roots.iter().map(|bucket| PathBuf::from(&bucket.uri)).find(|root| file.starts_with(root)) else {
-        return;
-    };
-    match ym_store::scan_folder(media, &root, &AtomicBool::new(false)) {
-        Ok(report) if !report.errors.is_empty() => {
-            log.warn(&format!("library scan after a download: {} files failed", report.errors.len()), None)
+    match ym_store::scan_file(media, file, bucket.id) {
+        Ok(report) => {
+            for error in &report.errors {
+                log.warn(&format!("a finished download was not indexed: {}", error.message), None);
+            }
         }
-        Ok(_) => {}
-        Err(error) => log.warn("library scan after a download failed", Some(&error)),
+        Err(error) => log.capture_error("registering a finished download in the library failed", &error),
     }
 }
 

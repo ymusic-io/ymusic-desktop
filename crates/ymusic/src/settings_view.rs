@@ -16,7 +16,7 @@ use ym_settings::SettingsStore;
 
 use crate::accent::{ACCENT_KEY, AccentPicker, accent_color};
 use crate::caption_style::{CaptionLook, CaptionStyleDialog};
-use crate::downloads::{DOWNLOAD_LOCATION_KEY, download_folder};
+use crate::downloads::download_folder;
 use crate::feedback_view::link;
 use crate::graph::{AppGraph, on_core};
 use crate::settings_lists::{Licenses, RegionPicker};
@@ -267,14 +267,12 @@ impl SettingsView {
         cx.refresh_windows();
     }
 
-    fn choose_folder(&mut self, cx: &mut Context<Self>) {
-        let pick = rfd::AsyncFileDialog::new().set_title(t(Str::FolderPickerTitle)).pick_folder();
+    fn choose_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let pick = crate::downloads::pick_download_folder(window, cx);
         cx.spawn(async move |this, cx| {
-            let Some(folder) = pick.await else { return };
-            this.update(cx, |view, cx| {
-                view.put(DOWNLOAD_LOCATION_KEY, crate::downloads::folder_uri(folder.path()), cx);
-            })
-            .ok();
+            if pick.await.is_some() {
+                this.update(cx, |_, cx| cx.notify()).ok();
+            }
         })
         .detach();
     }
@@ -596,7 +594,7 @@ impl Render for SettingsView {
                 .small()
                 .ghost()
                 .label(t(Str::MenuDownloadLocation))
-                .on_click(cx.listener(|view, _, _, cx| view.choose_folder(cx))),
+                .on_click(cx.listener(|view, _, window, cx| view.choose_folder(window, cx))),
             cx,
         )];
         let downloads = downloads.into_iter().chain([row(
