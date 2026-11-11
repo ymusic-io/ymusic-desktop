@@ -26,6 +26,8 @@ const DPAPI_KEY_SECRET: &str = "cookie-key.dpapi";
 pub const ENGINE_CACHE_DIR: &str = "engine-cache";
 /// The engine HTTP client's disk cache, in OkHttp's format (the JVM app's folder).
 pub const HTTP_CACHE_DIR: &str = "http-cache";
+/// What a sign-out from the unlock screen forgets with the jar (the JVM app's `sessionCacheDirs`).
+const SESSION_CACHE_DIRS: [&str; 2] = [HTTP_CACHE_DIR, ENGINE_CACHE_DIR];
 /// The macOS Keychain item is bound to this app's signature, so a password adds nothing there.
 const KEY_IN_KEYCHAIN: bool = cfg!(target_os = "macos") && !cfg!(debug_assertions);
 
@@ -152,12 +154,14 @@ impl LockedJar {
         CookieSession::guest()
     }
 
-    /// Forgets the sealed sign-in and the cache made under it, then starts signed out. Blocking.
+    /// Forgets the sealed sign-in and the caches made under it, then starts signed out. Blocking.
     pub fn sign_out(&self) -> Result<CookieSession, CookieStoreError> {
         self.sealed.app_db.delete_secret(COOKIE_JAR_SECRET)?;
-        match std::fs::remove_dir_all(self.data_dir.join(ENGINE_CACHE_DIR)) {
-            Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error.into()),
-            _ => {}
+        for dir in SESSION_CACHE_DIRS {
+            match std::fs::remove_dir_all(self.data_dir.join(dir)) {
+                Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error.into()),
+                _ => {}
+            }
         }
         match self.user_key {
             Some(key) => {
