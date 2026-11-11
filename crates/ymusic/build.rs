@@ -24,6 +24,28 @@ fn main() {
             .unwrap_or_else(|| panic!("{constant} not found in {}", versions.display()));
         println!("cargo:rustc-env={variable}={value}");
     }
+    // The app's version continues the JVM desktop line: YMusicV4's ymusic.versionName and
+    // desktopVersionCode, which the update feed compares; YMUSIC_VERSION_NAME / YMUSIC_VERSION_CODE
+    // override them for a release that runs ahead of that checkout.
+    let gradle = v4.join("desktopApp/build.gradle.kts");
+    let properties = v4.join("gradle.properties");
+    for (variable, file, prefix) in [
+        ("YMUSIC_VERSION_CODE", &gradle, "val desktopVersionCode = "),
+        ("YMUSIC_VERSION_NAME", &properties, "ymusic.versionName="),
+    ] {
+        println!("cargo:rerun-if-env-changed={variable}");
+        println!("cargo:rerun-if-changed={}", file.display());
+        let value = std::env::var(variable).ok().filter(|value| !value.is_empty()).unwrap_or_else(|| {
+            let text = std::fs::read_to_string(file).unwrap_or_else(|_| panic!("{}", file.display()));
+            text.lines()
+                .find_map(|line| line.trim().strip_prefix(prefix).map(|value| value.trim().to_owned()))
+                .unwrap_or_else(|| panic!("{prefix} not found in {}", file.display()))
+        });
+        if variable == "YMUSIC_VERSION_CODE" {
+            value.parse::<i32>().unwrap_or_else(|_| panic!("{variable} is not a number: {value}"));
+        }
+        println!("cargo:rustc-env=YM_{}={value}", variable.trim_start_matches("YMUSIC_"));
+    }
     // Private release inputs; empty leaves the app on its embedded bundles and defaults. The
     // environment wins over the gitignored secret.properties at the workspace root.
     for variable in ["YMUSIC_REMOTE_CONFIG_URL", "YMUSIC_BUNDLE_PUBLIC_KEY", "YMUSIC_API_KEY", "YMUSIC_SENTRY_DSN"] {

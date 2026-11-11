@@ -122,7 +122,7 @@ impl FeedbackView {
         let graph = cx.global::<AppGraph>();
         Info {
             device_id: graph.settings.get_raw(DEVICE_ID_KEY).ok().flatten().unwrap_or_default(),
-            app: format!("rust {} ({})", env!("CARGO_PKG_VERSION"), crate::graph::APP_VERSION),
+            app: format!("rust {} ({})", crate::graph::APP_VERSION_NAME, crate::graph::APP_VERSION),
             engine: format!("{} / {}", graph.engines.backend_version(), graph.player_source.embedded().1),
             language: ym_i18n::current_locale().to_owned(),
         }

@@ -31,7 +31,7 @@ fn sentry_dsn() -> &'static str {
 fn telemetry_config(dsn: &str, settings: &dyn SettingsStore) -> TelemetryConfig {
     TelemetryConfig {
         dsn: dsn.to_owned(),
-        release: format!("ymusic-rust@{}", env!("CARGO_PKG_VERSION")),
+        release: format!("ymusic-rust@{}", crate::graph::APP_VERSION_NAME),
         environment: if cfg!(debug_assertions) { "debug".into() } else { "production".into() },
         device_id: settings.string(DEVICE_ID_KEY, "").unwrap_or_default(),
     }

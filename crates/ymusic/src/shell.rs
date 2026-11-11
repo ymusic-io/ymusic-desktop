@@ -1611,9 +1611,14 @@ impl Shell {
             .child(div().size(px(logo)).flex_shrink_0().child(
                 img(crate::assets::logo_path((logo * self.scale_factor).round() as u32)).size_full().rounded_full(),
             ))
-            .child(v_flex().min_w_0().child(div().font_semibold().child(t(Str::AppName))).child(
-                div().text_xs().text_color(theme.muted_foreground).child(format!("v{}", env!("CARGO_PKG_VERSION"))),
-            ))
+            .child(
+                v_flex().min_w_0().child(div().font_semibold().child(t(Str::AppName))).child(
+                    div()
+                        .text_xs()
+                        .text_color(theme.muted_foreground)
+                        .child(format!("v{}", crate::graph::APP_VERSION_NAME)),
+                ),
+            )
     }
 
     /// One section entry: an icon-only 48 square collapsed, else a full-width icon-and-label row whose

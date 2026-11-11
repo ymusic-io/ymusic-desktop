@@ -22,9 +22,10 @@ const ENGINE_JS: &str = include_str!(concat!(env!("YMUSIC_V4_DIR"), "/engine-js/
 const PLAYER_JS: &str = include_str!(concat!(env!("YMUSIC_V4_DIR"), "/engine-js/build/dist/player.js"));
 const ENGINE_JS_VERSION: &str = env!("YM_ENGINE_JS_VERSION");
 const PLAYER_JS_VERSION: &str = env!("YM_PLAYER_JS_VERSION");
-/// The desktop versionCode sequence the bundles gate compatibility on.
-pub const APP_VERSION: i32 = 96;
-const APP_VERSION_NAME: &str = env!("CARGO_PKG_VERSION");
+/// The JVM desktop app's versionCode line (build.rs): the update feed compares it, and the bundles
+/// gate compatibility on it.
+pub const APP_VERSION: i32 = version_code(env!("YM_VERSION_CODE"));
+pub const APP_VERSION_NAME: &str = env!("YM_VERSION_NAME");
 /// Shared with the JVM app: the anonymous id the config service counts devices by.
 const DEVICE_ID_KEY: &str = "telemetry.deviceId";
 /// A bundle in use refreshes a config older than this.
@@ -305,6 +306,15 @@ fn template_for(
         mse: None,
         main: None,
     }
+}
+
+const fn version_code(digits: &str) -> i32 {
+    let (bytes, mut value, mut index) = (digits.as_bytes(), 0, 0);
+    while index < bytes.len() {
+        value = value * 10 + (bytes[index] - b'0') as i32;
+        index += 1;
+    }
+    value
 }
 
 /// Opens app.db; blocking.

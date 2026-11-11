@@ -430,7 +430,7 @@ impl Render for SettingsView {
         let folder: Option<PathBuf> = download_folder(settings.as_ref());
         let versions = format!(
             "{} · {} · {}",
-            tf(Str::SettingsVersionsApp, &[&env!("CARGO_PKG_VERSION"), &crate::graph::APP_VERSION]),
+            tf(Str::SettingsVersionsApp, &[&crate::graph::APP_VERSION_NAME, &crate::graph::APP_VERSION]),
             tf(Str::SettingsVersionsEngine, &[&graph.engines.backend_version()]),
             tf(Str::SettingsVersionsPlayer, &[&graph.player_source.embedded().1]),
         );
