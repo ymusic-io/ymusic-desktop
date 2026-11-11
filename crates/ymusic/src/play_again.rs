@@ -11,6 +11,7 @@ use gpui_kit::*;
 use ym_history::{PlayAgainSession, PlayHistory};
 use ym_i18n::{Str, t, tf};
 
+use crate::a11y::{FocusList, Layout};
 use crate::graph::{AppGraph, on_core};
 use crate::mini_player::clock;
 use crate::play_history::decode_items;
@@ -29,13 +30,21 @@ pub struct PlayAgainView {
     sessions: Vec<PlayAgainSession>,
     error: Option<String>,
     scroll: ScrollHandle,
+    focus: FocusList,
 }
 
 impl EventEmitter<ResumeQueue> for PlayAgainView {}
 
 impl PlayAgainView {
     pub fn new(history: Arc<PlayHistory>, cx: &mut Context<Self>) -> Self {
-        let mut view = Self { history, sessions: Vec::new(), error: None, scroll: ScrollHandle::new() };
+        let scroll = ScrollHandle::new();
+        let mut view = Self {
+            history,
+            sessions: Vec::new(),
+            error: None,
+            scroll: scroll.clone(),
+            focus: FocusList::new(Some(scroll)),
+        };
         view.refresh(cx);
         view
     }
@@ -195,10 +204,12 @@ impl PlayAgainView {
             });
         let target = session.clone();
         let strip_width = card_width - 16. - 4. - 8. - 8. - RESUME_PILL;
-        v_flex()
+        let base = v_flex()
             .id(("play-again", position))
             .role(Role::ListItem)
-            .aria_label(format!("{}, {detail}", session.title))
+            .aria_label(format!("{}, {detail}", session.title));
+        self.focus
+            .item(position, base, cx)
             .rounded(px(6.))
             .border_1()
             .border_color(theme.border)
@@ -300,6 +311,7 @@ impl Render for PlayAgainView {
             }
             grid = grid.child(cells);
         }
+        let grid = self.focus.container(grid, 0..sessions.len(), Layout::Grid(columns), cx);
         div()
             .id("play-again-scroll")
             .size_full()

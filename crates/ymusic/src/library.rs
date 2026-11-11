@@ -16,6 +16,7 @@ use gpui_kit::*;
 use ym_i18n::{Str, t, tf};
 use ym_store::{Bucket, MediaItem, MediaStore};
 
+use crate::a11y::{FocusList, KeyboardFocusable, Layout};
 use crate::graph::{AppGraph, on_core};
 use crate::mini_player::clock;
 use crate::playback::QueueItem;
@@ -122,6 +123,8 @@ pub struct LibraryView {
     scanning: bool,
     summary: Option<String>,
     scroll: ScrollHandle,
+    card_focus: FocusList,
+    song_focus: FocusList,
     song_sort: (SongKey, bool),
     group_sort: (GroupKey, bool),
 }
@@ -132,6 +135,7 @@ impl EventEmitter<QueueLocal> for LibraryView {}
 impl LibraryView {
     pub fn new(store: Arc<MediaStore>, cx: &mut Context<Self>) -> Self {
         let history = cx.global::<AppGraph>().history.clone();
+        let scroll = ScrollHandle::new();
         let mut view = Self {
             store,
             history,
@@ -144,7 +148,9 @@ impl LibraryView {
             items: Vec::new(),
             scanning: false,
             summary: None,
-            scroll: ScrollHandle::new(),
+            scroll: scroll.clone(),
+            card_focus: FocusList::new(Some(scroll.clone())),
+            song_focus: FocusList::new(Some(scroll)),
             song_sort: (SongKey::Name, true),
             group_sort: (GroupKey::Name, true),
         };
@@ -542,11 +548,8 @@ impl LibraryView {
                 .separator()
                 .item(PopupMenuItem::new(reveal_label()).on_click(move |_, _, cx| cx.reveal_path(&path)))
             });
-        h_flex()
-            .id(("local-item", index))
-            .role(Role::ListItem)
-            .aria_label(label)
-            .tab_stop(true)
+        self.song_focus
+            .item(index, h_flex().id(("local-item", index)).role(Role::ListItem).aria_label(label), cx)
             .pl_4()
             .pr_1()
             .py_2()
@@ -587,7 +590,6 @@ impl LibraryView {
             .id(id)
             .role(Role::ListItem)
             .aria_label(label)
-            .tab_stop(true)
             .cursor_pointer()
             .rounded(px(10.))
             .hover(|style| style.bg(theme.secondary))
@@ -720,7 +722,7 @@ impl LibraryView {
                         .id("crumb-root")
                         .role(Role::Link)
                         .aria_label(t(Str::LibraryCrumbRoot))
-                        .tab_stop(true)
+                        .keyboard_focusable(theme.ring)
                         .px_1()
                         .rounded(px(6.))
                         .cursor_pointer()
@@ -741,7 +743,7 @@ impl LibraryView {
                             .id(("crumb", depth))
                             .role(Role::Link)
                             .aria_label(name.clone())
-                            .tab_stop(true)
+                            .keyboard_focusable(theme.ring)
                             .px_1()
                             .rounded(px(6.))
                             .cursor_pointer()
@@ -761,7 +763,7 @@ impl LibraryView {
                         .id("group-back")
                         .role(Role::Link)
                         .aria_label(self.tab.label())
-                        .tab_stop(true)
+                        .keyboard_focusable(theme.ring)
                         .px_1()
                         .rounded(px(6.))
                         .cursor_pointer()
@@ -864,7 +866,7 @@ impl Render for LibraryView {
                 .relative()
                 .child(div().absolute().top(px(8.)).right(px(if grid { 8. } else { 4. })).child(more))
                 .on_click(cx.listener(move |view, _, _, cx| view.open_folder(bucket.clone(), cx)));
-                cards.push(card.into_any_element());
+                cards.push(self.card_focus.item(index, card, cx).into_any_element());
             }
         }
         if self.group.is_none() && matches!(self.tab, Tab::Artists | Tab::Albums | Tab::Genres) {
@@ -882,7 +884,7 @@ impl Render for LibraryView {
                         cx.notify();
                     }),
                 );
-                cards.push(card.into_any_element());
+                cards.push(self.card_focus.item(index, card, cx).into_any_element());
             }
         }
         let shown = self.shown_items();
@@ -895,11 +897,20 @@ impl Render for LibraryView {
             body = body.child(div().px_4().pb_2().text_sm().text_color(theme.muted_foreground).child(summary));
         }
         let empty = cards.is_empty() && songs.is_empty();
-        if grid {
-            body = body.children(grid_rows(cards, card_columns)).children(grid_rows(songs, song_columns));
+        let (card_count, song_count) = (cards.len(), songs.len());
+        let (card_layout, song_layout) = if grid {
+            (Layout::Grid(card_columns), Layout::Grid(song_columns))
         } else {
-            body = body.children(cards).children(songs);
-        }
+            (Layout::Vertical, Layout::Vertical)
+        };
+        let (card_block, song_block) = if grid {
+            (v_flex().children(grid_rows(cards, card_columns)), v_flex().children(grid_rows(songs, song_columns)))
+        } else {
+            (v_flex().children(cards), v_flex().children(songs))
+        };
+        body = body
+            .child(self.card_focus.container(card_block, 0..card_count, card_layout, cx))
+            .child(self.song_focus.container(song_block, 0..song_count, song_layout, cx));
         if empty {
             let message = t(match self.tab {
                 Tab::Folders => Str::LibraryEmptyFolder,

@@ -7,6 +7,7 @@ use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use ym_i18n::{Str, t, tf};
 
+use crate::a11y::KeyboardFocusable;
 use crate::graph::AppGraph;
 
 const FEEDBACK_EMAIL: &str = "feedback@ymusic.io";
@@ -108,7 +109,7 @@ impl Render for FeedbackView {
                 .id(id)
                 .role(Role::Link)
                 .aria_label(title.clone())
-                .tab_stop(true)
+                .keyboard_focusable(theme.ring)
                 .gap_4()
                 .px_4()
                 .py_3()

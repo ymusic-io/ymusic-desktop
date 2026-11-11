@@ -14,6 +14,7 @@ use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use ym_i18n::{Str, t, tf};
 
+use crate::a11y::{FocusList, Layout, focusable};
 use crate::download_dialog::{DownloadPicker, DownloadTarget};
 use crate::downloads_view::DownloadsView;
 use crate::feed::{FeedAction, FeedSource, FeedView, ItemAction, Navigate, Play};
@@ -240,6 +241,8 @@ pub struct Shell {
     drawer_open: bool,
     /// Holds keyboard focus when nothing else does, so the shortcuts always reach the Shell.
     focus: FocusHandle,
+    nav_focus: FocusList,
+    tab_focus: FocusList,
     /// The last Esc that had nothing to close; a second one soon after goes back.
     idle_escape_at: Option<Instant>,
     playback: Entity<Playback>,
@@ -316,6 +319,8 @@ impl Shell {
             rail_auto: None,
             drawer_open: false,
             focus: cx.focus_handle(),
+            nav_focus: FocusList::new(None),
+            tab_focus: FocusList::new(None),
             idle_escape_at: None,
             _subscriptions: vec![toggle, now_playing_events, visibility],
         }
@@ -945,7 +950,6 @@ impl Shell {
                 .role(Role::Tab)
                 .aria_label(tab.label())
                 .aria_selected(selected)
-                .tab_stop(true)
                 .h(px(44.))
                 .flex()
                 .items_center()
@@ -963,9 +967,10 @@ impl Shell {
                     persist_setting(cx, LAST_DISCOVER_TAB_KEY, tab.id().to_string());
                     cx.notify();
                 }));
+            let cell = self.tab_focus.item(index, cell, cx);
             row = row.child(if inline { cell.w(px(88.)) } else { cell.flex_1() });
         }
-        row.into_any_element()
+        self.tab_focus.container(row, 0..DiscoverTab::ALL.len(), Layout::Horizontal, cx).into_any_element()
     }
 
     /// YT Music's text tabs with a sliding underline, pinned under the section bar.
@@ -1034,12 +1039,13 @@ impl Shell {
             .role(Role::Tab)
             .aria_label(section.label())
             .aria_selected(selected)
-            .tab_stop(true)
             .cursor_pointer()
             .relative()
             .when(selected, |entry| entry.bg(theme.secondary))
             .hover(|style| style.bg(theme.secondary))
             .on_click(cx.listener(move |shell, _, _, cx| shell.select_section(section, cx)));
+        let position = Section::GROUPS.iter().flat_map(|group| group.iter()).position(|entry| *entry == section);
+        let entry = self.nav_focus.item(position.unwrap_or(0), entry, cx);
         let tint = if selected { theme.primary } else { theme.foreground };
         if !labelled {
             return entry
@@ -1102,6 +1108,8 @@ impl Shell {
                 list = list.child(self.section_entry(section, labelled, icon_start, cx));
             }
         }
+        let count = Section::GROUPS.iter().map(|group| group.len()).sum();
+        let list = self.nav_focus.container(list, 0..count, Layout::Vertical, cx);
         list.into_any_element()
     }
 
@@ -1123,11 +1131,7 @@ impl Shell {
             .when(expanded, |header| header.pr_4().child(self.brand(24., cx)))
             .into_any_element();
         let website = expanded.then(|| {
-            div()
-                .id("website")
-                .role(Role::Link)
-                .aria_label("ymusic.io")
-                .tab_stop(true)
+            focusable(div().id("website").role(Role::Link).aria_label("ymusic.io"), cx)
                 .ml(px(RAIL_ICON_START - 4.))
                 .p_1()
                 .text_xs()

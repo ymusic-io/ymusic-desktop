@@ -9,6 +9,7 @@ use gpui_kit::component::{ActiveTheme, Icon, IconName, Sizable, h_flex, v_flex};
 use gpui_kit::*;
 use ym_i18n::{Str, t};
 
+use crate::a11y::{FocusList, Layout};
 use crate::graph::{AppGraph, on_core};
 
 const SUGGEST_DEBOUNCE: Duration = Duration::from_millis(250);
@@ -22,6 +23,7 @@ pub struct SearchView {
     input: Entity<InputState>,
     suggestions: Vec<String>,
     generation: u64,
+    focus: FocusList,
     _subscription: Subscription,
 }
 
@@ -40,7 +42,13 @@ impl SearchView {
             InputEvent::PressEnter { .. } => view.submit(input.read(cx).value().to_string(), cx),
             _ => {}
         });
-        let mut view = Self { input, suggestions: Vec::new(), generation: 0, _subscription: subscription };
+        let mut view = Self {
+            input,
+            suggestions: Vec::new(),
+            generation: 0,
+            focus: FocusList::new(None),
+            _subscription: subscription,
+        };
         view.query_changed(query.to_owned(), cx);
         view
     }
@@ -107,11 +115,12 @@ impl Render for SearchView {
         for (index, suggestion) in self.suggestions.iter().take(12).enumerate() {
             let (submitted, inserted) = (suggestion.clone(), suggestion.clone());
             rows = rows.child(
-                h_flex()
-                    .id(("suggestion", index))
-                    .role(Role::ListItem)
-                    .aria_label(suggestion.clone())
-                    .tab_stop(true)
+                self.focus
+                    .item(
+                        index,
+                        h_flex().id(("suggestion", index)).role(Role::ListItem).aria_label(suggestion.clone()),
+                        cx,
+                    )
                     .gap_4()
                     .pl_4()
                     .pr_2()
@@ -134,6 +143,8 @@ impl Render for SearchView {
                     .on_click(cx.listener(move |view, _, _, cx| view.submit(submitted.clone(), cx))),
             );
         }
+        let shown = self.suggestions.len().min(12);
+        let rows = self.focus.container(rows, 0..shown, Layout::Vertical, cx);
         v_flex().size_full().child(bar).child(div().id("suggestions").flex_1().overflow_y_scroll().child(rows))
     }
 }

@@ -17,6 +17,7 @@ use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use ym_i18n::{Str, t, tf};
 
+use crate::a11y::{FocusList, KeyboardFocusable, Layout};
 use crate::download_dialog::DownloadTarget;
 use crate::mini_player::clock;
 use crate::playback::{PlayState, Playback, QueueItem};
@@ -39,6 +40,7 @@ pub struct NowPlaying {
     playback: Entity<Playback>,
     sponsor_block: Entity<SponsorBlock>,
     queue_scroll: ScrollHandle,
+    queue_focus: FocusList,
     video_layer: Option<Rc<VideoLayer>>,
     /// The video box as last painted, to report viewport changes to the player.
     video_box: Rc<Cell<(i32, i32)>>,
@@ -109,10 +111,12 @@ impl NowPlaying {
                 }
             }
         });
+        let queue_scroll = ScrollHandle::new();
         Self {
             playback,
             sponsor_block,
-            queue_scroll: ScrollHandle::new(),
+            queue_scroll: queue_scroll.clone(),
+            queue_focus: FocusList::new(Some(queue_scroll)),
             video_layer: None,
             video_box: Rc::new(Cell::new((0, 0))),
             reported_box: (0, 0),
@@ -161,7 +165,7 @@ impl NowPlaying {
             .id("np-play")
             .role(Role::Button)
             .aria_label(label)
-            .tab_stop(true)
+            .keyboard_focusable(theme.ring)
             .size(px(PLAY_BUTTON))
             .flex_shrink_0()
             .rounded_full()
@@ -498,13 +502,11 @@ impl NowPlaying {
                             remove.update(cx, |playback, cx| playback.remove_at(position, cx))
                         }))
                     });
+            let row =
+                h_flex().id(("np-queue-item", position)).role(Role::ListItem).aria_label(label).aria_selected(active);
             list = list.child(
-                h_flex()
-                    .id(("np-queue-item", position))
-                    .role(Role::ListItem)
-                    .aria_label(label)
-                    .aria_selected(active)
-                    .tab_stop(true)
+                self.queue_focus
+                    .item(position, row, cx)
                     .px_4()
                     .py(px(if large { 10. } else { 8. }))
                     .gap(px(if large { 12. } else { 8. }))
@@ -545,6 +547,7 @@ impl NowPlaying {
                     })),
             );
         }
+        let list = self.queue_focus.container(list, 0..queue.len(), Layout::Vertical, cx);
         div()
             .id("np-queue")
             .flex_1()

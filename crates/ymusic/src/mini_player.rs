@@ -11,6 +11,7 @@ use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use ym_i18n::{Str, t, tf};
 
+use crate::a11y::KeyboardFocusable;
 use crate::playback::{PlayState, Playback, QueueItem};
 use crate::queue_nav::LoopMode;
 
@@ -165,7 +166,7 @@ impl MiniPlayer {
             .id("play-pause")
             .role(Role::Button)
             .aria_label(Self::play_label(state))
-            .tab_stop(true)
+            .keyboard_focusable(theme.ring)
             .size(px(BAR_PLAY))
             .flex_shrink_0()
             .rounded_full()
@@ -212,7 +213,7 @@ impl MiniPlayer {
         let info = h_flex()
             .id("now-playing-toggle")
             .role(Role::Button)
-            .tab_stop(true)
+            .keyboard_focusable(theme.ring)
             .aria_label(Self::now_playing_label(&item))
             .w(px(info_width))
             .flex_shrink_0()
@@ -382,7 +383,7 @@ impl MiniPlayer {
         h_flex()
             .id("now-playing-toggle")
             .role(Role::Button)
-            .tab_stop(true)
+            .keyboard_focusable(theme.ring)
             .aria_label(Self::now_playing_label(&item))
             .w_full()
             .h(px(56.))

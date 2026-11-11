@@ -17,6 +17,7 @@ use ym_engine::yt::{YtFeedItem, YtFeedPage, YtPageHeader, YtSectionHeader, YtThu
 use ym_engine::{DynamicEngine, EngineError, ErrorKind};
 use ym_i18n::{Str, t, tf};
 
+use crate::a11y::{FocusList, Layout, focusable};
 use crate::graph::{AppGraph, on_core};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -172,6 +173,8 @@ pub struct FeedView {
     expanded: std::collections::HashSet<usize>,
     /// A header action (save, subscribe) is running.
     header_busy: bool,
+    /// Every item's focus stop, by its index across all sections.
+    focus: FocusList,
 }
 
 /// Which page header a detail page shows.
@@ -192,6 +195,7 @@ impl EventEmitter<ItemAction> for FeedView {}
 
 impl FeedView {
     pub fn new(source: FeedSource, title: Option<SharedString>, cx: &mut Context<Self>) -> Self {
+        let scroll = ScrollHandle::new();
         let mut view = Self {
             source,
             title,
@@ -200,9 +204,10 @@ impl FeedView {
             loading_more: false,
             more_failed: None,
             generation: 0,
-            scroll: ScrollHandle::new(),
+            scroll: scroll.clone(),
             expanded: std::collections::HashSet::new(),
             header_busy: false,
+            focus: FocusList::new(Some(scroll)),
         };
         view.reload(cx);
         view
@@ -529,11 +534,7 @@ impl FeedView {
                 }),
         );
         actions = actions.child(div().flex_1()).child(
-            div()
-                .id("playlist-shuffle")
-                .role(Role::Button)
-                .aria_label(t(Str::ShuffleAll))
-                .tab_stop(true)
+            focusable(div().id("playlist-shuffle").role(Role::Button).aria_label(t(Str::ShuffleAll)), cx)
                 .size(px(46.))
                 .flex_shrink_0()
                 .rounded_full()
@@ -834,11 +835,10 @@ impl FeedView {
     ) -> Stateful<Div> {
         let clicked = item.clone();
         let theme = cx.theme();
-        div()
+        let element = div()
             .id(id)
             .role(Role::Button)
             .aria_label(item_label(item))
-            .tab_stop(true)
             .cursor_pointer()
             .rounded(px(12.))
             .hover(|style| style.bg(theme.secondary))
@@ -846,7 +846,8 @@ impl FeedView {
                 let queue =
                     queue.as_ref().map(|items| items.iter().filter(|item| item.kind == "video").cloned().collect());
                 view.open_item(&clicked, queue, cx)
-            }))
+            }));
+        self.focus.item(id.1, element, cx)
     }
 
     /// A grid card: 16:9 thumbnail on top, title and subtitle below with the ⋮ menu beside them;
@@ -1162,6 +1163,8 @@ impl FeedView {
                             ),
                     );
                 }
+                let row =
+                    self.focus.container(row, first_item..first_item + section.items.len(), Layout::Horizontal, cx);
                 return block
                     .child(div().id(("carousel-scroll", section_index)).overflow_x_scroll().child(row))
                     .into_any_element();
@@ -1178,6 +1181,8 @@ impl FeedView {
         let limit = bands.columns * rows;
         let shown = if section.collapsible && !expanded { limit.min(section.items.len()) } else { section.items.len() };
         let items = &section.items[..shown];
+        let layout = if bands.columns == 1 { Layout::Vertical } else { Layout::Grid(bands.columns) };
+        block = self.focus.container(block, first_item..first_item + shown, layout, cx);
         if bands.columns == 1 {
             for (offset, item) in items.iter().enumerate() {
                 block = block.child(self.render_row(item, first_item + offset, bands, queue.clone(), cx));

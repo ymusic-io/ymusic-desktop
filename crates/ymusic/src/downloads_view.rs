@@ -15,6 +15,7 @@ use gpui_kit::*;
 use ym_download::{DownloadChange, DownloadService, DownloadState, DownloadTask, TaskError};
 use ym_i18n::{Str, t, tf};
 
+use crate::a11y::{FocusList, Layout};
 use crate::graph::{AppGraph, on_core};
 use crate::library::PlayLocal;
 use crate::playback::{QueueItem, Source};
@@ -74,6 +75,7 @@ pub struct DownloadsView {
     tasks: Vec<DownloadTask>,
     filter: Filter,
     scroll: ScrollHandle,
+    focus: FocusList,
     _changes: Task<()>,
 }
 
@@ -104,8 +106,15 @@ impl DownloadsView {
                 }
             }
         });
-        let mut view =
-            Self { service, tasks: Vec::new(), filter: Filter::All, scroll: ScrollHandle::new(), _changes: changes };
+        let scroll = ScrollHandle::new();
+        let mut view = Self {
+            service,
+            tasks: Vec::new(),
+            filter: Filter::All,
+            scroll: scroll.clone(),
+            focus: FocusList::new(Some(scroll)),
+            _changes: changes,
+        };
         view.refresh(cx);
         view
     }
@@ -396,10 +405,8 @@ impl DownloadsView {
         };
         let label =
             [task.title.clone(), status.to_owned()].into_iter().chain(percent.clone()).collect::<Vec<_>>().join(", ");
-        v_flex()
-            .id(("download", row))
-            .role(Role::ListItem)
-            .aria_label(label)
+        self.focus
+            .item(row, v_flex().id(("download", row)).role(Role::ListItem).aria_label(label), cx)
             .rounded(px(6.))
             .border_1()
             .border_color(theme.border)
@@ -513,6 +520,7 @@ impl Render for DownloadsView {
         let width = crate::feed::feed_width(window);
         let columns = ((width - 32. + 16.) / (CARD_MIN + 16.)).floor().max(1.) as usize;
         let mut grid = v_flex().w_full().px_4().pt_2().pb(px(88.)).gap(px(12.)).child(chips);
+        let mut cards = v_flex().w_full().gap(px(12.));
         if visible.is_empty() {
             grid = grid
                 .child(div().py_16().flex().justify_center().text_color(theme.muted_foreground).child(filter.empty()));
@@ -525,8 +533,9 @@ impl Render for DownloadsView {
             for _ in row.len()..columns {
                 cells = cells.child(div().flex_1());
             }
-            grid = grid.child(cells);
+            cards = cards.child(cells);
         }
+        let grid = grid.child(self.focus.container(cards, 0..visible.len(), Layout::Grid(columns), cx));
         let fab = if any_active {
             Some((t(Str::DownloadsPauseAll), Lucide::Pause, true))
         } else if any_paused {
