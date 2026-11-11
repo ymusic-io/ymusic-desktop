@@ -454,13 +454,15 @@ impl Shell {
     /// Debug builds only: `YMUSIC_DEV_ROUTE` opens a surface at start (`trending`, `music`,
     /// `search:<query>`, `open:<app link>`, `musictab:<n>`, `play:<youtube url>`, `nowplaying:<url>`, `library:<dir>`, `localplay:<dir>`, `details:<videoId>`, `addtoplaylist:<videoId>`, `signin-paste:<file>`, `devicelink`, `signout`,
     /// `download:<FORMAT>:<videoId>` into `YMUSIC_DEV_DOWNLOAD_DIR` or the chosen folder), for
-    /// screenshots and checks without driving the UI. `YMUSIC_DEV_CAPTIONS` turns captions on, `YMUSIC_DEV_QUALITY=<token>` picks a quality.
+    /// screenshots and checks without driving the UI. `YMUSIC_DEV_CAPTIONS=1|<vssId>` turns captions on (with that track), `YMUSIC_DEV_QUALITY=<token>` picks a quality.
     pub fn apply_dev_route(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !cfg!(debug_assertions) {
             return;
         }
-        if std::env::var_os("YMUSIC_DEV_CAPTIONS").is_some() {
-            self.playback.update(cx, |playback, cx| playback.set_captions(true, cx));
+        match std::env::var("YMUSIC_DEV_CAPTIONS").ok().filter(|value| !value.is_empty()) {
+            Some(track) if track != "1" => self.playback.update(cx, |playback, cx| playback.select_caption(track, cx)),
+            Some(_) => self.playback.update(cx, |playback, cx| playback.set_captions(true, cx)),
+            None => {}
         }
         if let Ok(quality) = std::env::var("YMUSIC_DEV_QUALITY") {
             self.playback.update(cx, |playback, cx| playback.set_quality(quality, cx));

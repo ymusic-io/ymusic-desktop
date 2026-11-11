@@ -20,6 +20,8 @@ const MAJOR_WEIGHT: f32 = 13.;
 
 struct Slot {
     handle: FocusHandle,
+    /// Arrows move between stops of one group: 0 is the window, a dialog has its own.
+    group: u64,
     was_focused: Cell<bool>,
     /// Window bounds as last painted, and the frame that painted it.
     bounds: Cell<Bounds<Pixels>>,
@@ -31,6 +33,7 @@ struct Slot {
 pub struct RovingItems {
     slots: RefCell<Vec<Weak<Slot>>>,
     frame: Cell<u64>,
+    last_group: Cell<u64>,
 }
 
 impl Global for RovingItems {}
@@ -107,7 +110,7 @@ fn step(direction: Direction, window: &mut Window, cx: &mut App) -> bool {
     let from = current.bounds.get();
     let best = slots
         .iter()
-        .filter(|slot| !Rc::ptr_eq(slot, current))
+        .filter(|slot| !Rc::ptr_eq(slot, current) && slot.group == current.group)
         .filter_map(|slot| rank(from, slot.bounds.get(), direction).map(|rank| (rank, slot)))
         .min_by(|(left, _), (right, _)| left.partial_cmp(right).unwrap_or(std::cmp::Ordering::Equal));
     let Some((_, target)) = best else { return false };
@@ -140,12 +143,20 @@ fn on_arrows<E: InteractiveElement>(element: E) -> E {
 pub struct FocusList {
     slots: RefCell<Vec<Rc<Slot>>>,
     scroll: Option<ScrollHandle>,
+    group: u64,
 }
 
 impl FocusList {
     /// `scroll` is the scroll container the items live in, to reveal a focused item.
     pub fn new(scroll: Option<ScrollHandle>) -> Self {
-        Self { slots: RefCell::default(), scroll }
+        Self { slots: RefCell::default(), scroll, group: 0 }
+    }
+
+    /// A dialog's stops: arrows stay among them, never reaching the window behind.
+    pub fn modal(scroll: Option<ScrollHandle>, cx: &App) -> Self {
+        let items = cx.global::<RovingItems>();
+        items.last_group.set(items.last_group.get() + 1);
+        Self { slots: RefCell::default(), scroll, group: items.last_group.get() }
     }
 
     fn slot(&self, index: usize, cx: &App) -> Rc<Slot> {
@@ -153,6 +164,7 @@ impl FocusList {
         while slots.len() <= index {
             let slot = Rc::new(Slot {
                 handle: cx.focus_handle().tab_stop(true),
+                group: self.group,
                 was_focused: Cell::new(false),
                 bounds: Cell::new(Bounds::default()),
                 painted: Cell::new(0),
