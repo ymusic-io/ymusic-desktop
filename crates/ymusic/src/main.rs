@@ -225,8 +225,9 @@ fn main() {
             window_bounds: Some(window_bounds),
             titlebar: Some(TitlebarOptions { title: Some(t(Str::AppName).into()), ..Default::default() }),
             // Debug dev-route runs float, so a window launched from a terminal still draws frames
-            // (a covered window gets none) for screenshots.
+            // (a covered window gets none on macOS and Wayland) for screenshots.
             kind: if cfg!(debug_assertions)
+                && !cfg!(target_os = "windows")
                 && std::env::var_os("YMUSIC_DEV_ROUTE").is_some()
                 && std::env::var_os("YMUSIC_DEV_A11Y_DUMP").is_none()
             {
@@ -235,8 +236,13 @@ fn main() {
                 WindowKind::Normal
             },
             // The video view sits behind gpui's, so the window and Root stay unpainted and the
-            // Shell paints everything but the video box.
-            window_background: WindowBackgroundAppearance::Transparent,
+            // Shell paints everything but the video box. Windows paints its video in gpui, and its
+            // transparent mode (an accent policy) would blacken the native caption.
+            window_background: if cfg!(target_os = "windows") {
+                WindowBackgroundAppearance::Opaque
+            } else {
+                WindowBackgroundAppearance::Transparent
+            },
             app_id: Some(crate::desktop::APP_ID.into()),
             icon: window_icon,
             ..Default::default()
@@ -248,7 +254,13 @@ fn main() {
                 Some((locked, inputs, log_setup)) => Launch::locked(locked, inputs, log_setup, window, cx),
                 None => Launch::shell(window, cx),
             });
-            cx.new(|cx| gpui_kit::base::Root::new(launch, window, cx).bg(transparent_black()))
+            // An opaque Windows window clears to white wherever nothing paints.
+            let ground = if cfg!(target_os = "windows") {
+                gpui_kit::component::ActiveTheme::theme(cx).background
+            } else {
+                transparent_black()
+            };
+            cx.new(|cx| gpui_kit::base::Root::new(launch, window, cx).bg(ground))
         })
         .expect("open main window");
         cx.activate(true);
