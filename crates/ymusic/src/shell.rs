@@ -452,7 +452,7 @@ impl Shell {
     }
 
     /// Debug builds only: `YMUSIC_DEV_ROUTE` opens a surface at start (`trending`, `music`,
-    /// `search:<query>`, `open:<app link>`, `musictab:<n>`, `play:<youtube url>`, `nowplaying:<url>`, `library:<dir>`, `localplay:<dir>`, `details:<videoId>`, `signin-paste:<file>`, `devicelink`, `signout`,
+    /// `search:<query>`, `open:<app link>`, `musictab:<n>`, `play:<youtube url>`, `nowplaying:<url>`, `library:<dir>`, `localplay:<dir>`, `details:<videoId>`, `addtoplaylist:<videoId>`, `signin-paste:<file>`, `devicelink`, `signout`,
     /// `download:<FORMAT>:<videoId>` into `YMUSIC_DEV_DOWNLOAD_DIR` or the chosen folder), for
     /// screenshots and checks without driving the UI. `YMUSIC_DEV_CAPTIONS` turns captions on, `YMUSIC_DEV_QUALITY=<token>` picks a quality.
     pub fn apply_dev_route(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -579,6 +579,10 @@ impl Shell {
             }
             _ if route == "trending" => self.discover_tab = DiscoverTab::Trending,
             Some(("details", video_id)) => self.pending_details = Some(video_id.to_owned()),
+            Some(("addtoplaylist", video_id)) => {
+                let video_id = video_id.to_owned();
+                window.defer(cx, move |window, cx| crate::yt_playlist::AddToPlaylist::open(video_id, window, cx));
+            }
             Some(("discovertab", index)) => {
                 self.section = Section::Discover;
                 self.discover_tab = DiscoverTab::ALL[index.parse::<usize>().unwrap_or(0).min(4)];

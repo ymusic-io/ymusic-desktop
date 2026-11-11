@@ -35,6 +35,7 @@ mod telemetry;
 mod video_details;
 mod video_layer;
 mod youtube_session;
+mod yt_playlist;
 
 use gpui_kit::*;
 use ym_common::http::HttpClients;

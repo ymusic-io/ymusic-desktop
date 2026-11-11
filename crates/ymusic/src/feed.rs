@@ -855,6 +855,10 @@ impl FeedView {
                     if !target.live {
                         actions.push((Str::DownloadTitle, MenuAction::Feed(FeedAction::Download)));
                     }
+                    actions.push((Str::CdAddToPlaylist, MenuAction::AddToPlaylist));
+                }
+                if target.remove_token.is_some() {
+                    actions.push((Str::MenuRemoveFromPlaylist, MenuAction::RemoveFromPlaylist));
                 }
                 if share_link(&target).is_some() {
                     actions.push((Str::CdShare, MenuAction::Share));
@@ -874,6 +878,32 @@ impl FeedView {
             .into_any_element()
     }
 
+    /// Takes the item off the viewer's own playlist, then off this page.
+    fn remove_from_playlist(&mut self, item: YtFeedItem, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(token) = item.remove_token.clone() else { return };
+        let graph = cx.global::<AppGraph>();
+        let (engine, log) = (graph.engine(), graph.log.fork("yt-playlist"));
+        let request = on_core(cx, async move { engine.remove_from_playlist(&token, &log).await });
+        cx.spawn_in(window, async move |this, cx| {
+            let result = request.await;
+            this.update_in(cx, |view, window, cx| {
+                match result {
+                    Some(Ok(())) => {
+                        for section in &mut view.page.sections {
+                            section.items.retain(|kept| kept.remove_token != item.remove_token);
+                        }
+                        window.push_notification(t(Str::YtPlaylistRemovedVideo), cx);
+                    }
+                    Some(Err(error)) => window.push_notification(error_text(&error), cx),
+                    None => {}
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     fn menu_action(&mut self, item: YtFeedItem, action: MenuAction, window: &mut Window, cx: &mut Context<Self>) {
         match action {
             MenuAction::PlaySingle => cx.emit(Play { item: item.clone(), queue: Some(vec![item]), shuffle: false }),
@@ -884,6 +914,8 @@ impl FeedView {
                     window.push_notification(t(Str::LinkCopied), cx);
                 }
             }
+            MenuAction::AddToPlaylist => crate::yt_playlist::AddToPlaylist::open(item.id, window, cx),
+            MenuAction::RemoveFromPlaylist => self.remove_from_playlist(item, window, cx),
             MenuAction::RemoveFromTop => {
                 let history = cx.global::<AppGraph>().history.clone();
                 let id = item.id.clone();
@@ -1311,6 +1343,8 @@ enum MenuAction {
     Feed(FeedAction),
     Share,
     RemoveFromTop,
+    AddToPlaylist,
+    RemoveFromPlaylist,
 }
 
 fn share_link(item: &YtFeedItem) -> Option<String> {

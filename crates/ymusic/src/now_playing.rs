@@ -575,6 +575,7 @@ impl NowPlaying {
 
         let view = cx.entity().downgrade();
         let more_target = target.clone();
+        let queue_playback = self.playback.clone();
         let more = icon_button("np-more", IconName::EllipsisVertical, t(Str::CdMore)).dropdown_menu_with_anchor(
             Anchor::TopRight,
             move |mut menu, _, _| {
@@ -582,6 +583,10 @@ impl NowPlaying {
                     let (details, video_id) = (view.clone(), target.video_id.clone());
                     menu = menu.item(PopupMenuItem::new(t(Str::MenuDetailsComments)).on_click(move |_, _, cx| {
                         details.update(cx, |_, cx| cx.emit(NowPlayingEvent::Details(video_id.clone()))).ok();
+                    }));
+                    let video_id = target.video_id.clone();
+                    menu = menu.item(PopupMenuItem::new(t(Str::CdAddToPlaylist)).on_click(move |_, window, cx| {
+                        crate::yt_playlist::AddToPlaylist::open(video_id.clone(), window, cx)
                     }));
                     let link = format!("https://youtu.be/{}", target.video_id);
                     menu = menu.item(PopupMenuItem::new(t(Str::CdShare)).on_click(move |_, window, cx| {
@@ -595,6 +600,16 @@ impl NowPlaying {
                     }));
                     menu = menu.separator();
                 }
+                let queue = queue_playback.clone();
+                menu = menu.item(PopupMenuItem::new(t(Str::QueueSaveAsYtPlaylist)).on_click(move |_, window, cx| {
+                    let video_ids: Vec<String> =
+                        queue.read(cx).queue.iter().filter_map(|item| item.video_id().map(str::to_owned)).collect();
+                    if video_ids.is_empty() {
+                        window.push_notification(t(Str::YtPlaylistQueueEmpty), cx);
+                    } else {
+                        crate::yt_playlist::CreatePlaylist::open(video_ids, true, window, cx);
+                    }
+                }));
                 let sound = view.clone();
                 menu.item(PopupMenuItem::new(t(Str::MenuSpeedPitch)).on_click(move |_, _, cx| {
                     sound.update(cx, |_, cx| cx.emit(NowPlayingEvent::OpenSound)).ok();
