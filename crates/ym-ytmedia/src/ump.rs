@@ -65,9 +65,26 @@ pub fn write_varint(out: &mut Vec<u8>, value: u32) {
 }
 
 pub fn write_part(out: &mut Vec<u8>, part_id: u32, payload: &[u8]) {
-    write_varint(out, part_id);
-    write_varint(out, payload.len() as u32);
+    write_part_header(out, part_id, payload.len() as u32);
     out.extend_from_slice(payload);
+}
+
+/// The payload (exactly `size` bytes) follows in the stream.
+pub fn write_part_header(out: &mut Vec<u8>, part_id: u32, size: u32) {
+    write_varint(out, part_id);
+    write_varint(out, size);
+}
+
+/// A part header at the start of `bytes`: `(partId, size, header length)`, or `None` until all of
+/// it has arrived.
+pub fn parse_part_header(bytes: &[u8]) -> Option<(u64, u64, usize)> {
+    let id_size = varint_size(*bytes.first()?);
+    let size_size = varint_size(*bytes.get(id_size)?);
+    let total = id_size + size_size;
+    if bytes.len() < total {
+        return None;
+    }
+    Some((decode_varint(&bytes[..id_size]), decode_varint(&bytes[id_size..total]), total))
 }
 
 pub type ByteStream = futures::stream::BoxStream<'static, io::Result<Bytes>>;

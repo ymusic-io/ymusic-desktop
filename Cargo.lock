@@ -9793,6 +9793,7 @@ dependencies = [
  "base64 0.22.1",
  "bytes",
  "futures",
+ "libc",
  "rand 0.9.5",
  "reqwest",
  "rusqlite",
@@ -9800,6 +9801,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "url",
+ "windows-sys 0.61.2",
  "ym-common",
 ]
 

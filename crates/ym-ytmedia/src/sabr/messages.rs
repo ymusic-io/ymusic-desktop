@@ -7,7 +7,7 @@ pub fn format_cache_key(itag: i32, lmt: i64) -> String {
     format!("2_{itag}_{lmt}")
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct FormatId {
     pub itag: i32,
     pub lmt: i64,
@@ -15,8 +15,21 @@ pub struct FormatId {
 }
 
 impl FormatId {
+    pub fn parse(message: &Message) -> Result<Self, ProtoError> {
+        let itag = message.require_varint(1)? as i32;
+        Ok(Self {
+            itag,
+            lmt: if itag == 0 { 0 } else { message.require_varint(2)? as i64 },
+            xtag: message.string(3)?.unwrap_or_default(),
+        })
+    }
+
     pub fn encode(&self) -> ProtoWriter {
         ProtoWriter::new().varint(1, Some(i64::from(self.itag))).varint(2, Some(self.lmt)).string(3, Some(&self.xtag))
+    }
+
+    pub fn cache_key(&self) -> String {
+        format_cache_key(self.itag, self.lmt)
     }
 }
 
@@ -140,6 +153,17 @@ pub struct BufferedRange {
 }
 
 impl BufferedRange {
+    pub fn parse(message: &Message) -> Result<Self, ProtoError> {
+        let format = message.message(1)?.ok_or(ProtoError::Missing { field: 1 })?;
+        Ok(Self {
+            format_id: FormatId::parse(&format)?,
+            start_ms: message.require_varint(2)? as i64,
+            duration_ms: message.require_varint(3)? as i64,
+            start_segment_index: message.require_varint(4)? as i64,
+            end_segment_index: message.require_varint(5)? as i64,
+        })
+    }
+
     /// Exclusive: the range covers `start_ms <= t < end_ms`.
     pub fn end_ms(&self) -> i64 {
         self.start_ms + self.duration_ms
@@ -227,6 +251,77 @@ impl VideoPlaybackAbrRequest<'_> {
     }
 }
 
+/// What the player engine's own SABR request asks for, read back by the media cache. The
+/// adaptive-formats catalog is not in the body: engine-js sends it as the `X-Ym-Af` header.
+#[derive(Clone, Debug, Default)]
+pub struct AbrRequest {
+    pub player_time_ms: i64,
+    pub enabled_track_types_bitfield: Option<i64>,
+    pub drc_enabled: bool,
+    pub request_audio_track_id: Option<String>,
+    pub requested_video_resolution: Option<i64>,
+    pub selected_formats: Vec<FormatId>,
+    pub buffered_ranges: Vec<BufferedRange>,
+    pub selected_audio_formats: Vec<FormatId>,
+    pub selected_video_formats: Vec<FormatId>,
+    pub playback_cookie: Option<Vec<u8>>,
+    pub adaptive_formats: Vec<AdaptiveFormat>,
+}
+
+impl AbrRequest {
+    pub fn parse(body: &[u8]) -> Result<Self, ProtoError> {
+        let message = Message::parse(body)?;
+        let abr = message.message(1)?.ok_or(ProtoError::Missing { field: 1 })?;
+        let streamer = message.message(19)?.ok_or(ProtoError::Missing { field: 19 })?;
+        let formats = |field| -> Result<Vec<FormatId>, ProtoError> {
+            message.messages(field)?.iter().map(FormatId::parse).collect()
+        };
+        Ok(Self {
+            player_time_ms: abr.require_varint(28)? as i64,
+            enabled_track_types_bitfield: abr.varint(40).map(|value| value as i64),
+            drc_enabled: abr.varint(46) == Some(1),
+            request_audio_track_id: abr.string(69)?,
+            requested_video_resolution: abr.varint(16).map(|value| value as i64),
+            selected_formats: formats(2)?,
+            buffered_ranges: message.messages(3)?.iter().map(BufferedRange::parse).collect::<Result<_, _>>()?,
+            selected_audio_formats: formats(16)?,
+            selected_video_formats: formats(17)?,
+            playback_cookie: streamer.bytes(3).map(<[u8]>::to_vec),
+            adaptive_formats: Vec::new(),
+        })
+    }
+}
+
+/// engine-js tags a cacheable SABR POST with the `/player` adaptiveFormats catalog: base64 (URL-safe
+/// or standard) of a JSON array.
+pub const ADAPTIVE_FORMATS_HEADER: &str = "X-Ym-Af";
+
+pub fn parse_adaptive_formats_header(value: &str) -> Result<Vec<AdaptiveFormat>, String> {
+    use base64::Engine;
+    let normalized: String = value
+        .chars()
+        .filter(|char| !char.is_whitespace() && *char != '=')
+        .map(|char| match char {
+            '+' => '-',
+            '/' => '_',
+            other => other,
+        })
+        .collect();
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(normalized)
+        .map_err(|error| format!("{ADAPTIVE_FORMATS_HEADER} is not base64: {error}"))?;
+    let root: serde_json::Value =
+        serde_json::from_slice(&bytes).map_err(|error| format!("{ADAPTIVE_FORMATS_HEADER} is not JSON: {error}"))?;
+    let entries = root.as_array().ok_or_else(|| format!("{ADAPTIVE_FORMATS_HEADER} is not a JSON array"))?;
+    entries
+        .iter()
+        .filter(|entry| entry.is_object())
+        .map(|entry| {
+            AdaptiveFormat::from_json(entry).ok_or_else(|| format!("{ADAPTIVE_FORMATS_HEADER} entry without an itag"))
+        })
+        .collect()
+}
+
 #[derive(Clone, Debug)]
 pub struct MediaHeader {
     pub header_id: u8,
@@ -249,6 +344,23 @@ pub struct MediaHeader {
 }
 
 impl MediaHeader {
+    /// A whole segment as an index row or a synthesized hit describes it: `data_offset` never goes out.
+    pub fn encode(&self) -> ProtoWriter {
+        let media = self.segment_index != 0;
+        ProtoWriter::new()
+            .varint(1, Some(i64::from(self.header_id)))
+            .string(2, Some(&self.video_id))
+            .varint(3, Some(i64::from(self.itag)))
+            .varint(4, Some(self.lmt))
+            .string(5, self.xtag.as_deref())
+            .varint(6, (self.start_range >= 0).then_some(self.start_range))
+            .varint(8, Some(i64::from(self.is_init_segment)))
+            .varint(9, media.then_some(self.segment_index))
+            .varint(11, self.start_ms.filter(|_| media))
+            .varint(12, self.duration_ms.filter(|_| media))
+            .varint(14, Some(self.content_length))
+    }
+
     pub fn parse(payload: &[u8]) -> Result<Self, ProtoError> {
         let message = Message::parse(payload)?;
         Ok(Self {
@@ -288,6 +400,21 @@ impl NextRequestPolicy {
     pub fn parse(payload: &[u8]) -> Result<Self, ProtoError> {
         let message = Message::parse(payload)?;
         Ok(Self { backoff_time_ms: message.varint(4), playback_cookie: message.bytes(7).map(<[u8]>::to_vec) })
+    }
+
+    /// Fields 1 and 2 are the audio and video readahead targets.
+    pub fn encode_backoff(
+        audio_readahead_ms: i64,
+        video_readahead_ms: i64,
+        backoff_time_ms: i64,
+        playback_cookie: Option<&[u8]>,
+    ) -> Vec<u8> {
+        ProtoWriter::new()
+            .varint(1, Some(audio_readahead_ms))
+            .varint(2, Some(video_readahead_ms))
+            .varint(4, Some(backoff_time_ms))
+            .bytes(7, playback_cookie)
+            .into_bytes()
     }
 }
 
