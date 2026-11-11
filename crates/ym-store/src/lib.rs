@@ -205,6 +205,28 @@ pub struct Playlist {
     pub created_at: i64,
 }
 
+/// A playlist membership row; `item` is what its code resolves to now, if anything.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlaylistMember {
+    pub code: String,
+    pub added_at: i64,
+    pub item: Option<MediaItem>,
+}
+
+/// A playlist as a backup carries it: name, creation time and member codes in order.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlaylistSnapshot {
+    pub name: String,
+    pub created_at: i64,
+    pub items: Vec<PlaylistSnapshotItem>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlaylistSnapshotItem {
+    pub code: String,
+    pub added_at: i64,
+}
+
 /// A playlist membership row with the media item its code resolves to now.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PlaylistItemDetail {
@@ -701,6 +723,88 @@ impl MediaStore {
         let mut statement = db.prepare("SELECT code FROM playlistItem WHERE playlistId = ?1 ORDER BY sortKey")?;
         let rows = statement.query_map(params![playlist_id], |row| row.get(0))?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Every membership row in playlist order, each with the item it resolves to now.
+    pub fn playlist_members(&self, playlist_id: i64) -> Result<Vec<PlaylistMember>, StoreError> {
+        let db = self.db.lock().unwrap();
+        let mut statement =
+            db.prepare("SELECT code, addedAt FROM playlistItem WHERE playlistId = ?1 ORDER BY sortKey")?;
+        let rows: Vec<(String, i64)> = statement
+            .query_map(params![playlist_id], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<rusqlite::Result<_>>()?;
+        let mut members = Vec::with_capacity(rows.len());
+        for (code, added_at) in rows {
+            let item = resolve_code(&db, &code)?;
+            members.push(PlaylistMember { code, added_at, item });
+        }
+        Ok(members)
+    }
+
+    /// Writes backed-up playlists in one transaction. `replace_all` deletes every playlist first and
+    /// recreates the snapshots exactly; otherwise each snapshot merges into the first playlist of the
+    /// same name (trimmed, case-insensitive) or a new one, appending members it lacks.
+    pub fn restore_playlists(&self, snapshots: &[PlaylistSnapshot], replace_all: bool) -> Result<(), StoreError> {
+        let mut db = self.db.lock().unwrap();
+        let transaction = db.transaction()?;
+        let now = now_millis();
+        if replace_all {
+            transaction.execute("DELETE FROM playlist", [])?;
+            for snapshot in snapshots {
+                transaction.execute(
+                    "INSERT INTO playlist(name, createdAt, updatedAt) VALUES (?1, ?2, ?3)",
+                    params![snapshot.name, snapshot.created_at, now],
+                )?;
+                let id = transaction.last_insert_rowid();
+                for (index, item) in snapshot.items.iter().enumerate() {
+                    transaction.execute(
+                        "INSERT OR IGNORE INTO playlistItem(playlistId, code, sortKey, addedAt) VALUES (?1, ?2, ?3, ?4)",
+                        params![id, item.code, index as i64, item.added_at],
+                    )?;
+                }
+            }
+        } else {
+            let mut existing: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+            {
+                let mut statement = transaction.prepare("SELECT id, name FROM playlist ORDER BY id")?;
+                let rows = statement.query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)))?;
+                for row in rows {
+                    let (id, name) = row?;
+                    existing.entry(name.trim().to_lowercase()).or_insert(id);
+                }
+            }
+            for snapshot in snapshots {
+                let name = snapshot.name.trim();
+                let id = match existing.get(&name.to_lowercase()) {
+                    Some(id) => *id,
+                    None => {
+                        transaction.execute(
+                            "INSERT INTO playlist(name, createdAt, updatedAt) VALUES (?1, ?2, ?3)",
+                            params![name, snapshot.created_at, now],
+                        )?;
+                        let id = transaction.last_insert_rowid();
+                        existing.insert(name.to_lowercase(), id);
+                        id
+                    }
+                };
+                let last: i64 = transaction.query_row(
+                    "SELECT COALESCE(MAX(sortKey), 0) FROM playlistItem WHERE playlistId = ?1",
+                    params![id],
+                    |row| row.get(0),
+                )?;
+                let mut sort_key = last.max(now);
+                for item in &snapshot.items {
+                    sort_key += 1;
+                    transaction.execute(
+                        "INSERT OR IGNORE INTO playlistItem(playlistId, code, sortKey, addedAt) VALUES (?1, ?2, ?3, ?4)",
+                        params![id, item.code, sort_key, item.added_at],
+                    )?;
+                }
+            }
+        }
+        transaction.commit()?;
+        self.changed();
+        Ok(())
     }
 
     /// The members the library can resolve now, in playlist order.
