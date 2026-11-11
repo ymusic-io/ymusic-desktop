@@ -14,8 +14,8 @@ use ym_signin::{CookieVault, PasswordSeal, VaultError};
 const COOKIE_JAR_SECRET: &str = "api-cookies.json";
 /// Where builds before the vault kept the jar in the clear; removed at boot.
 const PLAIN_COOKIES_SECRET: &str = "cookies";
-/// This app's own Keychain item for the cookie key.
-const KEYCHAIN_SERVICE: &str = "io.ymusic.desktop.rust";
+/// The JVM app's Keychain item (`UserScopeKey.kt`): the jar it sealed opens after the update.
+const KEYCHAIN_SERVICE: &str = "io.ymusic.desktop";
 const KEYCHAIN_ACCOUNT: &str = "cookie-key";
 /// Where the key lives when no OS key store holds it (the JVM app's Linux fallback name).
 const FALLBACK_KEY_SECRET: &str = "cookie-key.bin";

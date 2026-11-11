@@ -158,18 +158,38 @@ pub fn random_key() -> [u8; KEY_LEN] {
     key
 }
 
-/// The OS user's 32-byte cookie key, created on first use: the login Keychain on macOS.
+/// The OS user's 32-byte cookie key, created on first use: the login Keychain on macOS, where the
+/// JVM app keeps it too. Only a missing item is created, and never over one: a read that fails for
+/// any other reason (a refused access prompt) must not replace the key the stored jar is sealed with.
 /// Blocking. `service` names the app's item.
 #[cfg(target_os = "macos")]
 pub fn os_cookie_key(service: &str, account: &str) -> Result<[u8; KEY_LEN], VaultError> {
-    use security_framework::passwords::{get_generic_password, set_generic_password};
-    if let Ok(existing) = get_generic_password(service, account) {
-        return existing.try_into().map_err(|_| VaultError::KeyStore("keychain item has the wrong size".into()));
-    }
-    let mut key = [0u8; KEY_LEN];
-    getrandom::getrandom(&mut key).map_err(|error| VaultError::KeyStore(error.to_string()))?;
-    set_generic_password(service, account, &key).map_err(|error| VaultError::KeyStore(error.to_string()))?;
-    Ok(key)
+    use core_foundation::data::CFData;
+    use security_framework::item::{ItemAddOptions, ItemAddValue, ItemClass};
+    use security_framework::passwords::{PasswordOptions, generic_password};
+    const ERR_SEC_ITEM_NOT_FOUND: i32 = -25300;
+    const ERR_SEC_DUPLICATE_ITEM: i32 = -25299;
+    let keychain_error = |error: security_framework::base::Error| VaultError::KeyStore(error.to_string());
+    let read = || generic_password(PasswordOptions::new_generic_password(service, account));
+    let stored = match read() {
+        Ok(stored) => stored,
+        Err(error) if error.code() == ERR_SEC_ITEM_NOT_FOUND => {
+            let mut key = [0u8; KEY_LEN];
+            getrandom::getrandom(&mut key).map_err(|error| VaultError::KeyStore(error.to_string()))?;
+            let mut item = ItemAddOptions::new(ItemAddValue::Data {
+                class: ItemClass::generic_password(),
+                data: CFData::from_buffer(&key),
+            });
+            item.set_service(service).set_account_name(account);
+            match item.add() {
+                Ok(()) => return Ok(key),
+                Err(error) if error.code() == ERR_SEC_DUPLICATE_ITEM => read().map_err(keychain_error)?,
+                Err(error) => return Err(keychain_error(error)),
+            }
+        }
+        Err(error) => return Err(keychain_error(error)),
+    };
+    stored.try_into().map_err(|_| VaultError::KeyStore("keychain item has the wrong size".into()))
 }
 
 #[cfg(not(target_os = "macos"))]
