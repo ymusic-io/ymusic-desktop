@@ -50,6 +50,7 @@ fn apply_theme(choice: &str, accent: &str, cx: &mut App) {
         _ => Theme::sync_system_appearance(None, cx),
     }
     let accent = accent_color(accent);
+    crate::desktop::set_pin_accent(accent);
     let on_accent = white();
     let amoled = choice == "amoled";
     Theme::update(cx, |theme| {

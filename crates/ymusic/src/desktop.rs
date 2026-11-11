@@ -194,6 +194,55 @@ pub fn set_dock_visible(visible: bool) {
 #[cfg(not(target_os = "macos"))]
 pub fn set_dock_visible(_visible: bool) {}
 
+/// The app's accent as RGBA for the pinned title bar pin; 0 until the theme is applied.
+static PIN_ACCENT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+#[cfg(target_os = "macos")]
+thread_local! {
+    static PIN_BUTTON: std::cell::RefCell<Option<objc2::rc::Retained<objc2::runtime::AnyObject>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// The pin's color: the app's accent while pinned (the system accent before the theme is set),
+/// secondary label color otherwise.
+#[cfg(target_os = "macos")]
+fn pin_tint(pinned: bool) -> Option<objc2::rc::Retained<objc2::runtime::AnyObject>> {
+    use objc2::msg_send;
+    let color_class = objc2::runtime::AnyClass::get(c"NSColor")?;
+    let accent = PIN_ACCENT.load(std::sync::atomic::Ordering::Relaxed);
+    let channel = |shift: u32| f64::from((accent >> shift) & 0xff) / 255.;
+    // SAFETY: NSColor class constructors, on the main thread.
+    unsafe {
+        if !pinned {
+            msg_send![color_class, secondaryLabelColor]
+        } else if accent == 0 {
+            msg_send![color_class, controlAccentColor]
+        } else {
+            msg_send![color_class, colorWithSRGBRed: channel(24), green: channel(16), blue: channel(8), alpha: channel(0)]
+        }
+    }
+}
+
+/// The pinned pin takes the app's accent; called whenever the theme or accent changes.
+pub fn set_pin_accent(accent: Hsla) {
+    let rgba = accent.to_rgb();
+    let byte = |value: f32| (value.clamp(0., 1.) * 255.).round() as u32;
+    let packed = (byte(rgba.r) << 24) | (byte(rgba.g) << 16) | (byte(rgba.b) << 8) | byte(rgba.a).max(1);
+    PIN_ACCENT.store(packed, std::sync::atomic::Ordering::Relaxed);
+    #[cfg(target_os = "macos")]
+    PIN_BUTTON.with(|button| {
+        let Some(button) = button.borrow().clone() else { return };
+        use objc2::msg_send;
+        // SAFETY: the retained pin button, on the main thread.
+        unsafe {
+            let state: isize = msg_send![&*button, state];
+            if let Some(tint) = pin_tint(state != 0) {
+                let _: () = msg_send![&*button, setContentTintColor: &*tint];
+            }
+        }
+    });
+}
+
 /// The always-on-top pin at the title bar's trailing end (JVM title bar pin): toggles the window
 /// between the normal and the floating level. Not kept across launches, like the JVM app.
 #[cfg(target_os = "macos")]
@@ -231,12 +280,7 @@ pub fn install_pin_button(window: &Window, log: &Logger) {
                 let _: () = msg_send![button, setImage: &*image];
             }
             let _: () = msg_send![button, setState: isize::from(pinned)];
-            if let Some(color_class) = AnyClass::get(c"NSColor") {
-                let tint: Retained<AnyObject> = if pinned {
-                    msg_send![color_class, controlAccentColor]
-                } else {
-                    msg_send![color_class, secondaryLabelColor]
-                };
+            if let Some(tint) = pin_tint(pinned) {
                 let _: () = msg_send![button, setContentTintColor: &*tint];
             }
         }
@@ -313,6 +357,11 @@ pub fn install_pin_button(window: &Window, log: &Logger) {
         // NSViewMinXMargin: keeps the right inset as the window resizes.
         let _: () = msg_send![&*button, setAutoresizingMask: 1usize];
         let _: () = msg_send![&*titlebar, addSubview: &*button];
+        PIN_BUTTON.with(|pin| *pin.borrow_mut() = Some(button.clone()));
+        // Debug: `YMUSIC_DEV_PIN` pins the window at start, through the button's own action.
+        if cfg!(debug_assertions) && std::env::var_os("YMUSIC_DEV_PIN").is_some() {
+            let _: () = msg_send![&*button, performClick: std::ptr::null_mut::<AnyObject>()];
+        }
         // A control's target is weak: the target lives as long as the window, the whole process.
         std::mem::forget(target);
     }
