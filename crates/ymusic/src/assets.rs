@@ -63,7 +63,8 @@ gpui_kit::assets::icon_assets!(
         CircleUser,
         Clock,
         ThumbsUp,
-        SquarePlay
+        SquarePlay,
+        Trash
     ]
 );
 
