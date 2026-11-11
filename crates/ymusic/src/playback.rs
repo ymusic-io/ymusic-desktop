@@ -203,11 +203,11 @@ pub struct CaptionTrack {
     pub vss_id: String,
     pub language_code: String,
     pub display_name: String,
-    /// `"translate"` for YouTube's auto-translations of the video's main track.
+    /// `"asrt"` for YouTube's auto-translations of the video's main track.
     pub kind: String,
 }
 
-pub const AUTO_TRANSLATE_KIND: &str = "translate";
+pub const AUTO_TRANSLATE_KIND: &str = "asrt";
 
 /// A YouTube video's owner channel, as its player response names it.
 #[derive(Clone, Debug, PartialEq)]

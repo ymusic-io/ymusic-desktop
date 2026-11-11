@@ -45,6 +45,7 @@ const STOP_REPEAT: usize = 6;
 const STOP_SHUFFLE: usize = 7;
 const STOP_CHANNEL: usize = 8;
 const STOP_CHANNEL_OVERLAY: usize = 9;
+const MENU_CAPTIONS: u8 = 1;
 const PLAY_BUTTON: f32 = 58.;
 /// Fixed: the top bar is a cached view, laid out without measuring its content.
 const TOP_BAR: f32 = 40.;
@@ -112,7 +113,10 @@ pub struct NowPlaying {
     reported_box: (i32, i32),
     seek: Entity<SliderState>,
     dragging_seek: bool,
-    touched_at: Instant,
+    touched_at: Rc<Cell<Instant>>,
+    /// The overlay's open menus, a bit each: hiding the controls would close them.
+    held_menus: Rc<Cell<u8>>,
+    caption_focus: FocusHandle,
     controls_were_visible: bool,
     fullscreen: bool,
     _subscriptions: Vec<Subscription>,
@@ -303,6 +307,7 @@ impl NowPlaying {
                 }
             }
         });
+        Self::dev_hook(window, cx);
         let queue_scroll = ScrollHandle::new();
         let video_box = Rc::new(Cell::new((0, 0)));
         let audio_only_art = cx.new(|_| AudioOnlyArt::new(playback.clone(), video_box.clone()));
@@ -323,12 +328,65 @@ impl NowPlaying {
             reported_box: (0, 0),
             seek,
             dragging_seek: false,
-            touched_at: Instant::now(),
+            touched_at: Rc::new(Cell::new(Instant::now())),
+            held_menus: Rc::default(),
+            caption_focus: cx.focus_handle(),
             controls_were_visible: true,
             fullscreen: false,
             _subscriptions: subscriptions,
             _controls_timer: controls_timer,
         }
+    }
+
+    /// Debug: `YMUSIC_DEV_NOWPLAYING=captions[:key,key*n,…]` opens the caption picker once the video's
+    /// tracks are known, then presses those keys (`*n`: n times) through the window's key dispatch.
+    fn dev_hook(window: &mut Window, cx: &mut Context<Self>) {
+        let Some(spec) = std::env::var("YMUSIC_DEV_NOWPLAYING").ok().filter(|_| cfg!(debug_assertions)) else {
+            return;
+        };
+        let (surface, keys) = spec.split_once(':').unwrap_or((spec.as_str(), ""));
+        if surface != "captions" {
+            return;
+        }
+        let mut presses: Vec<&'static str> = vec!["enter"];
+        for key in keys.split(',').filter(|key| !key.is_empty()) {
+            let (key, times) = key.split_once('*').unwrap_or((key, "1"));
+            let key: &'static str = Box::leak(key.trim().to_owned().into_boxed_str());
+            presses.extend(std::iter::repeat_n(key, times.parse().unwrap_or(1)));
+        }
+        let executor = cx.background_executor().clone();
+        cx.spawn_in(window, async move |this, cx| {
+            loop {
+                executor.timer(Duration::from_millis(500)).await;
+                let ready = this.update(cx, |view, cx| {
+                    view.touch(cx);
+                    !view.playback.read(cx).caption_tracks.is_empty()
+                });
+                match ready {
+                    Ok(true) => break,
+                    Ok(false) => {}
+                    Err(_) => return,
+                }
+            }
+            executor.timer(Duration::from_millis(500)).await;
+            if this.update_in(cx, |view, window, cx| window.focus(&view.caption_focus, cx)).is_err() {
+                return;
+            }
+            for key in presses {
+                executor.timer(Duration::from_millis(400)).await;
+                let pressed = cx.update(|window, cx| match Keystroke::parse(key) {
+                    Ok(keystroke) => {
+                        window.dispatch_keystroke(keystroke.clone(), cx);
+                        window.dispatch_event(PlatformInput::KeyUp(KeyUpEvent { keystroke }), cx);
+                    }
+                    Err(error) => eprintln!("YMUSIC_DEV_NOWPLAYING: {key}: {error}"),
+                });
+                if pressed.is_err() {
+                    return;
+                }
+            }
+        })
+        .detach();
     }
 
     pub fn hide_video(&self) {
@@ -371,13 +429,26 @@ impl NowPlaying {
     }
 
     fn touch(&mut self, cx: &mut Context<Self>) {
-        self.touched_at = Instant::now();
+        self.touched_at.set(Instant::now());
         cx.notify();
     }
 
-    /// Shown while paused or seeking, and for a few seconds after the last pointer move.
+    /// Shown while paused, seeking or a menu of theirs is open, and for a few seconds after the last
+    /// pointer move.
     fn controls_visible(&self, cx: &App) -> bool {
-        !self.playback.read(cx).is_playing() || self.dragging_seek || self.touched_at.elapsed() < CONTROLS_HIDE_AFTER
+        !self.playback.read(cx).is_playing()
+            || self.dragging_seek
+            || self.held_menus.get() != 0
+            || self.touched_at.get().elapsed() < CONTROLS_HIDE_AFTER
+    }
+
+    /// Keeps the controls up while the menu `bit` is open, and for the usual delay after it closes.
+    fn hold_while_open(&self, bit: u8) -> impl Fn(&bool, &mut Window, &mut App) + 'static {
+        let (held, touched_at) = (self.held_menus.clone(), self.touched_at.clone());
+        move |open, _, _| {
+            held.set(if *open { held.get() | bit } else { held.get() & !bit });
+            touched_at.set(Instant::now());
+        }
     }
 
     fn render_play_button(&self, playing: bool, buffering: bool, cx: &mut Context<Self>) -> impl IntoElement {
@@ -542,6 +613,7 @@ impl NowPlaying {
         let target = self.playback.clone();
         Some(
             on_video(Button::new("np-captions"), cx)
+                .track_focus(&self.caption_focus)
                 .icon(Lucide::Captions)
                 .when(visible, |button| button.text_color(cx.theme().primary))
                 .accessibility_label(label.clone())
@@ -574,11 +646,12 @@ impl NowPlaying {
                             for item in items.borrow_mut().take().into_iter().flatten() {
                                 submenu = submenu.item(item);
                             }
-                            submenu.max_h(px(360.)).scrollable(true)
+                            submenu.min_w(px(240.)).max_w(px(240.)).max_h(px(360.)).scrollable(true)
                         });
                     }
-                    menu
+                    menu.scrollable(true)
                 })
+                .on_open_change(self.hold_while_open(MENU_CAPTIONS))
                 .into_any_element(),
         )
     }
