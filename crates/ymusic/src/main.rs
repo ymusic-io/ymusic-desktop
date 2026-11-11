@@ -65,6 +65,8 @@ mod telemetry;
 mod tray_popup;
 mod video_details;
 mod video_layer;
+#[cfg(target_os = "windows")]
+mod win_title_bar;
 mod youtube_session;
 mod yt_playlist;
 
@@ -227,7 +229,12 @@ fn main() {
         cx.set_global(app_logs);
         let options = WindowOptions {
             window_bounds: Some(window_bounds),
-            titlebar: Some(TitlebarOptions { title: Some(t(Str::AppName).into()), ..Default::default() }),
+            // Windows hides the native caption: the app draws its title bar (`win_title_bar`).
+            titlebar: Some(TitlebarOptions {
+                title: Some(t(Str::AppName).into()),
+                appears_transparent: cfg!(target_os = "windows"),
+                ..Default::default()
+            }),
             // Debug dev-route runs float, so a window launched from a terminal still draws frames
             // (a covered window gets none on macOS and Wayland) for screenshots.
             kind: if cfg!(debug_assertions)
@@ -252,7 +259,7 @@ fn main() {
             ..Default::default()
         };
         cx.open_window(options, |window, cx| {
-            crate::desktop::install_pin_button(window, &log.fork("pin"));
+            crate::desktop::install_pin_button(window, cx, &log.fork("pin"));
             crate::desktop::remember_main_window(window);
             let launch = cx.new(|cx| match locked {
                 Some((locked, inputs, log_setup)) => Launch::locked(locked, inputs, log_setup, window, cx),

@@ -301,7 +301,7 @@ pub fn set_pin_accent(accent: Hsla) {
 /// The always-on-top pin at the title bar's trailing end (JVM title bar pin): toggles the window
 /// between the normal and the floating level. Not kept across launches, like the JVM app.
 #[cfg(target_os = "macos")]
-pub fn install_pin_button(window: &Window, log: &Logger) {
+pub fn install_pin_button(window: &Window, _cx: &App, log: &Logger) {
     use objc2::rc::Retained;
     use objc2::runtime::{AnyClass, AnyObject, ClassBuilder, NSObject, Sel};
     use objc2::{ClassType, msg_send, sel};
@@ -423,18 +423,31 @@ pub fn install_pin_button(window: &Window, log: &Logger) {
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-pub fn install_pin_button(_window: &Window, _log: &Logger) {}
+pub fn install_pin_button(_window: &Window, _cx: &App, _log: &Logger) {}
 
-/// Windows: "Always on top" in the window's system menu (Alt+Space, a right-click on the title bar),
-/// checked while the window floats; the native caption has no room for the JVM app's pin.
+/// Windows: the title bar pin (`win_title_bar`) and "Always on top" in the window's system menu
+/// (Alt+Space, a right-click on the title bar) toggle the one state, the window's WS_EX_TOPMOST; a
+/// toggle from the menu repaints the pin. Not kept across launches, like the JVM app.
 #[cfg(target_os = "windows")]
-pub fn install_pin_button(window: &Window, log: &Logger) {
+pub fn install_pin_button(window: &Window, cx: &App, log: &Logger) {
+    use futures::StreamExt;
     use windows::Win32::Foundation::HWND;
     use windows::Win32::UI::Shell::SetWindowSubclass;
     use windows::Win32::UI::WindowsAndMessaging::{AppendMenuW, GetSystemMenu, MF_SEPARATOR, MF_STRING};
     use windows::core::{HSTRING, PCWSTR};
 
     let Some(hwnd) = window_hwnd(window).map(HWND) else { return };
+    let (changes, mut changed) = futures::channel::mpsc::unbounded();
+    PIN.with(|pin| *pin.borrow_mut() = Some(PinState { log: log.clone(), changes }));
+    window
+        .spawn(cx, async move |cx| {
+            while changed.next().await.is_some() {
+                if cx.update(|window, _| window.refresh()).is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
     // SAFETY: gpui's live HWND, on its thread; the label outlives the call that copies it.
     unsafe {
         let menu = GetSystemMenu(hwnd, false);
@@ -453,6 +466,21 @@ pub fn install_pin_button(window: &Window, log: &Logger) {
             log.warn("always on top: the window could not be subclassed", None);
         }
     }
+    // Debug: `YMUSIC_DEV_PIN` pins the window at start.
+    if cfg!(debug_assertions) && std::env::var_os("YMUSIC_DEV_PIN").is_some() {
+        apply_always_on_top(hwnd, true);
+    }
+}
+
+#[cfg(target_os = "windows")]
+struct PinState {
+    log: Logger,
+    changes: futures::channel::mpsc::UnboundedSender<()>,
+}
+
+#[cfg(target_os = "windows")]
+thread_local! {
+    static PIN: std::cell::RefCell<Option<PinState>> = const { std::cell::RefCell::new(None) };
 }
 
 /// A system command id: below 0xF000 with the low four bits clear, which Windows keeps for itself.
@@ -460,6 +488,48 @@ pub fn install_pin_button(window: &Window, log: &Logger) {
 const PIN_COMMAND: u32 = 0x0110;
 #[cfg(target_os = "windows")]
 const PIN_SUBCLASS: usize = 1;
+
+/// Whether the window floats above other apps' windows.
+#[cfg(target_os = "windows")]
+pub fn always_on_top(window: &Window) -> bool {
+    window_hwnd(window).map(windows::Win32::Foundation::HWND).is_some_and(is_topmost)
+}
+
+#[cfg(target_os = "windows")]
+fn is_topmost(hwnd: windows::Win32::Foundation::HWND) -> bool {
+    use windows::Win32::UI::WindowsAndMessaging::{GWL_EXSTYLE, GetWindowLongPtrW, WS_EX_TOPMOST};
+    // SAFETY: gpui's live HWND, on its thread.
+    unsafe { GetWindowLongPtrW(hwnd, GWL_EXSTYLE) & WS_EX_TOPMOST.0 as isize != 0 }
+}
+
+#[cfg(target_os = "windows")]
+pub fn set_always_on_top(window: &Window, on: bool) {
+    if let Some(hwnd) = window_hwnd(window).map(windows::Win32::Foundation::HWND) {
+        apply_always_on_top(hwnd, on);
+    }
+}
+
+/// Moves the window in or out of the topmost band and checks the system menu item to match.
+#[cfg(target_os = "windows")]
+fn apply_always_on_top(hwnd: windows::Win32::Foundation::HWND, on: bool) {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        CheckMenuItem, GetSystemMenu, HWND_NOTOPMOST, HWND_TOPMOST, MF_CHECKED, MF_UNCHECKED, SWP_NOACTIVATE,
+        SWP_NOMOVE, SWP_NOSIZE, SetWindowPos,
+    };
+    let after = if on { HWND_TOPMOST } else { HWND_NOTOPMOST };
+    // SAFETY: gpui's live HWND, on its thread.
+    unsafe {
+        if let Err(error) = SetWindowPos(hwnd, Some(after), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE) {
+            PIN.with(|pin| {
+                if let Some(pin) = pin.borrow().as_ref() {
+                    pin.log.warn("always on top: the window could not change band", Some(&error));
+                }
+            });
+            return;
+        }
+        CheckMenuItem(GetSystemMenu(hwnd, false), PIN_COMMAND, if on { MF_CHECKED } else { MF_UNCHECKED }.0);
+    }
+}
 
 #[cfg(target_os = "windows")]
 unsafe extern "system" fn pin_subclass(
@@ -472,19 +542,17 @@ unsafe extern "system" fn pin_subclass(
 ) -> windows::Win32::Foundation::LRESULT {
     use windows::Win32::Foundation::LRESULT;
     use windows::Win32::UI::Shell::DefSubclassProc;
-    use windows::Win32::UI::WindowsAndMessaging::{
-        CheckMenuItem, GWL_EXSTYLE, GetSystemMenu, GetWindowLongPtrW, HWND_NOTOPMOST, HWND_TOPMOST, MF_CHECKED,
-        MF_UNCHECKED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SetWindowPos, WM_SYSCOMMAND, WS_EX_TOPMOST,
-    };
+    use windows::Win32::UI::WindowsAndMessaging::WM_SYSCOMMAND;
     // SAFETY: called by Windows on the window's thread with its live HWND.
     unsafe {
         if message == WM_SYSCOMMAND && (wparam.0 as u32 & 0xFFF0) == PIN_COMMAND {
-            let floating = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) & WS_EX_TOPMOST.0 as isize != 0;
-            let after = if floating { HWND_NOTOPMOST } else { HWND_TOPMOST };
-            if SetWindowPos(hwnd, Some(after), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE).is_ok() {
-                let check = if floating { MF_UNCHECKED } else { MF_CHECKED };
-                CheckMenuItem(GetSystemMenu(hwnd, false), PIN_COMMAND, check.0);
-            }
+            apply_always_on_top(hwnd, !is_topmost(hwnd));
+            PIN.with(|pin| {
+                if let Some(pin) = pin.borrow().as_ref() {
+                    // Fire-and-forget: the receiver lives as long as the window.
+                    let _ = pin.changes.unbounded_send(());
+                }
+            });
             return LRESULT(0);
         }
         DefSubclassProc(hwnd, message, wparam, lparam)
@@ -988,7 +1056,12 @@ pub fn frame(content: AnyElement, window: &mut Window, cx: &mut App) -> AnyEleme
     window_border().shadow_size(px(0.)).child(content).into_any_element()
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "windows")]
+pub fn frame(content: AnyElement, window: &mut Window, cx: &mut App) -> AnyElement {
+    crate::win_title_bar::frame(content, window, cx)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
 pub fn frame(content: AnyElement, _: &mut Window, _: &mut App) -> AnyElement {
     content
 }
