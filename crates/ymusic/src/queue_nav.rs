@@ -70,6 +70,13 @@ impl QueueNav {
         }
     }
 
+    /// The item at `from` moved to `to`: history entries follow the items they name.
+    pub fn moved(&mut self, from: usize, to: usize) {
+        for played in &mut self.played {
+            *played = moved_index(*played, from, to);
+        }
+    }
+
     /// Toggling shuffle restarts the history from the current item.
     pub fn set_shuffle(&mut self, shuffle: bool, current: usize) {
         self.shuffle = shuffle;
@@ -135,5 +142,18 @@ impl QueueNav {
         };
         self.commit(previous, len);
         Some(previous)
+    }
+}
+
+/// Where the item at `index` sits after the item at `from` moved to `to`.
+pub fn moved_index(index: usize, from: usize, to: usize) -> usize {
+    if index == from {
+        to
+    } else if from < to && (from + 1..=to).contains(&index) {
+        index - 1
+    } else if to < from && (to..from).contains(&index) {
+        index + 1
+    } else {
+        index
     }
 }

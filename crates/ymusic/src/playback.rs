@@ -19,7 +19,7 @@ use ym_mse::Presenter;
 use crate::audio_effects::AudioEffects;
 use crate::graph::{AppGraph, on_core};
 use crate::local_engine::{LocalCommand, LocalEngine};
-use crate::queue_nav::{LoopMode, QueueNav};
+use crate::queue_nav::{LoopMode, QueueNav, moved_index};
 use crate::youtube_session::YoutubeSession;
 
 const VOLUME_KEY: &str = "playback.volume";
@@ -190,6 +190,15 @@ pub struct CaptionTrack {
 
 pub const AUTO_TRANSLATE_KIND: &str = "translate";
 
+/// A YouTube video's owner channel, as its player response names it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MediaDetails {
+    pub video_id: String,
+    pub channel_title: Option<String>,
+    /// An app link to the channel page.
+    pub channel_url: Option<String>,
+}
+
 pub struct Playback {
     session: Option<Arc<YoutubeSession>>,
     booting: bool,
@@ -222,6 +231,12 @@ pub struct Playback {
     pub volume: f32,
     pub effects: AudioEffects,
     pub nav: QueueNav,
+    /// The loaded video's channel, once the player reports it.
+    details: Option<MediaDetails>,
+    /// The next load starts paused, once.
+    start_paused: bool,
+    /// The next YouTube load stops the player first, in the same command.
+    stop_before_load: bool,
     sleep_deadline: Option<Instant>,
     pub sleep_after_current: bool,
     pub captions: bool,
@@ -299,6 +314,9 @@ impl Playback {
                 let saved = |key: &str| settings.get_raw(key).ok().flatten().unwrap_or_default();
                 QueueNav::new(LoopMode::from_name(&saved(LOOP_MODE_KEY)), saved(SHUFFLE_KEY) == "1")
             },
+            details: None,
+            start_paused: false,
+            stop_before_load: false,
             sleep_deadline: None,
             sleep_after_current: false,
             captions: false,
@@ -393,6 +411,52 @@ impl Playback {
         self.queue.push(item);
         self.queue_revision += 1;
         cx.notify();
+    }
+
+    /// Moves the item at `from` to `to`; the playing item keeps playing wherever it lands.
+    pub fn move_item(&mut self, from: usize, to: usize, cx: &mut Context<Self>) {
+        if from >= self.queue.len() || to >= self.queue.len() || from == to {
+            return;
+        }
+        let item = self.queue.remove(from);
+        self.queue.insert(to, item);
+        self.index = moved_index(self.index, from, to);
+        self.nav.moved(from, to);
+        self.queue_revision += 1;
+        cx.notify();
+    }
+
+    /// Replaces the queue with `item` and its radio.
+    pub fn start_radio(&mut self, item: QueueItem, cx: &mut Context<Self>) {
+        let Some(video_id) = item.video_id().map(str::to_owned) else { return };
+        self.queue_continuation = None;
+        self.queue = vec![item];
+        self.index = 0;
+        self.fetch_radio(video_id, cx);
+        self.new_queue();
+        self.load_current(cx);
+    }
+
+    /// Stops the current item's engine and loads the item again where it was, keeping play or pause:
+    /// recovers a wedged player.
+    pub fn reload(&mut self, cx: &mut Context<Self>) {
+        if self.current().is_none() {
+            return;
+        }
+        self.start_paused = !self.is_playing() && !matches!(self.state, PlayState::Failed(_));
+        self.start_position_ms = self.position_ms.max(0);
+        match self.active {
+            Some(Active::Local) => self.send_local(LocalCommand::Stop),
+            Some(Active::YouTube) => self.stop_before_load = true,
+            None => {}
+        }
+        self.load_current(cx);
+    }
+
+    /// The current video's channel title and app link, when the player has named them.
+    pub fn current_details(&self) -> Option<&MediaDetails> {
+        let video_id = self.current().and_then(QueueItem::video_id)?;
+        self.details.as_ref().filter(|details| details.video_id == video_id)
     }
 
     /// Loads the current item again after a failure.
@@ -941,6 +1005,7 @@ impl Playback {
         let mut request = LoadRequest::audio(video_id);
         request.start_position_ms = std::mem::take(&mut self.start_position_ms);
         request.viewport = self.viewport;
+        request.play_when_ready = !std::mem::take(&mut self.start_paused);
         request.speed = self.effects.speed;
         request.pitch = self.effects.pitch;
         if self.video {
@@ -974,10 +1039,13 @@ impl Playback {
                     return;
                 }
                 let request = self.load_request(&video_id);
-                self.command(
-                    cx,
-                    move |engine, log| async move { engine.player_load(&request, &log).await.map(|_| ()) },
-                );
+                let stop_first = std::mem::take(&mut self.stop_before_load);
+                self.command(cx, move |engine, log| async move {
+                    if stop_first {
+                        engine.player_stop(&log).await?;
+                    }
+                    engine.player_load(&request, &log).await.map(|_| ())
+                });
             }
             Source::Local(path) => {
                 if self.active == Some(Active::YouTube) {
@@ -1002,6 +1070,10 @@ impl Playback {
                 let start = std::mem::take(&mut self.start_position_ms);
                 if start > 0 {
                     self.send_local(LocalCommand::Seek(start));
+                }
+                if std::mem::take(&mut self.start_paused) {
+                    self.send_local(LocalCommand::Pause);
+                    self.state = PlayState::Paused;
                 }
                 self.poll_local(cx);
             }
@@ -1037,7 +1109,8 @@ impl Playback {
         if let Some(message) = status.error {
             let log = cx.global::<AppGraph>().log.fork("playback");
             log.warn(&format!("R90007 local file failed: {message}"), None);
-            let missing = matches!(self.current().map(|item| &item.source), Some(Source::Local(path)) if !path.exists());
+            let missing =
+                matches!(self.current().map(|item| &item.source), Some(Source::Local(path)) if !path.exists());
             self.state = PlayState::Failed(if missing {
                 PlaybackFailure { code: FILE_MISSING.to_owned(), user_message: None, retry: false }
             } else {
@@ -1205,6 +1278,16 @@ impl Playback {
             };
             if self.state == PlayState::Ended {
                 self.track_ended(cx);
+            }
+        }
+        if let Some(details) = status.get("details") {
+            let text = |name: &str| details.get(name).and_then(Value::as_str).map(str::to_owned);
+            if let Some(video_id) = text("videoId") {
+                self.details = Some(MediaDetails {
+                    video_id,
+                    channel_title: text("channelTitle"),
+                    channel_url: text("channelUrl"),
+                });
             }
         }
         self.check_skip(cx);

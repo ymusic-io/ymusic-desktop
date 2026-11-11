@@ -205,6 +205,12 @@ impl LibraryView {
         self.select_tab(Tab::ALL[index.min(Tab::ALL.len() - 1)], cx);
     }
 
+    /// Opens the songs of the artist (or album) `name`.
+    pub fn open_group(&mut self, album: bool, name: String, cx: &mut Context<Self>) {
+        self.select_tab(if album { Tab::Albums } else { Tab::Artists }, cx);
+        self.group = Some(name);
+    }
+
     fn select_tab(&mut self, tab: Tab, cx: &mut Context<Self>) {
         self.tab = tab;
         self.group = None;
