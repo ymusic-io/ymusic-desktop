@@ -52,6 +52,7 @@ pub fn save_bounds(window: &Window, settings: std::sync::Arc<dyn SettingsStore>,
     });
 }
 
+#[cfg_attr(target_os = "windows", allow(dead_code))]
 const LOGO_PNG: &[u8] = include_bytes!("../assets/ymusic-512.png");
 const TRAY_PNG: &[u8] = include_bytes!("../assets/ymusic-tray.png");
 
@@ -83,8 +84,95 @@ pub fn set_dock_icon(log: &Logger) {
 }
 
 #[cfg(not(target_os = "macos"))]
-pub fn set_dock_icon(_log: &Logger) {
-    let _ = LOGO_PNG;
+pub fn set_dock_icon(_log: &Logger) {}
+
+/// The Wayland app_id and X11 WM_CLASS of the window; GNOME takes its icon from the desktop entry
+/// of the same name.
+pub const APP_ID: &str = "io.ymusic.YMusic";
+
+/// The logo as the X11 `_NET_WM_ICON` (Wayland has no window icon: the desktop entry gives it).
+#[cfg(target_os = "linux")]
+pub fn window_icon(log: &Logger) -> Option<std::sync::Arc<image::RgbaImage>> {
+    match image::load_from_memory(LOGO_PNG) {
+        Ok(logo) => {
+            Some(std::sync::Arc::new(logo.resize(128, 128, image::imageops::FilterType::Triangle).into_rgba8()))
+        }
+        Err(error) => {
+            log.warn("window icon: the logo did not decode", Some(&error));
+            None
+        }
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn window_icon(_log: &Logger) -> Option<std::sync::Arc<image::RgbaImage>> {
+    None
+}
+
+/// GNOME Shell takes window icons only from a desktop entry matched by app_id / StartupWMClass, so
+/// a hidden (NoDisplay) entry in the user's data dir maps the window to the logo. Rewritten only
+/// when its contents change. An install under /opt or /usr ships its own entry, which a second one
+/// with the same StartupWMClass would compete with, so there this one is removed.
+#[cfg(target_os = "linux")]
+pub fn sync_desktop_entry() -> anyhow::Result<()> {
+    use std::path::PathBuf;
+    let data_home = std::env::var_os("XDG_DATA_HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|home| home.join(".local/share")))
+        .ok_or_else(|| anyhow::anyhow!("no home directory"))?;
+    let entry_file = data_home.join("applications").join(format!("{APP_ID}.desktop"));
+    let icon_file = data_home.join("icons/hicolor/512x512/apps").join(format!("{APP_ID}.png"));
+    let exe = std::env::current_exe()?;
+    if exe.starts_with("/opt") || exe.starts_with("/usr") {
+        for file in [&entry_file, &icon_file] {
+            match std::fs::remove_file(file) {
+                Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error.into()),
+                _ => {}
+            }
+        }
+        return Ok(());
+    }
+    write_if_changed(&icon_file, LOGO_PNG)?;
+    let entry = format!(
+        "[Desktop Entry]\nType=Application\nName={}\nExec={}\nIcon={}\nStartupWMClass={APP_ID}\nNoDisplay=true\n",
+        t(Str::AppName),
+        desktop_exec_quoted(&exe.to_string_lossy()),
+        icon_file.display(),
+    );
+    write_if_changed(&entry_file, entry.as_bytes())
+}
+
+#[cfg(target_os = "linux")]
+fn write_if_changed(file: &std::path::Path, contents: &[u8]) -> anyhow::Result<()> {
+    if std::fs::read(file).is_ok_and(|current| current == contents) {
+        return Ok(());
+    }
+    if let Some(parent) = file.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(file, contents)?;
+    Ok(())
+}
+
+/// An Exec program path per the Desktop Entry spec: quoted, `"` `` ` `` `$` `\` backslash-escaped,
+/// then string-escaped (each backslash doubled), and `%` doubled.
+#[cfg(target_os = "linux")]
+fn desktop_exec_quoted(path: &str) -> String {
+    let mut quoted = String::from("\"");
+    for character in path.chars() {
+        match character {
+            '\\' => quoted.push_str("\\\\\\\\"),
+            '"' | '`' | '$' => {
+                quoted.push_str("\\\\");
+                quoted.push(character);
+            }
+            '%' => quoted.push_str("%%"),
+            other => quoted.push(other),
+        }
+    }
+    quoted.push('"');
+    quoted
 }
 
 /// Hides the Dock icon while only the tray icon is left (macOS accessory activation).

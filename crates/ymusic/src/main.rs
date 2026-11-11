@@ -92,6 +92,16 @@ fn main() {
         let theme = graph.settings.get_raw(crate::settings_view::THEME_KEY).ok().flatten().unwrap_or_default();
         crate::settings_view::apply_theme(&theme, cx);
         crate::desktop::set_dock_icon(&graph.log);
+        #[cfg(target_os = "linux")]
+        {
+            let log = graph.log.fork("desktop-entry");
+            graph.tokio.spawn_blocking(move || {
+                if let Err(error) = crate::desktop::sync_desktop_entry() {
+                    log.warn("desktop entry install failed", Some(error.as_ref()));
+                }
+            });
+        }
+        let window_icon = crate::desktop::window_icon(&graph.log);
         let window_bounds = match dev_window_size() {
             Some(dev) => WindowBounds::centered(dev, cx),
             None => crate::desktop::initial_bounds(graph.settings.as_ref(), size(px(1180.), px(780.)), cx),
@@ -113,6 +123,8 @@ fn main() {
             // The video view sits behind gpui's, so the window and Root stay unpainted and the
             // Shell paints everything but the video box.
             window_background: WindowBackgroundAppearance::Transparent,
+            app_id: Some(crate::desktop::APP_ID.into()),
+            icon: window_icon,
             ..Default::default()
         };
         cx.open_window(options, |window, cx| {
