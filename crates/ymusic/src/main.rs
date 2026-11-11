@@ -45,7 +45,7 @@ fn main() {
     let data_dir = std::env::var_os("YMUSIC_DATA_DIR")
         .filter(|_| cfg!(debug_assertions))
         .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(std::env::temp_dir).join(".ymusic_rust"));
+        .unwrap_or_else(|| dirs::data_local_dir().unwrap_or_else(std::env::temp_dir).join("YMusicRust"));
     let log_setup = crate::telemetry::logger(&data_dir);
     let log = log_setup.log.clone();
     let tokio =
