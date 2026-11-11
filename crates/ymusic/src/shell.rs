@@ -277,6 +277,8 @@ pub struct Shell {
     /// The video whose details dialog opens on the next frame.
     pending_details: Option<String>,
     tray: Option<crate::desktop::Tray>,
+    /// The window's device pixels per logical pixel, as of the last frame.
+    scale_factor: f32,
     /// The window was closed with a queue: only the tray icon is left.
     hidden_to_tray: bool,
     /// The pending write of the window's bounds; replaced on every resize or move.
@@ -396,6 +398,7 @@ impl Shell {
             music_tab_drag: DragRow::default(),
             idle_escape_at: None,
             tray,
+            scale_factor: window.scale_factor(),
             hidden_to_tray: false,
             _save_bounds: None,
             _subscriptions: vec![toggle, now_playing_events, visibility, bounds, tray_state],
@@ -1262,7 +1265,11 @@ impl Shell {
                 div()
                     .size(px(logo))
                     .flex_shrink_0()
-                    .child(img(crate::assets::LOGO_SVG_PATH).size_full().rounded_full()),
+                    .child(
+                        img(crate::assets::logo_path((logo * self.scale_factor).round() as u32))
+                            .size_full()
+                            .rounded_full(),
+                    ),
             )
             .child(v_flex().min_w_0().child(div().font_semibold().child(t(Str::AppName))).child(
                 div().text_xs().text_color(theme.muted_foreground).child(format!("v{}", env!("CARGO_PKG_VERSION"))),
@@ -1579,6 +1586,7 @@ impl Shell {
 
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.scale_factor = window.scale_factor();
         if window.focused(cx).is_none() {
             self.focus.focus(window, cx);
         }

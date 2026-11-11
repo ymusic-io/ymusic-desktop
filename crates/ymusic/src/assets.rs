@@ -70,8 +70,19 @@ gpui_kit::assets::icon_assets!(
     ]
 );
 
-/// The app logo, full color, for `img()`.
-pub const LOGO_SVG_PATH: &str = "brand/ymusic-logo.svg";
+const LOGO_SVG: &str = include_str!("../assets/ymusic-logo.svg");
+const LOGO_PREFIX: &str = "brand/ymusic-logo@";
+
+/// The app logo, full color, for `img()`, rasterized at `device_px` square: gpui draws an SVG image
+/// at its own size and minifies it unfiltered, so it must arrive at the size it is shown.
+pub fn logo_path(device_px: u32) -> SharedString {
+    format!("{LOGO_PREFIX}{device_px}.svg").into()
+}
+
+fn logo_at(path: &str) -> Option<String> {
+    let size: u32 = path.strip_prefix(LOGO_PREFIX)?.strip_suffix(".svg")?.parse().ok()?;
+    Some(LOGO_SVG.replacen(r#"width="1024" height="1024""#, &format!(r#"width="{size}" height="{size}""#), 1))
+}
 
 pub struct AppAssets {
     pub local_art: Arc<LocalArt>,
@@ -82,8 +93,8 @@ impl AssetSource for AppAssets {
         if LocalArt::handles(path) {
             return self.local_art.load(path).map(Some);
         }
-        if path == LOGO_SVG_PATH {
-            return Ok(Some(Cow::Borrowed(include_bytes!("../assets/ymusic-logo.svg"))));
+        if let Some(svg) = logo_at(path) {
+            return Ok(Some(Cow::Owned(svg.into_bytes())));
         }
         match ShellIcons.load(path) {
             Ok(Some(bytes)) => Ok(Some(bytes)),
