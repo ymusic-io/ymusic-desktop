@@ -16,7 +16,7 @@ use ym_signin::DeviceLinkOffer;
 use crate::a11y::KeyboardFocusable;
 use crate::graph::{AppGraph, on_core};
 use crate::signin::SignInError;
-use crate::spinner::Spinner;
+use crate::spinner::{BusyButton, Spinner};
 
 const FORM_MAX: f32 = 560.;
 const QR_BOX: f32 = 220.;
@@ -336,7 +336,7 @@ impl SignInView {
                 .primary()
                 .w_full()
                 .label(t(Str::SigninPasteSubmit))
-                .loading(self.submitting)
+                .busy(self.submitting)
                 .disabled(blank || self.submitting)
                 .on_click(cx.listener(|view, _, window, cx| view.submit_paste(window, cx)))
                 .into_any_element(),

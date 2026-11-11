@@ -20,6 +20,7 @@ use crate::downloads::{DOWNLOAD_LOCATION_KEY, download_folder};
 use crate::feedback_view::link;
 use crate::graph::{AppGraph, on_core};
 use crate::settings_lists::{Licenses, RegionPicker};
+use crate::spinner::BusyButton;
 use crate::sponsor_block::SPONSOR_BLOCK_KEY;
 
 pub const THEME_KEY: &str = "app.theme";
@@ -513,14 +514,14 @@ impl Render for SettingsView {
             .small()
             .ghost()
             .label(region_label)
-            .loading(self.locales.is_none() && self.locales_loading)
+            .busy(self.locales.is_none() && self.locales_loading)
             .on_click(cx.listener(|_, _, window, cx| RegionPicker::open(cx.entity(), window, cx)));
 
         let account_control: AnyElement = match &self.account {
             Some(account) if account.signed_in => Button::new("sign-out")
                 .small()
                 .label(t(Str::AccountSignOut))
-                .loading(self.signing_out)
+                .busy(self.signing_out)
                 .on_click(cx.listener(|view, _, _, cx| view.sign_out(cx)))
                 .into_any_element(),
             _ => Button::new("sign-in")

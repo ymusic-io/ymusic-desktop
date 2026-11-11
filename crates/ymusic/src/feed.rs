@@ -22,7 +22,7 @@ use crate::graph::{AppGraph, on_core};
 use crate::local_playlist::LocalPlaylistFromDownloads;
 use crate::playlist_download::PlaylistDownload;
 use crate::quick_download::saved_preset;
-use crate::spinner::Spinner;
+use crate::spinner::{BusyButton, Spinner};
 use crate::tab_row::tab_row;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -695,7 +695,7 @@ impl FeedView {
             .join(" · ");
         let subscribe = header.subscribed.filter(|_| header.channel_id.is_some()).map(|subscribed| {
             let label = t(if subscribed { Str::Subscribed } else { Str::Subscribe });
-            let pill = Button::new("subscribe").rounded_full().label(label).loading(self.header_busy);
+            let pill = Button::new("subscribe").rounded_full().label(label).busy(self.header_busy);
             let pill = if subscribed { pill.outline() } else { pill.primary() };
             pill.on_click(cx.listener(|view, _, window, cx| view.toggle_subscribed(window, cx)))
         });

@@ -4,7 +4,9 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use gpui_kit::component::button::Button;
 use gpui_kit::component::{Icon, IconName, Sizable, Size};
+use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 
 const TURN_MS: u128 = 900;
@@ -44,5 +46,17 @@ impl RenderOnce for Spinner {
         window.request_animation_frame();
         div()
             .child(Icon::new(IconName::Loader).with_size(self.size).transform(Transformation::rotate(percentage(turn))))
+    }
+}
+
+/// A busy button: inert like gpui-kit's `loading`, with the clock-driven spinner after its label.
+/// Never pair it with `.icon(..)` while busy: gpui-kit would draw its own, frozen, spinner there.
+pub trait BusyButton {
+    fn busy(self, busy: bool) -> Self;
+}
+
+impl BusyButton for Button {
+    fn busy(self, busy: bool) -> Self {
+        self.loading(busy).when(busy, |button| button.child(Spinner::new().small()))
     }
 }
