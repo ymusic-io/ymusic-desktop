@@ -46,6 +46,8 @@ const STOP_SHUFFLE: usize = 7;
 const STOP_CHANNEL: usize = 8;
 const STOP_CHANNEL_OVERLAY: usize = 9;
 const PLAY_BUTTON: f32 = 58.;
+/// Fixed: the top bar is a cached view, laid out without measuring its content.
+const TOP_BAR: f32 = 40.;
 
 pub enum NowPlayingEvent {
     Close,
@@ -102,6 +104,8 @@ pub struct NowPlaying {
     /// The video box as last painted, to report viewport changes to the player.
     video_box: Rc<Cell<(i32, i32)>>,
     audio_only_art: Entity<AudioOnlyArt>,
+    /// The top bar and the queue, made at the first render (which can observe this view).
+    parts: [Option<Entity<CachedPart>>; 2],
     /// Audio only as last drawn: it holds between items until the next one's tracks are known.
     audio_only: Cell<bool>,
     caption_strip: std::cell::RefCell<CaptionStrip>,
@@ -116,6 +120,42 @@ pub struct NowPlaying {
 }
 
 impl EventEmitter<NowPlayingEvent> for NowPlaying {}
+
+#[derive(Clone, Copy, PartialEq)]
+enum PanePart {
+    TopBar,
+    /// The queue header and list.
+    Queue {
+        large: bool,
+    },
+}
+
+/// A part of Now Playing as a cached view: it redraws when Now Playing changes, not with every
+/// frame of the audio-only bars.
+struct CachedPart {
+    now_playing: WeakEntity<NowPlaying>,
+    part: PanePart,
+    _observe: Subscription,
+}
+
+impl Render for CachedPart {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let part = self.part;
+        self.now_playing
+            .update(cx, |view, cx| match part {
+                PanePart::TopBar => match view.playback.read(cx).current().cloned() {
+                    Some(current) => view.render_top_bar(&current, cx),
+                    None => div().into_any_element(),
+                },
+                PanePart::Queue { large } => v_flex()
+                    .size_full()
+                    .child(view.render_queue_header(cx))
+                    .child(view.render_queue(large, cx))
+                    .into_any_element(),
+            })
+            .unwrap_or_else(|_| div().into_any_element())
+    }
+}
 
 /// A caption text row.
 const CAPTION_LINE: f32 = 24.;
@@ -277,6 +317,7 @@ impl NowPlaying {
             video_layer: None,
             video_box,
             audio_only_art,
+            parts: [None, None],
             audio_only: Cell::new(false),
             caption_strip: std::cell::RefCell::new(CaptionStrip::new()),
             reported_box: (0, 0),
@@ -795,8 +836,8 @@ impl NowPlaying {
             });
 
         h_flex()
+            .h(px(TOP_BAR))
             .px_2()
-            .py_1()
             .gap(px(5.))
             .items_center()
             .child(
@@ -1087,6 +1128,46 @@ impl NowPlaying {
         .size_0()
     }
 
+    fn cached_part(&mut self, part: PanePart, cx: &mut Context<Self>) -> AnyElement {
+        let slot = match part {
+            PanePart::TopBar => 0,
+            PanePart::Queue { .. } => 1,
+        };
+        let entity = match self.parts[slot].clone() {
+            Some(entity) => {
+                entity.update(cx, |cached, cx| {
+                    if cached.part != part {
+                        cached.part = part;
+                        cx.notify();
+                    }
+                });
+                entity
+            }
+            None => {
+                let now_playing = cx.entity();
+                let entity = cx.new(|cx| CachedPart {
+                    now_playing: now_playing.downgrade(),
+                    part,
+                    _observe: cx.observe(&now_playing, |_, _, cx| cx.notify()),
+                });
+                self.parts[slot] = Some(entity.clone());
+                entity
+            }
+        };
+        let mut style = StyleRefinement::default();
+        style.size.width = Some(relative(1.).into());
+        if slot == 0 {
+            style.size.height = Some(px(TOP_BAR).into());
+            style.flex_shrink = Some(0.);
+        } else {
+            style.flex_grow = Some(1.);
+            style.flex_shrink = Some(1.);
+            style.flex_basis = Some(relative(0.).into());
+            style.min_size.height = Some(px(0.).into());
+        }
+        entity.cached(style).into_any_element()
+    }
+
     fn render_queue(&self, large: bool, cx: &mut Context<Self>) -> AnyElement {
         let playback = self.playback.read(cx);
         let (queue, index) = (playback.queue.clone(), playback.index);
@@ -1247,11 +1328,10 @@ impl Render for NowPlaying {
         let viewport = window.viewport_size();
         let (width, height) = (f32::from(viewport.width), f32::from(viewport.height));
         let theme = cx.theme().clone();
-        let top_bar = self.render_top_bar(&current, cx);
-        let header = self.render_queue_header(cx);
+        let top_bar = self.cached_part(PanePart::TopBar, cx);
         if width > height && width >= 640. {
             let pane = (0.3 * width).clamp(320., 480.);
-            let queue = self.render_queue(pane >= 380., cx);
+            let queue = self.cached_part(PanePart::Queue { large: pane >= 380. }, cx);
             let video = self.render_video(&current, true, cx);
             return h_flex()
                 .size_full()
@@ -1265,13 +1345,12 @@ impl Render for NowPlaying {
                         .border_l_1()
                         .border_color(theme.border)
                         .child(top_bar)
-                        .child(header)
                         .child(queue),
                 )
                 .into_any_element();
         }
         let video = self.render_video(&current, false, cx);
-        let queue = self.render_queue(false, cx);
+        let queue = self.cached_part(PanePart::Queue { large: false }, cx);
         let artist = self.artist_line(STOP_CHANNEL, &current, cx);
         v_flex()
             .size_full()
@@ -1293,7 +1372,6 @@ impl Render for NowPlaying {
                                 column.child(artist.pt_1().text_sm().text_color(theme.muted_foreground))
                             }),
                     )
-                    .child(header)
                     .child(queue),
             )
             .into_any_element()
