@@ -50,6 +50,7 @@ pub struct NowPlaying {
     video_layer: Option<Rc<VideoLayer>>,
     /// The video box as last painted, to report viewport changes to the player.
     video_box: Rc<Cell<(i32, i32)>>,
+    caption_strip: std::cell::RefCell<CaptionStrip>,
     reported_box: (i32, i32),
     seek: Entity<SliderState>,
     dragging_seek: bool,
@@ -62,8 +63,79 @@ pub struct NowPlaying {
 
 impl EventEmitter<NowPlayingEvent> for NowPlaying {}
 
-/// Cues shown at once, newest at the bottom.
-const CAPTION_ROWS: usize = 2;
+/// A caption text row.
+const CAPTION_LINE: f32 = 24.;
+/// A one-row cue: its row, the box's padding and the gap under it.
+const CAPTION_ROW: f32 = CAPTION_LINE + 4. + CAPTION_GAP;
+const CAPTION_GAP: f32 = 4.;
+/// A cue joining the window scrolls in over this long, as in the JVM overlay.
+const CAPTION_SCROLL: Duration = Duration::from_millis(280);
+/// Average advance of the 16 px caption font, for estimating where rows wrap.
+const CAPTION_CHAR_WIDTH: f32 = 8.5;
+
+/// A cue's height at `width`: its hard rows, each wrapped.
+fn cue_height(text: &str, width: f32) -> f32 {
+    let per_row = (width / CAPTION_CHAR_WIDTH).max(1.);
+    let rows: f32 = text.split('\n').map(|row| (row.chars().count() as f32 / per_row).ceil().max(1.)).sum();
+    rows * CAPTION_LINE + 4. + CAPTION_GAP
+}
+
+/// The cues to draw: the bundle's window plus a cue that just left it, kept long enough to scroll
+/// out above the box. `tail_count` cues joined in the last change.
+struct CaptionStrip {
+    held: std::collections::HashMap<i64, String>,
+    last_ids: Vec<i64>,
+    entry_ids: Vec<i64>,
+    tail_count: usize,
+    changed_at: std::time::Instant,
+}
+
+impl CaptionStrip {
+    fn new() -> Self {
+        Self {
+            held: Default::default(),
+            last_ids: Vec::new(),
+            entry_ids: Vec::new(),
+            tail_count: 0,
+            changed_at: std::time::Instant::now(),
+        }
+    }
+
+    /// Same input, same output: only a change of the window's cue ids moves the strip.
+    fn advance(&mut self, lines: &[(i64, String)]) -> Vec<(i64, String)> {
+        let ids: Vec<i64> = lines.iter().map(|(id, _)| *id).collect();
+        if ids != self.last_ids {
+            let sequential = !self.last_ids.is_empty() && ids.iter().any(|id| self.last_ids.contains(id));
+            if sequential {
+                let tail: Vec<i64> = ids.iter().copied().filter(|id| !self.entry_ids.contains(id)).collect();
+                let mut entries: Vec<i64> = self.entry_ids.iter().copied().filter(|id| !tail.contains(id)).collect();
+                entries.extend(&tail);
+                let keep = ids.len() + 1;
+                self.entry_ids = entries.split_off(entries.len().saturating_sub(keep));
+                self.tail_count = tail.len();
+            } else {
+                self.entry_ids = ids.clone();
+                self.tail_count = 0;
+            }
+            self.last_ids = ids;
+            self.changed_at = std::time::Instant::now();
+        }
+        let entries: Vec<(i64, String)> = self
+            .entry_ids
+            .iter()
+            .filter_map(|id| {
+                lines
+                    .iter()
+                    .find(|(line, _)| line == id)
+                    .map(|(_, text)| text.clone())
+                    .or_else(|| self.held.get(id).cloned())
+                    .map(|text| (*id, text))
+            })
+            .collect();
+        self.held = entries.iter().cloned().collect();
+        entries
+    }
+}
 /// The JVM caption style's default box opacity.
 const CAPTION_BACKGROUND_OPACITY: f32 = 0.55;
 /// Clears the video controls' bottom strip.
@@ -136,6 +208,7 @@ impl NowPlaying {
             queue_focus: FocusList::new(Some(queue_scroll)),
             video_layer: None,
             video_box: Rc::new(Cell::new((0, 0))),
+            caption_strip: std::cell::RefCell::new(CaptionStrip::new()),
             reported_box: (0, 0),
             seek,
             dragging_seek: false,
@@ -457,28 +530,52 @@ impl NowPlaying {
             if width / height.max(1.) <= VIDEO_RATIO { (width, width / VIDEO_RATIO) } else { (height * VIDEO_RATIO, height) };
         let bar = (height - picture_height) / 2.;
         let under_picture = bar >= CAPTION_TWO_ROWS + CAPTION_ABOVE_CONTROLS + 8.;
-        let cues = playback.caption_lines.iter().rev().take(CAPTION_ROWS).rev();
-        let mut column = v_flex().items_start().gap_1();
-        for (_, text) in cues {
+        let side = (width - picture_width) / 2. + picture_width * inset;
+        let cue_width = (width - side * 2.).max(1.);
+        let mut strip = self.caption_strip.borrow_mut();
+        let entries = strip.advance(&playback.caption_lines);
+        // Cue heights are estimated from the text (gpui lays text out later), with a box per cue.
+        let heights: Vec<f32> = entries.iter().map(|(_, text)| cue_height(text, cue_width)).collect();
+        let total: f32 = heights.iter().sum();
+        let newest = heights.last().copied().unwrap_or(0.);
+        let box_height = total.min((CAPTION_ROW * 2.).max(newest));
+        let tail: f32 = heights.iter().rev().take(strip.tail_count).sum();
+        // A single row joining the window scrolls in; anything taller swaps.
+        let roll_up = if tail < CAPTION_ROW * 1.5 { tail } else { 0. };
+        let progress = (strip.changed_at.elapsed().as_secs_f32() / CAPTION_SCROLL.as_secs_f32()).min(1.);
+        let eased = 1. - (1. - progress).powi(3);
+        let offset = (1. - eased) * roll_up;
+        let animating = roll_up > 0. && progress < 1.;
+        let mut column = v_flex().items_start().absolute().left_0().right_0().bottom(px(-offset));
+        for (_, text) in &entries {
             column = column.child(
-                div()
-                    .px_2()
-                    .py(px(2.))
-                    .rounded(px(4.))
-                    .bg(black().opacity(CAPTION_BACKGROUND_OPACITY))
-                    .text_color(white())
-                    .text_size(px(16.))
-                    .line_height(px(24.))
-                    .child(text.clone()),
+                div().pb(px(CAPTION_GAP)).child(
+                    div()
+                        .px_2()
+                        .py(px(2.))
+                        .rounded(px(4.))
+                        .bg(black().opacity(CAPTION_BACKGROUND_OPACITY))
+                        .text_color(white())
+                        .text_size(px(16.))
+                        .line_height(px(CAPTION_LINE))
+                        .child(text.clone()),
+                ),
             );
         }
-        let side = (width - picture_width) / 2. + picture_width * inset;
+        let frames = canvas(|_, _, _| {}, move |_, _, window, _| {
+            if animating {
+                window.request_animation_frame();
+            }
+        })
+        .absolute()
+        .size_0();
+        let window_box = div().relative().h(px(box_height)).overflow_hidden().child(column).child(frames);
         let placed = div().absolute().left_0().right_0().px(px(side));
         Some(if under_picture {
-            placed.top(px(bar + picture_height + 8.)).child(column)
+            placed.top(px(bar + picture_height + 8.)).child(window_box)
         } else {
             let bottom = (bar + 12.).max(if controls { CAPTION_ABOVE_CONTROLS } else { 12. });
-            placed.bottom(px(bottom)).child(column)
+            placed.bottom(px(bottom)).child(window_box)
         })
     }
 
