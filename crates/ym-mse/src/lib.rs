@@ -47,6 +47,8 @@ unsafe extern "C" {
     fn mse_host_bind_presenter(host: *mut c_void, presenter: *mut c_void);
     #[cfg(target_os = "macos")]
     fn vpresent_create_vt_layer(layer: *mut c_void, sink: *const VpSink) -> *mut c_void;
+    fn vpresent_create_cpu(sink: *const VpSink) -> *mut c_void;
+    fn vpresent_set_size(presenter: *mut c_void, width: c_int, height: c_int);
     fn vpresent_release(presenter: *mut c_void);
     fn vpresent_mode(presenter: *mut c_void) -> c_int;
 }
@@ -59,7 +61,12 @@ struct VpSink {
     user: *mut c_void,
 }
 
-/// Video output into an `AVSampleBufferDisplayLayer` (zero-copy VideoToolbox frames on macOS).
+/// Receives each CPU-mode picture as tightly packed BGRA rows on a decode thread; the pixels are
+/// only valid during the call.
+pub type FrameSink = Box<dyn Fn(u32, u32, &[u8]) + Send + Sync>;
+
+/// Video output: an `AVSampleBufferDisplayLayer` (zero-copy VideoToolbox frames on macOS), or
+/// BGRA pictures handed to a [`FrameSink`].
 pub struct Presenter {
     raw: *mut c_void,
 }
@@ -77,6 +84,24 @@ impl Presenter {
         (!raw.is_null()).then_some(Self { raw })
     }
 
+    /// Converts every picture to BGRA, fitted into [`Presenter::set_size`], for `sink`.
+    pub fn cpu(sink: FrameSink) -> Option<Self> {
+        let user = Box::into_raw(Box::new(sink)).cast::<c_void>();
+        let sink = VpSink { on_frame: Some(on_cpu_frame), on_mode: None, release: Some(release_cpu_sink), user };
+        let raw = unsafe { vpresent_create_cpu(&sink) };
+        if raw.is_null() {
+            // The C side never calls `release` for a failed create.
+            unsafe { release_cpu_sink(user) };
+            return None;
+        }
+        Some(Self { raw })
+    }
+
+    /// The CPU fit box in pixels: min-fit, never upscaled; 0 on a side leaves it unconstrained.
+    pub fn set_size(&self, width: u32, height: u32) {
+        unsafe { vpresent_set_size(self.raw, width as c_int, height as c_int) }
+    }
+
     fn as_raw(&self) -> *mut c_void {
         self.raw
     }
@@ -91,6 +116,19 @@ impl Drop for Presenter {
     fn drop(&mut self) {
         unsafe { vpresent_release(self.raw) }
     }
+}
+
+unsafe extern "C" fn on_cpu_frame(user: *mut c_void, width: c_int, height: c_int, bgra: *const u8) {
+    if bgra.is_null() || width <= 0 || height <= 0 {
+        return;
+    }
+    let sink = unsafe { &*user.cast::<FrameSink>() };
+    let pixels = unsafe { std::slice::from_raw_parts(bgra, width as usize * height as usize * 4) };
+    sink(width as u32, height as u32, pixels);
+}
+
+unsafe extern "C" fn release_cpu_sink(user: *mut c_void) {
+    drop(unsafe { Box::from_raw(user.cast::<FrameSink>()) });
 }
 
 /// One native MSE host. Attach it to the player's QuickJS runtime before the bundle evaluates;
