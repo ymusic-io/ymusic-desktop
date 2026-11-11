@@ -74,7 +74,13 @@ gpui_kit::assets::icon_assets!(
         Flame,
         SquarePen,
         Funnel,
-        MousePointer2
+        MousePointer2,
+        File,
+        Rows2,
+        Headphones,
+        Video,
+        AudioLines,
+        Image
     ]
 );
 

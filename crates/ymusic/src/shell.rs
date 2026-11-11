@@ -784,7 +784,7 @@ impl Shell {
                     video_id: video_id.to_owned(),
                     title: video_id.to_owned(),
                     artist: None,
-                    thumbnail_url: None,
+                    thumbnail_url: Some(format!("https://i.ytimg.com/vi/{video_id}/hqdefault.jpg")),
                 });
             }
             Some(("download", spec)) => {

@@ -340,14 +340,14 @@ fn file_path(task: &DownloadTask) -> Option<PathBuf> {
     url::Url::parse(stored).ok()?.to_file_path().ok()
 }
 
-enum Playability {
+pub(crate) enum Playability {
     SignInRequired,
     Unavailable,
 }
 
 /// A YouTube playabilityStatus verdict in a failure code: all caps, unlike site codes and categories.
 /// ERROR is transient, so a plain re-run.
-fn playability(code: &str) -> Option<Playability> {
+pub(crate) fn playability(code: &str) -> Option<Playability> {
     match code {
         "LOGIN_REQUIRED" | "AGE_CHECK_REQUIRED" | "AGE_VERIFICATION_REQUIRED" => Some(Playability::SignInRequired),
         "ERROR" => None,
