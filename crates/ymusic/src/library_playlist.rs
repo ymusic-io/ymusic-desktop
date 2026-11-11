@@ -14,6 +14,7 @@ use ym_i18n::{Str, t, tf};
 use ym_store::{MediaItem, MediaStore, Playlist, PlaylistItemDetail};
 
 use crate::a11y::FocusList;
+use crate::action_icon::{HIT, sized_action_icon};
 use crate::graph::{AppGraph, on_core};
 use crate::spinner::Spinner;
 
@@ -568,6 +569,7 @@ pub struct ArrangePlaylist {
     focused_first: bool,
 }
 
+const ARRANGE_ICON: f32 = 22.;
 const CONTROL_UNDO: usize = 0;
 const CONTROL_CANCEL: usize = 1;
 const CONTROL_SAVE: usize = 2;
@@ -753,20 +755,19 @@ impl ArrangePlaylist {
                         .child((index + 1).to_string()),
                 )
             });
-        let top = Button::new(("arrange-top", index))
-            .ghost()
-            .icon(Lucide::ArrowUpToLine)
-            .accessibility_label(t(Str::CdMoveToTop))
-            .tooltip(t(Str::CdMoveToTop))
-            .disabled(stacked || self.busy)
-            .on_click(cx.listener(move |view, _, _, cx| view.edit(cx, |state| state.move_to_top(index))));
-        let remove = Button::new(("arrange-remove", index))
-            .ghost()
-            .icon(Lucide::CircleMinus)
-            .accessibility_label(t(Str::MenuRemoveFromPlaylist))
-            .tooltip(t(Str::MenuRemoveFromPlaylist))
-            .disabled(self.busy)
-            .on_click(cx.listener(move |view, _, _, cx| view.edit(cx, |state| state.remove(index))));
+        let top =
+            sized_action_icon(("arrange-top", index), Lucide::ArrowUpToLine, t(Str::CdMoveToTop), ARRANGE_ICON, HIT)
+                .disabled(stacked || self.busy)
+                .on_click(cx.listener(move |view, _, _, cx| view.edit(cx, |state| state.move_to_top(index))));
+        let remove = sized_action_icon(
+            ("arrange-remove", index),
+            Lucide::CircleMinus,
+            t(Str::MenuRemoveFromPlaylist),
+            ARRANGE_ICON,
+            HIT,
+        )
+        .disabled(self.busy)
+        .on_click(cx.listener(move |view, _, _, cx| view.edit(cx, |state| state.remove(index))));
         let label = [Some(song.title.clone()), (!detail.is_empty()).then(|| detail.clone())]
             .into_iter()
             .flatten()

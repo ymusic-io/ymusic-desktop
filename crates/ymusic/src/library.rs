@@ -20,6 +20,7 @@ use ym_i18n::{Str, t, tf};
 use ym_store::{Bucket, MediaItem, MediaStore, Playlist, PlaylistItemDetail};
 
 use crate::a11y::{DragRow, FocusList, KeyboardFocusable};
+use crate::action_icon::action_icon;
 use crate::file_rename::RenameFileDialog;
 use crate::graph::{AppGraph, on_core};
 use crate::library_playlist::{self, AddToLocalPlaylist, ArrangePlaylist, Changed, NameMode, PlaylistNameDialog};
@@ -1208,13 +1209,9 @@ pub fn song_cell<V: SongMenuHost>(
         .join(", ");
     let view = cx.entity().downgrade();
     let song = item.clone();
-    let more = Button::new(("song-more", index))
-        .ghost()
-        .small()
-        .icon(IconName::EllipsisVertical)
-        .accessibility_label(t(Str::CdMore))
-        .tooltip(t(Str::CdMore))
-        .dropdown_menu_with_anchor(Anchor::TopRight, move |menu_list, _, _| {
+    let more = action_icon(("song-more", index), IconName::EllipsisVertical, t(Str::CdMore)).dropdown_menu_with_anchor(
+        Anchor::TopRight,
+        move |menu_list, _, _| {
             let local = QueueItem::from_local(&song);
             let path = PathBuf::from(&song.uri);
             let act = {
@@ -1294,7 +1291,8 @@ pub fn song_cell<V: SongMenuHost>(
                         cx,
                     );
                 }))
-        });
+        },
+    );
     focus
         .item(index, h_flex().id(("local-item", index)).role(Role::ListItem).aria_label(label), cx)
         .pl_4()
@@ -1325,12 +1323,7 @@ pub fn song_cell<V: SongMenuHost>(
 }
 
 fn more_button(id: impl Into<ElementId>) -> Button {
-    Button::new(id)
-        .ghost()
-        .small()
-        .icon(IconName::EllipsisVertical)
-        .accessibility_label(t(Str::CdMore))
-        .tooltip(t(Str::CdMore))
+    action_icon(id, IconName::EllipsisVertical, t(Str::CdMore))
 }
 
 impl LibraryView {
@@ -1467,25 +1460,19 @@ impl LibraryView {
                 menu
             });
         let toggle = if manual {
-            Button::new("sort-direction")
-                .ghost()
-                .small()
-                .icon(Lucide::SquarePen)
-                .accessibility_label(t(Str::ArrangeSongs))
-                .tooltip(t(Str::ArrangeSongs))
+            action_icon("sort-direction", Lucide::SquarePen, t(Str::ArrangeSongs))
                 .on_click(cx.listener(|view, _, window, cx| view.arrange(window, cx)))
         } else {
             let direction = if state.descending { Str::CdSortDescending } else { Str::CdSortAscending };
-            Button::new("sort-direction")
-                .ghost()
-                .small()
-                .icon(if state.descending { IconName::ArrowDown } else { IconName::ArrowUp })
-                .accessibility_label(t(direction))
-                .tooltip(t(direction))
-                .on_click(cx.listener(move |view, _, _, cx| {
-                    let state = view.sort_state(context.id);
-                    view.set_sort(context.id, SortState { index: state.index, descending: !state.descending }, cx);
-                }))
+            action_icon(
+                "sort-direction",
+                if state.descending { IconName::ArrowDown } else { IconName::ArrowUp },
+                t(direction),
+            )
+            .on_click(cx.listener(move |view, _, _, cx| {
+                let state = view.sort_state(context.id);
+                view.set_sort(context.id, SortState { index: state.index, descending: !state.descending }, cx);
+            }))
         };
         h_flex()
             .gap_1()
@@ -1499,11 +1486,7 @@ impl LibraryView {
         if self.scanning {
             return div().size(px(40.)).flex().items_center().justify_center().child(Spinner::new()).into_any_element();
         }
-        Button::new("rescan")
-            .ghost()
-            .icon(Lucide::RefreshCw)
-            .accessibility_label(t(Str::LibraryRescan))
-            .tooltip(t(Str::LibraryRescan))
+        action_icon("rescan", Lucide::RefreshCw, t(Str::LibraryRescan))
             .on_click(cx.listener(|view, _, _, cx| view.rescan(cx)))
             .into_any_element()
     }

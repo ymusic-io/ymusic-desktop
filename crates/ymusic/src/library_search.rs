@@ -5,14 +5,14 @@
 use std::sync::Arc;
 
 use gpui_kit::assets::IconName as Lucide;
-use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
-use gpui_kit::component::{ActiveTheme, Icon, IconName, StyledExt, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme, IconName, StyledExt, h_flex, v_flex};
 use gpui_kit::*;
 use ym_i18n::{Str, t, tf};
 use ym_store::{MediaItem, MediaStore};
 
 use crate::a11y::FocusList;
+use crate::action_icon::action_icon;
 use crate::graph::{AppGraph, on_core};
 use crate::library::{
     GroupKind, LibraryView, PlayLocal, QueueLocal, SongAction, SongMenu, SongMenuHost, grid_rows, song_cell,
@@ -212,22 +212,17 @@ impl Render for LibrarySearchView {
         let bar = h_flex()
             .gap_2()
             .px_2()
-            .pt(px(6.))
-            .pb(px(7.))
+            .pt(px(2.))
+            .pb(px(3.))
             .border_b_1()
             .border_color(theme.border)
-            .child(
-                Button::new("library-search-back")
-                    .ghost()
-                    .icon(Icon::new(IconName::ArrowLeft))
-                    .accessibility_label(t(Str::CdBack))
-                    .tooltip(t(Str::CdBack))
-                    .on_click(cx.listener(|view, _, _, cx| {
-                        if !view.back(cx) {
-                            cx.emit(LibrarySearchEvent::Back);
-                        }
-                    })),
-            )
+            .child(action_icon("library-search-back", IconName::ArrowLeft, t(Str::CdBack)).on_click(cx.listener(
+                |view, _, _, cx| {
+                    if !view.back(cx) {
+                        cx.emit(LibrarySearchEvent::Back);
+                    }
+                },
+            )))
             .child(div().flex_1().child(Input::new(&self.input).cleanable(true)));
         let centered = |text: String| {
             div().flex_1().flex().items_center().justify_center().p_6().text_color(theme.muted_foreground).child(text)

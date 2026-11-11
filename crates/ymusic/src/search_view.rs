@@ -12,6 +12,7 @@ use gpui_kit::*;
 use ym_i18n::{Str, t};
 
 use crate::a11y::FocusList;
+use crate::action_icon::action_icon;
 use crate::graph::{AppGraph, on_core};
 
 const SUGGEST_DEBOUNCE: Duration = Duration::from_millis(250);
@@ -128,27 +129,28 @@ impl SearchView {
             .hover(|style| style.bg(theme.secondary))
             .child(icon.text_color(theme.muted_foreground))
             .child(div().flex_1().min_w_0().truncate().text_sm().child(text.to_owned()))
-            .when(history, |row| {
-                row.child(
-                    Button::new(("remove", index))
-                        .ghost()
-                        .small()
-                        .icon(Icon::new(IconName::Close))
-                        .accessibility_label(t(Str::CdRemoveFromHistory))
-                        .tooltip(t(Str::CdRemoveFromHistory))
-                        .on_click(cx.listener(move |view, _, _, cx| view.remove_from_history(&removed, cx))),
-                )
-            })
             .child(
-                Button::new(("insert", index))
-                    .ghost()
-                    .small()
-                    .icon(Icon::new(Lucide::ArrowUpLeft))
-                    .accessibility_label(t(Str::CdInsertQuery))
-                    .tooltip(t(Str::CdInsertQuery))
-                    .on_click(cx.listener(move |view, _, window, cx| {
-                        view.input.update(cx, |input, cx| input.set_value(inserted.clone(), window, cx));
-                    })),
+                h_flex()
+                    .when(history, |actions| {
+                        actions.child(
+                            action_icon(
+                                ("remove", index),
+                                Icon::new(IconName::Close).text_color(theme.muted_foreground),
+                                t(Str::CdRemoveFromHistory),
+                            )
+                            .on_click(cx.listener(move |view, _, _, cx| view.remove_from_history(&removed, cx))),
+                        )
+                    })
+                    .child(
+                        action_icon(
+                            ("insert", index),
+                            Icon::new(Lucide::ArrowUpLeft).text_color(theme.muted_foreground),
+                            t(Str::CdInsertQuery),
+                        )
+                        .on_click(cx.listener(move |view, _, window, cx| {
+                            view.input.update(cx, |input, cx| input.set_value(inserted.clone(), window, cx));
+                        })),
+                    ),
             )
             .on_click(cx.listener(move |view, _, _, cx| view.submit(submitted.clone(), cx)))
     }
@@ -198,16 +200,12 @@ impl Render for SearchView {
         let bar = h_flex()
             .gap_2()
             .px_2()
-            .pt(px(6.))
-            .pb(px(7.))
+            .pt(px(2.))
+            .pb(px(3.))
             .border_b_1()
             .border_color(theme.border)
             .child(
-                Button::new("search-back")
-                    .ghost()
-                    .icon(Icon::new(IconName::ArrowLeft))
-                    .accessibility_label(t(Str::CdBack))
-                    .tooltip(t(Str::CdBack))
+                action_icon("search-back", IconName::ArrowLeft, t(Str::CdBack))
                     .on_click(cx.listener(|_, _, _, cx| cx.emit(SearchEvent::Back))),
             )
             .child(div().flex_1().child(Input::new(&self.input).cleanable(true)));
