@@ -4,20 +4,20 @@
 
 use std::path::PathBuf;
 
-const APPLE_C: &[&str] = &[
+const COMMON_C: &[&str] = &[
     "mse_host.c",
     "mse_ffmpeg.c",
     "mse_caps.c",
     "mse_vt.c",
-    "mse_vt_blit.c",
     "audio_fx.c",
     "vpresent.c",
     "vpresent_cpu.c",
-    "vpresent_vt.c",
     "vpipe.c",
-    "vpipe_hw_vt.c",
     "file_av.c",
 ];
+const APPLE_C: &[&str] = &["mse_vt_blit.c", "vpresent_vt.c", "vpipe_hw_vt.c"];
+// libpulse-simple is dlopen'd by aq_pulse.c; only its headers are needed at build time.
+const LINUX_C: &[&str] = &["aq_pulse.c", "mse_hwdev.c", "vpipe_hw_linux.c"];
 const APPLE_OBJC: &[&str] = &["mse_vt_layer.m", "mse_vt_dec.m"];
 const APPLE_FRAMEWORKS: &[&str] = &[
     "AudioToolbox",
@@ -38,8 +38,13 @@ fn main() {
     let native = v4.join("mse/native");
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap();
     let target_arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap();
-    assert_eq!(target_os, "macos", "ym-mse builds for macOS only so far");
-    let slug = format!("macos-{}", if target_arch == "aarch64" { "arm64" } else { "x86_64" });
+    let arch = if target_arch == "aarch64" { "arm64" } else { "x86_64" };
+    let slug = match target_os.as_str() {
+        "macos" => format!("macos-{arch}"),
+        "linux" => format!("linux-{arch}"),
+        other => panic!("ym-mse builds for macOS and Linux only so far, not {other}"),
+    };
+    let apple = target_os == "macos";
     let ffmpeg = std::env::var("FFMPEG_ROOT")
         .map(PathBuf::from)
         .unwrap_or_else(|_| v4.parent().unwrap().join("ffmpeg-build/out").join(&slug));
@@ -54,25 +59,16 @@ fn main() {
         .warnings(false)
         .flag_if_supported("-w")
         .define("PRODUCTION", production);
-    for source in APPLE_C {
+    let platform_c = if apple { APPLE_C } else { LINUX_C };
+    for source in COMMON_C.iter().chain(platform_c) {
         c.file(native.join(source));
     }
-    for glue in ["native/vt_overlay_stub.c", "native/ym_probe.c"] {
+    let glue: &[&str] = if apple { &["native/vt_overlay_stub.c", "native/ym_probe.c"] } else { &["native/ym_probe.c"] };
+    for glue in glue {
         c.file(glue);
         println!("cargo:rerun-if-changed={glue}");
     }
     c.compile("msehost_c");
-    let mut objc = cc::Build::new();
-    objc.include(&native)
-        .opt_level(2)
-        .warnings(false)
-        .flag("-fobjc-arc")
-        .flag_if_supported("-w")
-        .define("PRODUCTION", production);
-    for source in APPLE_OBJC {
-        objc.file(native.join(source));
-    }
-    objc.compile("msehost_objc");
     for entry in std::fs::read_dir(&native).unwrap().flatten() {
         println!("cargo:rerun-if-changed={}", entry.path().display());
     }
@@ -82,16 +78,37 @@ fn main() {
     for name in LIBAV {
         println!("cargo:rustc-link-lib=dylib={name}");
     }
+    println!("cargo:ffmpeg_lib={}", lib.display());
+    // The packed ffmpeg executable (rpath to its own libav) the download mux runs.
+    let packed = ffmpeg.join("pack/ffmpeg");
+    if packed.is_file() {
+        println!("cargo:ffmpeg_bin={}", packed.display());
+    }
+    if apple {
+        link_apple(&native, production);
+    } else {
+        for name in ["dl", "m", "pthread"] {
+            println!("cargo:rustc-link-lib=dylib={name}");
+        }
+    }
+}
+
+fn link_apple(native: &std::path::Path, production: &str) {
+    let mut objc = cc::Build::new();
+    objc.include(native)
+        .opt_level(2)
+        .warnings(false)
+        .flag("-fobjc-arc")
+        .flag_if_supported("-w")
+        .define("PRODUCTION", production);
+    for source in APPLE_OBJC {
+        objc.file(native.join(source));
+    }
+    objc.compile("msehost_objc");
     for framework in APPLE_FRAMEWORKS {
         println!("cargo:rustc-link-lib=framework={framework}");
     }
     for name in ["z", "bz2", "iconv"] {
         println!("cargo:rustc-link-lib=dylib={name}");
-    }
-    println!("cargo:ffmpeg_lib={}", lib.display());
-    // The packed ffmpeg executable (rpath @loader_path to its own libav) the download mux runs.
-    let packed = ffmpeg.join("pack/ffmpeg");
-    if packed.is_file() {
-        println!("cargo:ffmpeg_bin={}", packed.display());
     }
 }

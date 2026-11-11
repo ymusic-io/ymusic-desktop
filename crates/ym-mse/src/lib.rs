@@ -45,6 +45,7 @@ unsafe extern "C" {
     fn mse_host_pcm_levels(host: *mut c_void, out: *mut f32, count: c_int) -> c_int;
     fn mse_host_samples_played(host: *mut c_void) -> i64;
     fn mse_host_bind_presenter(host: *mut c_void, presenter: *mut c_void);
+    #[cfg(target_os = "macos")]
     fn vpresent_create_vt_layer(layer: *mut c_void, sink: *const VpSink) -> *mut c_void;
     fn vpresent_release(presenter: *mut c_void);
     fn vpresent_mode(presenter: *mut c_void) -> c_int;
@@ -69,6 +70,7 @@ unsafe impl Sync for Presenter {}
 impl Presenter {
     /// # Safety
     /// `layer` must be a live `AVSampleBufferDisplayLayer` that outlives the presenter.
+    #[cfg(target_os = "macos")]
     pub unsafe fn on_layer(layer: *mut c_void) -> Option<Self> {
         let sink = VpSink { on_frame: None, on_mode: None, release: None, user: std::ptr::null_mut() };
         let raw = unsafe { vpresent_create_vt_layer(layer, &sink) };
