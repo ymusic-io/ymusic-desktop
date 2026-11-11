@@ -35,6 +35,7 @@ use crate::sponsor_block::SponsorBlock;
 use crate::tab_row::tab_row;
 
 mod incoming;
+mod tray;
 
 const RAIL_COLLAPSED: f32 = 72.;
 const DRAWER_ICON_START: f32 = 20.;
@@ -285,6 +286,11 @@ pub struct Shell {
     scale_factor: f32,
     window: AnyWindowHandle,
     dock_menu: crate::desktop::DockMenu,
+    /// Where the Dock menu and the tray popup send their commands.
+    commands: futures::channel::mpsc::UnboundedSender<crate::desktop::TrayCommand>,
+    tray_popup: Option<WindowHandle<gpui_kit::base::Root>>,
+    /// When the popup last closed itself: the tray click that took its focus must not reopen it.
+    tray_popup_closed_at: Option<Instant>,
     /// The window was closed with a queue: only the tray icon is left.
     hidden_to_tray: bool,
     /// The pending write of the window's bounds; replaced on every resize or move.
@@ -368,7 +374,7 @@ impl Shell {
             }
         };
         let (dock_commands, mut dock_receiver) = futures::channel::mpsc::unbounded();
-        let dock_menu = crate::desktop::DockMenu::new(dock_commands, cx);
+        let dock_menu = crate::desktop::DockMenu::new(dock_commands.clone(), cx);
         cx.spawn_in(window, async move |this, cx| {
             use futures::StreamExt;
             while let Some(command) = dock_receiver.next().await {
@@ -433,6 +439,9 @@ impl Shell {
             scale_factor: window.scale_factor(),
             window: window.window_handle(),
             dock_menu,
+            commands: dock_commands,
+            tray_popup: None,
+            tray_popup_closed_at: None,
             hidden_to_tray: false,
             _save_bounds: None,
             _subscriptions: vec![toggle, now_playing_events, visibility, activation, bounds, tray_state],
@@ -460,7 +469,7 @@ impl Shell {
         if cfg!(target_os = "linux") {
             window.minimize_window();
         } else {
-            cx.hide();
+            crate::desktop::hide_main_window(cx);
         }
         self.update_tray(cx);
     }
@@ -476,6 +485,7 @@ impl Shell {
             });
             return;
         }
+        crate::desktop::show_main_window();
         cx.activate(true);
         self.window_shown(cx);
     }
@@ -508,9 +518,14 @@ impl Shell {
     fn tray_command(&mut self, command: crate::desktop::TrayCommand, window: &mut Window, cx: &mut Context<Self>) {
         use crate::desktop::TrayCommand;
         match command {
-            TrayCommand::Open => self.show_window(cx),
+            TrayCommand::Popup(anchor) => self.toggle_tray_popup(anchor, cx),
+            TrayCommand::Open => {
+                self.close_tray_popup(cx);
+                self.show_window(cx);
+            }
             TrayCommand::TogglePlay => self.playback.update(cx, |playback, cx| playback.toggle(cx)),
             TrayCommand::Stop => {
+                self.close_tray_popup(cx);
                 self.playback.update(cx, |playback, cx| playback.clear_queue(cx));
                 // Nothing left to play and no window: the listening session is over.
                 if self.hidden_to_tray {
@@ -529,7 +544,7 @@ impl Shell {
     /// Debug builds only: `YMUSIC_DEV_ROUTE` opens a surface at start (`trending`, `music`,
     /// `search:<query>`, `open:<app link>`, `musictab:<n>`, `play:<youtube url>`, `nowplaying:<url>`, `library:<dir>`, `localplay:<dir>`, `details:<videoId>`, `addtoplaylist:<videoId>`, `sleeptimer`, `signin-paste:<file>`, `devicelink`, `signout`,
     /// `download:<FORMAT>:<videoId>` into `YMUSIC_DEV_DOWNLOAD_DIR` or the chosen folder), for
-    /// screenshots and checks without driving the UI. `YMUSIC_DEV_CAPTIONS=1|<vssId>` turns captions on (with that track), `YMUSIC_DEV_QUALITY=<token>` picks a quality.
+    /// screenshots and checks without driving the UI. `YMUSIC_DEV_CAPTIONS=1|<vssId>` turns captions on (with that track), `YMUSIC_DEV_QUALITY=<token>` picks a quality, `YMUSIC_DEV_TRAY_POPUP=1|hidden` opens the tray popup.
     pub fn apply_dev_route(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !cfg!(debug_assertions) {
             return;
@@ -627,6 +642,9 @@ impl Shell {
                 cx.update(|window, cx| window.dispatch_event(PlatformInput::MouseUp(release), cx)).ok();
             })
             .detach();
+        }
+        if let Ok(mode) = std::env::var("YMUSIC_DEV_TRAY_POPUP") {
+            self.dev_tray_popup(mode, window, cx);
         }
         if let Ok(spec) = std::env::var("YMUSIC_DEV_PLAYER") {
             self.dev_player(&spec, cx);

@@ -42,6 +42,7 @@ mod spinner;
 mod sponsor_block;
 mod tab_row;
 mod telemetry;
+mod tray_popup;
 mod video_details;
 mod video_layer;
 mod youtube_session;
@@ -166,6 +167,7 @@ fn main() {
         };
         cx.open_window(options, |window, cx| {
             crate::desktop::install_pin_button(window, &cx.global::<AppGraph>().log.fork("pin"));
+            crate::desktop::remember_main_window(window);
             let shell = cx.new(|cx| {
                 let mut shell = Shell::new(window, cx);
                 shell.apply_dev_route(window, cx);

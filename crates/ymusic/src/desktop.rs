@@ -366,8 +366,72 @@ impl DockMenu {
     }
 }
 
+#[cfg(target_os = "macos")]
+thread_local! {
+    static MAIN_WINDOW: std::cell::RefCell<Option<objc2::rc::Retained<objc2::runtime::AnyObject>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Keeps the main window's NSWindow, so it can be hidden to the tray and shown again from places
+/// that have no `Window` (the Dock's reopen, the tray popup) while other windows stay up.
+#[cfg(target_os = "macos")]
+pub fn remember_main_window(window: &Window) {
+    use objc2::msg_send;
+    use objc2::rc::Retained;
+    use objc2::runtime::AnyObject;
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    let Ok(handle) = HasWindowHandle::window_handle(window) else { return };
+    let RawWindowHandle::AppKit(appkit) = handle.as_raw() else { return };
+    let view = appkit.ns_view.as_ptr().cast::<AnyObject>();
+    // SAFETY: gpui's live NSView, on the main thread.
+    let ns_window: Option<Retained<AnyObject>> = unsafe { msg_send![view, window] };
+    MAIN_WINDOW.with(|main| *main.borrow_mut() = ns_window);
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn remember_main_window(_window: &Window) {}
+
+/// Takes the main window off screen. On macOS only that window goes (an app hide would take the
+/// tray popup with it).
+pub fn hide_main_window(cx: &mut App) {
+    #[cfg(target_os = "macos")]
+    {
+        use objc2::msg_send;
+        let hidden = MAIN_WINDOW.with(|main| {
+            let main = main.borrow();
+            let Some(ns_window) = main.as_ref() else { return false };
+            // SAFETY: the retained main NSWindow, on the main thread.
+            unsafe {
+                let _: () = msg_send![&**ns_window, orderOut: std::ptr::null_mut::<objc2::runtime::AnyObject>()];
+            }
+            true
+        });
+        if hidden {
+            return;
+        }
+    }
+    cx.hide();
+}
+
+/// Brings the main window back after [`hide_main_window`]; the caller activates the app.
+pub fn show_main_window() {
+    #[cfg(target_os = "macos")]
+    MAIN_WINDOW.with(|main| {
+        use objc2::msg_send;
+        if let Some(ns_window) = main.borrow().as_ref() {
+            // SAFETY: the retained main NSWindow, on the main thread.
+            unsafe {
+                let _: () =
+                    msg_send![&**ns_window, makeKeyAndOrderFront: std::ptr::null_mut::<objc2::runtime::AnyObject>()];
+            }
+        }
+    });
+}
+
 /// What a tray click or menu entry asks for.
 pub enum TrayCommand {
+    /// Toggle the mini player popup at the icon's logical screen bounds.
+    Popup(Bounds<Pixels>),
     Open,
     TogglePlay,
     Stop,
@@ -409,6 +473,7 @@ impl Tray {
             .with_icon(icon)
             .with_tooltip(t(Str::AppName))
             .with_menu(Box::new(menu))
+            .with_menu_on_left_click(false)
             .build()?;
         tray.set_visible(false)?;
         let (sender, receiver) = futures::channel::mpsc::unbounded();
@@ -429,11 +494,26 @@ impl Tray {
             };
             let _ = menu_sender.unbounded_send(command);
         }));
-        // The menu opens on a click; a double-click on Windows opens the window as well.
-        TrayIconEvent::set_event_handler(Some(move |event: TrayIconEvent| {
-            if matches!(event, TrayIconEvent::DoubleClick { .. }) {
+        // A click opens the mini player under the icon, a right-click the menu; a double-click on
+        // Windows opens the window as well.
+        TrayIconEvent::set_event_handler(Some(move |event: TrayIconEvent| match event {
+            TrayIconEvent::Click {
+                button: tray_icon::MouseButton::Left,
+                button_state: tray_icon::MouseButtonState::Up,
+                rect,
+                ..
+            } => {
+                let scale = tray_scale_factor() as f64;
+                let anchor = bounds(
+                    point(px((rect.position.x / scale) as f32), px((rect.position.y / scale) as f32)),
+                    size(px((rect.size.width as f64 / scale) as f32), px((rect.size.height as f64 / scale) as f32)),
+                );
+                let _ = sender.unbounded_send(TrayCommand::Popup(anchor));
+            }
+            TrayIconEvent::DoubleClick { .. } => {
                 let _ = sender.unbounded_send(TrayCommand::Open);
             }
+            _ => {}
         }));
         Ok((Self { icon: tray, open, toggle, stop, quit, playing: None }, receiver))
     }
@@ -465,6 +545,50 @@ struct TrayState {
     playing: bool,
     window_hidden: bool,
 }
+/// The backing scale of the screen under the pointer: tray-icon reports physical pixels. Called
+/// from the tray's event handler, on the main thread.
+#[cfg(target_os = "macos")]
+fn tray_scale_factor() -> f32 {
+    use objc2::msg_send;
+    use objc2::rc::Retained;
+    use objc2::runtime::{AnyClass, AnyObject};
+    use objc2_core_foundation::{CGPoint, CGRect};
+    let (Some(event_class), Some(screen_class)) = (AnyClass::get(c"NSEvent"), AnyClass::get(c"NSScreen")) else {
+        return 1.;
+    };
+    // SAFETY: AppKit queries on the main thread.
+    unsafe {
+        let mouse: CGPoint = msg_send![event_class, mouseLocation];
+        let screens: Retained<AnyObject> = msg_send![screen_class, screens];
+        let count: usize = msg_send![&*screens, count];
+        for index in 0..count {
+            let screen: *mut AnyObject = msg_send![&*screens, objectAtIndex: index];
+            let frame: CGRect = msg_send![screen, frame];
+            let inside = mouse.x >= frame.origin.x
+                && mouse.x <= frame.origin.x + frame.size.width
+                && mouse.y >= frame.origin.y
+                && mouse.y <= frame.origin.y + frame.size.height;
+            if inside {
+                let scale: f64 = msg_send![screen, backingScaleFactor];
+                return scale as f32;
+            }
+        }
+    }
+    1.
+}
+
+#[cfg(target_os = "windows")]
+fn tray_scale_factor() -> f32 {
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        fn GetDpiForSystem() -> u32;
+    }
+    // SAFETY: a plain Win32 query without arguments.
+    unsafe { GetDpiForSystem() as f32 / 96. }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+pub struct Tray;
 
 /// The StatusNotifierItem; its properties read the shared state, so a poke re-reads the newest.
 #[cfg(target_os = "linux")]
