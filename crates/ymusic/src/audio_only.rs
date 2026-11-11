@@ -143,7 +143,8 @@ impl AudioOnlyArt {
         });
     }
 
-    /// Redraws only when the bars move; stops once a redraw it asked for did not happen.
+    /// Redraws only when the bars move; stops once a redraw it asked for stays undone for `UNSEEN`
+    /// (Now Playing is not on screen). A slow frame or a quiet passage keeps it sampling.
     fn sample(&self, cx: &mut Context<Self>) -> Task<()> {
         let executor = cx.background_executor().clone();
         cx.spawn(async move |this, cx| {
@@ -151,8 +152,8 @@ impl AudioOnlyArt {
             loop {
                 executor.timer(SAMPLE_EVERY).await;
                 let tap = this.update(cx, |view, cx| {
-                    let unseen = notified_at.is_some_and(|at| view.last_render < at);
-                    if unseen || view.last_render.elapsed() > UNSEEN {
+                    let unseen = notified_at.is_some_and(|at| view.last_render < at && at.elapsed() > UNSEEN);
+                    if unseen {
                         view.wave_mode = None;
                         return None;
                     }
@@ -164,13 +165,15 @@ impl AudioOnlyArt {
                     None => Vec::new(),
                 };
                 if levels.is_empty() {
-                    notified_at = None;
                     continue;
                 }
                 levels.resize(WAVE_BARS, 0.);
                 let applied = this.update(cx, |view, cx| {
                     let moved = view.levels.iter().zip(&levels).any(|(shown, level)| (shown - level).abs() > UNCHANGED);
-                    notified_at = moved.then(Instant::now);
+                    let waiting = notified_at.is_some_and(|at| view.last_render < at);
+                    if moved && !waiting {
+                        notified_at = Some(Instant::now());
+                    }
                     if moved {
                         view.levels = levels;
                         cx.notify();
