@@ -237,6 +237,25 @@ impl DownloadService {
         });
     }
 
+    /// Re-points every finished task whose file was `from_uri` (renamed or moved) at `to_uri`.
+    pub async fn relocate(&self, from_uri: &str, to_uri: &str) -> Result<(), DownloadError> {
+        let inner = &self.inner;
+        inner.init().await;
+        let tasks = inner.store.all().map_err(store_error)?;
+        for task in tasks {
+            if task.state != DownloadState::Completed || task.file_uri.as_deref() != Some(from_uri) {
+                continue;
+            }
+            let bytes = if task.total_bytes > 0 { task.total_bytes } else { task.downloaded_bytes };
+            inner
+                .store
+                .update_completed(&task.id, to_uri, bytes, task.loudness_gain_db, now_millis())
+                .map_err(store_error)?;
+            inner.emit(DownloadChange::Completed { id: task.id, file_uri: to_uri.to_owned(), bytes });
+        }
+        Ok(())
+    }
+
     /// Holds the whole queue: stops every running task and every queued one.
     pub fn pause_all(&self) {
         self.command(None, |inner| async move {
