@@ -448,6 +448,7 @@ impl NowPlaying {
                 .size_full(),
             )
             .when_some(self.caption_overlay(controls, cx), |frame, captions| frame.child(captions))
+            .children(crate::fps_badge::badge(&self.playback, cx))
             .when(controls, |frame| frame.child(overlay))
             .when_some(self.failure_panel(controls, cx), |frame, panel| frame.child(panel))
             .into_any_element()

@@ -26,6 +26,7 @@ pub const THEME_KEY: &str = "app.theme";
 pub const LANGUAGE_KEY: &str = "app.uiLanguage";
 const CRASH_REPORTS_KEY: &str = "telemetry.crashReports";
 const STATS_KEY: &str = "telemetry.stats";
+pub const SHOW_FPS_KEY: &str = "debug.showFps";
 const SOURCE_CODE_URL: &str = "https://github.com/ymusic-io/YMusicV4";
 const TERMS_URL: &str = "https://github.com/ymusic-io/YMusicV4/blob/master/TERMS.md";
 const CHANGELOG_URL: &str = "https://github.com/ymusic-io/YMusicV4/blob/master/CHANGELOG.md";
@@ -422,6 +423,7 @@ impl Render for SettingsView {
         let theme_choice = saved_theme(settings.as_ref());
         let accent = saved(settings.as_ref(), ACCENT_KEY);
         let language = saved(settings.as_ref(), LANGUAGE_KEY);
+        let show_fps = saved(settings.as_ref(), SHOW_FPS_KEY) == "true";
         let caption_look = CaptionLook::load(settings.as_ref());
         let folder: Option<PathBuf> = download_folder(settings.as_ref());
         let versions = format!(
@@ -620,6 +622,14 @@ impl Render for SettingsView {
                 cx,
             ),
         ];
+        let debug = vec![self.toggle_with(
+            "show-fps",
+            SHOW_FPS_KEY,
+            t(Str::SettingsShowFps),
+            t(Str::SettingsShowFpsHint),
+            show_fps,
+            cx,
+        )];
         let content = v_flex()
             .w_full()
             .pb_6()
@@ -629,7 +639,8 @@ impl Render for SettingsView {
             .child(section(t(Str::SettingsSectionDownloads), downloads, cx))
             .child(section(t(Str::SettingsSectionDevices), account, cx))
             .child(section(t(Str::SettingsSectionPrivacy), privacy, cx))
-            .child(section(t(Str::SettingsSectionAbout), about, cx));
+            .child(section(t(Str::SettingsSectionAbout), about, cx))
+            .child(section(t(Str::SettingsDebug), debug, cx));
 
         div().id("settings-scroll").size_full().overflow_y_scroll().track_scroll(&self.scroll).child(content)
     }

@@ -339,6 +339,12 @@ impl Playback {
         self.queue.get(self.index)
     }
 
+    /// The MSE host while it shows the current item's video.
+    pub fn video_host(&self) -> Option<Arc<ym_mse::MseHost>> {
+        let showing = self.active == Some(Active::YouTube) && self.video && !self.video_hidden;
+        self.session.as_ref().filter(|_| showing).map(|session| session.host.clone())
+    }
+
     pub fn is_playing(&self) -> bool {
         matches!(self.state, PlayState::Playing | PlayState::Buffering)
     }
