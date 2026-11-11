@@ -198,6 +198,19 @@ impl RemoteConfig {
             }
             *last = now;
         }
+        self.fetch_and_publish(identity).await;
+    }
+
+    /// For a person waiting on an answer ("Check for update"): fetches now, past the age check and
+    /// the throttle. `None` when the fetch failed or this build has no service.
+    pub async fn fetch_now(&self) -> Option<RemoteConfigData> {
+        let identity = self.identity.as_ref()?;
+        let _guard = self.in_flight.lock().await;
+        *self.last_attempt.lock().unwrap() = now_millis();
+        self.fetch_and_publish(identity).await
+    }
+
+    async fn fetch_and_publish(&self, identity: &ApiIdentity) -> Option<RemoteConfigData> {
         match self.fetch(identity).await {
             Ok(mut config) => {
                 if config.updated_at == 0 {
@@ -218,9 +231,13 @@ impl RemoteConfig {
                         self.log.warn("R30002 config cache not written", Some(&error));
                     }
                 }
-                self.sender.send_replace(config);
+                self.sender.send_replace(config.clone());
+                Some(config)
             }
-            Err(error) => self.log.warn(&format!("R30003 config fetch failed: {error}"), None),
+            Err(error) => {
+                self.log.warn(&format!("R30003 config fetch failed: {error}"), None);
+                None
+            }
         }
     }
 
