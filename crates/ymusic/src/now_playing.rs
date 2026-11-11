@@ -20,7 +20,9 @@ use ym_i18n::{Str, t, tf};
 use crate::a11y::{FocusList, KeyboardFocusable};
 use crate::download_dialog::DownloadTarget;
 use crate::mini_player::clock;
-use crate::playback::{AUTO_TRANSLATE_KIND, CaptionTrack, PlayState, Playback, QueueItem};
+use crate::playback::{
+    AUTO_TRANSLATE_KIND, CaptionTrack, PlayState, Playback, QUALITY_AUDIO_ONLY, QUALITY_AUTO, QueueItem,
+};
 use crate::queue_nav::LoopMode;
 use crate::sponsor_block::SponsorBlock;
 use crate::video_layer::VideoLayer;
@@ -459,23 +461,43 @@ impl NowPlaying {
             });
 
         let quality_playback = self.playback.clone();
+        let (choices, selected, current) = {
+            let playback = self.playback.read(cx);
+            let label = |quality: &str, fallback: &str| match quality {
+                QUALITY_AUTO => t(Str::VideoQualityAuto).to_owned(),
+                QUALITY_AUDIO_ONLY => t(Str::AudioOnly).to_owned(),
+                _ => fallback.to_owned(),
+            };
+            let mut choices = vec![(QUALITY_AUDIO_ONLY.to_owned(), t(Str::AudioOnly).to_owned())];
+            if playback.quality_options.is_empty() {
+                choices.push((QUALITY_AUTO.to_owned(), t(Str::VideoQualityAuto).to_owned()));
+            } else {
+                choices.extend(playback.quality_options.iter().map(|(quality, text)| (quality.clone(), label(quality, text))));
+            }
+            let selected = if video { playback.quality_preferred.clone() } else { QUALITY_AUDIO_ONLY.to_owned() };
+            let current = if !video {
+                t(Str::AudioOnly).to_owned()
+            } else {
+                let actual = playback.quality_actual.clone().unwrap_or_else(|| QUALITY_AUTO.to_owned());
+                choices.iter().find(|(quality, _)| *quality == actual).map(|(_, text)| text.clone()).unwrap_or_else(|| label(&actual, &actual))
+            };
+            (choices, selected, current)
+        };
         let quality = Button::new("np-quality")
             .outline()
             .xsmall()
-            .label(if video { t(Str::VideoQualityAuto) } else { t(Str::AudioOnly) })
-            .accessibility_label(t(Str::DownloadQuality))
-            .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, _| {
-                let (to_video, to_audio) = (quality_playback.clone(), quality_playback.clone());
-                menu.item(
-                    PopupMenuItem::new(t(Str::VideoQualityAuto))
-                        .checked(video)
-                        .on_click(move |_, _, cx| to_video.update(cx, |playback, cx| playback.set_video(true, cx))),
-                )
-                .item(
-                    PopupMenuItem::new(t(Str::AudioOnly))
-                        .checked(!video)
-                        .on_click(move |_, _, cx| to_audio.update(cx, |playback, cx| playback.set_video(false, cx))),
-                )
+            .label(current.clone())
+            .accessibility_label(format!("{}, {current}", t(Str::DownloadQuality)))
+            .dropdown_menu_with_anchor(Anchor::TopRight, move |mut menu, _, _| {
+                for (quality, text) in &choices {
+                    let (playback, pick) = (quality_playback.clone(), quality.clone());
+                    menu = menu.item(
+                        PopupMenuItem::new(text.clone())
+                            .checked(*quality == selected)
+                            .on_click(move |_, _, cx| playback.update(cx, |playback, cx| playback.set_quality(pick.clone(), cx))),
+                    );
+                }
+                menu
             });
 
         let view = cx.entity().downgrade();

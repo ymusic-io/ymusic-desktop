@@ -27,6 +27,10 @@ const VOLUME_KEY: &str = "playback.volume";
 /// The JVM app's keys.
 const LOOP_MODE_KEY: &str = "player.loopMode";
 const SHUFFLE_KEY: &str = "player.shuffle";
+const QUALITY_KEY: &str = "player.preferVideoQuality";
+pub const QUALITY_AUTO: &str = "auto";
+/// The bundle's audio-only quality.
+pub const QUALITY_AUDIO_ONLY: &str = "zero";
 const LOCAL_POLL: Duration = Duration::from_millis(250);
 const MIN_SKIP_MS: i64 = 1_000;
 const OUTRO_TOLERANCE_MS: i64 = 1_000;
@@ -182,6 +186,12 @@ pub struct Playback {
     _sleep: Option<Task<()>>,
     /// Video on: loads request pictures and the presenter shows them; off: audio only.
     pub video: bool,
+    /// The video's qualities (token, label) from the catalog, best first; empty until it reports.
+    pub quality_options: Vec<(String, String)>,
+    /// The quality playing now, as the catalog reports it.
+    pub quality_actual: Option<String>,
+    /// The quality loads ask for while video is on.
+    pub quality_preferred: String,
     /// No view shows the picture: the engines rest their video decoders, keeping the chosen quality.
     /// True until the shell first draws.
     video_hidden: bool,
@@ -219,6 +229,15 @@ impl Playback {
             position_ms: 0,
             duration_ms: 0,
             loading_video: None,
+            quality_options: Vec::new(),
+            quality_actual: None,
+            quality_preferred: cx
+                .global::<AppGraph>()
+                .settings
+                .string(QUALITY_KEY, QUALITY_AUTO)
+                .ok()
+                .filter(|quality| quality != QUALITY_AUDIO_ONLY && !quality.is_empty())
+                .unwrap_or_else(|| QUALITY_AUTO.to_owned()),
             gain: 1.0,
             local_gain: 1.0,
             volume: if muted { 0.0 } else { saved_volume.unwrap_or(1.0).clamp(0.0, 1.0) },
@@ -463,6 +482,23 @@ impl Playback {
             .unwrap_or_default();
         self.caption_tracks = tracks;
         self.caption_selected = catalog.get("caption").and_then(Value::as_str).map(str::to_owned);
+        self.quality_options = catalog
+            .get("qualities")
+            .and_then(Value::as_array)
+            .map(|rows| {
+                rows.iter()
+                    .filter_map(|row| {
+                        let quality = row.get("quality").and_then(Value::as_str)?;
+                        if quality == QUALITY_AUDIO_ONLY || quality == "tiny" {
+                            return None;
+                        }
+                        let label = row.get("label").and_then(Value::as_str).unwrap_or(quality);
+                        Some((quality.to_owned(), label.to_owned()))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        self.quality_actual = catalog.get("quality").and_then(Value::as_str).map(str::to_owned);
         cx.notify();
     }
 
@@ -673,11 +709,32 @@ impl Playback {
         self.demoted = false;
         self.send_local(LocalCommand::Video(self.local_video()));
         if self.active == Some(Active::YouTube) {
-            let (quality, audio_only) = if video { ("auto", false) } else { ("zero", true) };
+            let (quality, audio_only) =
+                if video { (self.quality_preferred.clone(), false) } else { (QUALITY_AUDIO_ONLY.to_owned(), true) };
             self.command(
                 cx,
-                move |engine, log| async move { engine.player_set_quality(quality, audio_only, &log).await },
+                move |engine, log| async move { engine.player_set_quality(&quality, audio_only, &log).await },
             );
+        }
+        cx.notify();
+    }
+
+    /// A quality from the menu: audio only, or video at that quality (remembered for next time).
+    pub fn set_quality(&mut self, quality: String, cx: &mut Context<Self>) {
+        self.save_setting(QUALITY_KEY, quality.clone(), cx);
+        if quality == QUALITY_AUDIO_ONLY {
+            self.set_video(false, cx);
+            return;
+        }
+        self.quality_preferred = quality;
+        if !self.video {
+            self.set_video(true, cx);
+            return;
+        }
+        self.demoted = false;
+        if self.active == Some(Active::YouTube) {
+            let quality = self.quality_preferred.clone();
+            self.command(cx, move |engine, log| async move { engine.player_set_quality(&quality, false, &log).await });
         }
         cx.notify();
     }
@@ -817,7 +874,7 @@ impl Playback {
         request.speed = self.effects.speed;
         request.pitch = self.effects.pitch;
         if self.video {
-            request.quality = Some("auto".into());
+            request.quality = Some(self.quality_preferred.clone());
             request.audio_only = false;
         }
         request
@@ -836,6 +893,8 @@ impl Playback {
                 }
                 self.caption_lines.clear();
                 self.caption_tracks.clear();
+                self.quality_options.clear();
+                self.quality_actual = None;
                 self.active = Some(Active::YouTube);
                 self.bind_presenter();
                 self.loading_video = Some(video_id.clone());

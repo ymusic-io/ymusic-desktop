@@ -445,13 +445,16 @@ impl Shell {
     /// Debug builds only: `YMUSIC_DEV_ROUTE` opens a surface at start (`trending`, `music`,
     /// `search:<query>`, `open:<app link>`, `musictab:<n>`, `play:<youtube url>`, `nowplaying:<url>`, `library:<dir>`, `localplay:<dir>`, `signin-paste:<file>`, `devicelink`, `signout`,
     /// `download:<FORMAT>:<videoId>` into `YMUSIC_DEV_DOWNLOAD_DIR` or the chosen folder), for
-    /// screenshots and checks without driving the UI. `YMUSIC_DEV_CAPTIONS` turns captions on.
+    /// screenshots and checks without driving the UI. `YMUSIC_DEV_CAPTIONS` turns captions on, `YMUSIC_DEV_QUALITY=<token>` picks a quality.
     pub fn apply_dev_route(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !cfg!(debug_assertions) {
             return;
         }
         if std::env::var_os("YMUSIC_DEV_CAPTIONS").is_some() {
             self.playback.update(cx, |playback, cx| playback.set_captions(true, cx));
+        }
+        if let Ok(quality) = std::env::var("YMUSIC_DEV_QUALITY") {
+            self.playback.update(cx, |playback, cx| playback.set_quality(quality, cx));
         }
         if let Some(seconds) = std::env::var("YMUSIC_DEV_QUIT_AFTER").ok().and_then(|value| value.parse().ok()) {
             let executor = cx.background_executor().clone();
