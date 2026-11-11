@@ -17,7 +17,7 @@ use crate::a11y::{DragRow, FocusList, focusable};
 use crate::account_view::AccountView;
 use crate::download_dialog::{DownloadPicker, DownloadTarget};
 use crate::downloads_view::{DownloadsView, RevealInLibrary};
-use crate::feed::{FeedAction, FeedSource, FeedView, ItemAction, Navigate, Play};
+use crate::feed::{FeedAction, FeedSource, FeedView, ItemAction, Navigate, Play, RequestSearch};
 use crate::feedback_view::FeedbackView;
 use crate::graph::{AppGraph, on_core};
 use crate::library::{GroupKind, LibraryView, PlayLocal, QueueLocal};
@@ -327,6 +327,8 @@ pub struct Shell {
     feedback: Option<Entity<FeedbackView>>,
     /// Debug: open the sign-in dialog on the next frame.
     pending_signin: bool,
+    /// The empty Home asked for the search field, which opens with the window at the next render.
+    pending_search: bool,
     /// The graph's guest launch: no sign-in, account or YouTube play history surfaces.
     guest: bool,
     /// Debug: open the Sound panel on the next frame.
@@ -481,6 +483,7 @@ impl Shell {
             settings: None,
             feedback: None,
             pending_signin: false,
+            pending_search: false,
             guest,
             pending_sound: false,
             pending_download: None,
@@ -1196,6 +1199,10 @@ impl Shell {
         let navigate = cx.subscribe(&view, |shell, _, event: &Navigate, cx| {
             shell.push(event.source.clone(), event.title.clone(), cx);
         });
+        let search = cx.subscribe(&view, |shell, _, _: &RequestSearch, cx| {
+            shell.pending_search = true;
+            cx.notify();
+        });
         let play = cx.subscribe(&view, |shell, _, event: &Play, cx| {
             let (item, queue, shuffle) = (event.item.clone(), event.queue.clone(), event.shuffle);
             shell.playback.update(cx, |playback, cx| {
@@ -1228,7 +1235,7 @@ impl Shell {
                 }
             }
         });
-        self._subscriptions.extend([navigate, play, action]);
+        self._subscriptions.extend([navigate, search, play, action]);
         view
     }
 
@@ -1239,6 +1246,19 @@ impl Shell {
         let view = self.feed_view(source.clone(), None, cx);
         self.roots.insert(source, view.clone());
         view
+    }
+
+    /// The feed on screen: the top layer's, else the section root's.
+    fn visible_feed(&self) -> Option<Entity<FeedView>> {
+        match self.stacks.get(&self.section).and_then(|stack| stack.pushed.last()) {
+            Some(Layer::Feed { view, .. } | Layer::Results { view, .. }) => Some(view.clone()),
+            Some(_) => None,
+            None => match self.section {
+                Section::Discover => self.roots.get(&self.discover_tab.source()).cloned(),
+                Section::YtMusic => self.roots.get(&self.music_tab.source()).cloned(),
+                _ => None,
+            },
+        }
     }
 
     fn push_layer(&mut self, layer: Layer, cx: &mut Context<Self>) {
@@ -1986,6 +2006,11 @@ impl Shell {
                     cx.notify();
                 }
             }))
+            .on_action(cx.listener(|shell, _: &Refresh, window, cx| {
+                if let Some(feed) = shell.visible_feed() {
+                    feed.update(cx, |feed, cx| feed.refresh(window, cx));
+                }
+            }))
             .on_action(cx.listener(|shell, _: &OpenSearch, window, cx| {
                 let searchable = matches!(shell.section, Section::Discover | Section::YtMusic | Section::Library);
                 let searching = matches!(
@@ -2025,6 +2050,9 @@ impl Render for Shell {
         }
         if std::mem::take(&mut self.pending_signin) {
             self.open_sign_in(window, cx);
+        }
+        if std::mem::take(&mut self.pending_search) {
+            self.open_search(String::new(), window, cx);
         }
         if let Some(video_id) = self.pending_details.take() {
             let view = crate::video_details::VideoDetailsView::open(video_id, window, cx);

@@ -28,6 +28,8 @@ actions!(
         SelectTab5,
         SelectTab6,
         ShowShortcuts,
+        /// Reload the feed on screen (F5, or Ctrl / Cmd+R as in the JVM app).
+        Refresh,
         /// Open the sign-in screen (dispatched by the sign-in buttons, no key).
         OpenSignIn,
     ]
@@ -89,6 +91,10 @@ pub fn bind(cx: &mut App) {
         KeyBinding::new("f9", SeekForward, context),
         KeyBinding::new("f11", ToggleFullscreen, context),
         KeyBinding::new("f1", ShowShortcuts, context),
+        KeyBinding::new("f5", Refresh, context),
+        KeyBinding::new("ctrl-r", Refresh, context),
+        #[cfg(target_os = "macos")]
+        KeyBinding::new("cmd-r", Refresh, context),
         // macOS's standard full screen.
         #[cfg(target_os = "macos")]
         KeyBinding::new("ctrl-cmd-f", ToggleFullscreen, context),

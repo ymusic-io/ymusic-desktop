@@ -11,6 +11,7 @@ gpui_kit::assets::icon_assets!(
     ShellIcons,
     [
         MonitorPlay,
+        Inbox,
         CirclePlay,
         LibraryBig,
         RotateCcwClock,

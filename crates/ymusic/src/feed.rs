@@ -50,6 +50,22 @@ pub enum FeedSource {
 }
 
 impl FeedSource {
+    /// The JVM app's per-surface empty text, for a page that brings none of its own.
+    fn empty_message(&self) -> &'static str {
+        t(match self {
+            Self::Home => Str::DiscoverNoAnonymousHome,
+            Self::Trending => Str::DiscoverNoTrending,
+            Self::Recommended => Str::DiscoverNoRecommendations,
+            Self::TopTracks => Str::DiscoverNoTopTracks,
+            Self::Account => Str::AccountLibraryEmpty,
+            Self::MusicHome | Self::MusicNewReleases | Self::MusicCharts => Str::YtmusicHomeEmpty,
+            Self::MusicExplore => Str::YtmusicExploreEmpty,
+            Self::MusicLibrary => Str::YtmusicLibraryEmpty,
+            Self::Search(..) | Self::MusicSearch(..) => Str::SearchNoResults,
+            Self::Playlist(_) | Self::Channel(_) | Self::MusicBrowse(_) => Str::FeedEmpty,
+        })
+    }
+
     /// Routes an engine-composed app link by its path prefix only; the whole link goes back to the
     /// engine verbatim. `None` = a scheme this build can't open (a newer bundle's), left inert.
     pub fn from_link(link: &str) -> Option<Self> {
@@ -73,14 +89,35 @@ impl FeedSource {
         continuation: Option<String>,
         log: Logger,
     ) -> Result<YtFeedPage, EngineError> {
+        self.fetch(engine, history, continuation, false, log).await
+    }
+
+    /// A user's reload: Home and YT Music Home bypass the engine's held session, as in the JVM app.
+    pub(crate) async fn reload(
+        self,
+        engine: Arc<DynamicEngine>,
+        history: Arc<ym_history::PlayHistory>,
+        log: Logger,
+    ) -> Result<YtFeedPage, EngineError> {
+        self.fetch(engine, history, None, true, log).await
+    }
+
+    async fn fetch(
+        self,
+        engine: Arc<DynamicEngine>,
+        history: Arc<ym_history::PlayHistory>,
+        continuation: Option<String>,
+        refresh: bool,
+        log: Logger,
+    ) -> Result<YtFeedPage, EngineError> {
         let continuation = continuation.as_deref();
         match &self {
             Self::TopTracks => top_tracks(history).await,
             Self::Account => engine.account_library(continuation, &log).await,
-            Self::Home => engine.home_feed(continuation, false, &log).await,
+            Self::Home => engine.home_feed(continuation, refresh, &log).await,
             Self::Trending => engine.trending_music_feed(&log).await,
             Self::Recommended => engine.recommended_feed(&log).await,
-            Self::MusicHome => engine.music_home(continuation, false, &log).await,
+            Self::MusicHome => engine.music_home(continuation, refresh, &log).await,
             Self::MusicExplore => engine.music_explore(continuation, &log).await,
             Self::MusicNewReleases => engine.music_new_releases(continuation, &log).await,
             Self::MusicCharts => engine.music_charts(continuation, &log).await,
@@ -175,6 +212,9 @@ pub struct Navigate {
     pub title: Option<SharedString>,
 }
 
+/// The empty Home's Search videos: open the search field.
+pub struct RequestSearch;
+
 /// A menu option that re-serves the page in place, by its position.
 #[derive(Clone, Copy, PartialEq)]
 enum Refilter {
@@ -235,6 +275,7 @@ enum HeaderKind {
 }
 
 impl EventEmitter<Navigate> for FeedView {}
+impl EventEmitter<RequestSearch> for FeedView {}
 impl EventEmitter<Play> for FeedView {}
 impl EventEmitter<ItemAction> for FeedView {}
 
@@ -434,6 +475,38 @@ impl FeedView {
         self.fetch(None, false, cx);
     }
 
+    /// F5 / Ctrl+R (the JVM app's `pager.reload()`): the page again from the top, without a chip
+    /// filter, the current list staying up until the new one lands; a failure keeps it and says why.
+    pub fn refresh(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !matches!(self.phase, Phase::Ready) {
+            return self.reload(cx);
+        }
+        self.generation += 1;
+        let generation = self.generation;
+        let load = self.load_reloaded(cx);
+        cx.spawn_in(window, async move |this, cx| {
+            let result = load.await;
+            this.update_in(cx, |view, window, cx| {
+                if view.generation != generation {
+                    return;
+                }
+                view.refiltering = None;
+                view.loading_more = false;
+                match result {
+                    Some(Ok(page)) => {
+                        view.replace(page, false);
+                        view.scroll.set_offset(point(px(0.), px(0.)));
+                    }
+                    Some(Err(error)) => window.push_notification(error_text(&error), cx),
+                    None => {}
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     fn load_more(&mut self, cx: &mut Context<Self>) {
         let Some(continuation) = self.page.continuation.clone() else { return };
         if self.loading_more || self.more_failed.is_some() {
@@ -495,6 +568,15 @@ impl FeedView {
         let graph = cx.global::<AppGraph>();
         let (engine, history, log) = (graph.engine(), graph.history.clone(), graph.log.fork("feed"));
         on_core(cx, self.source.clone().load(engine, history, continuation, log))
+    }
+
+    fn load_reloaded(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> impl Future<Output = Option<Result<YtFeedPage, EngineError>>> + 'static {
+        let graph = cx.global::<AppGraph>();
+        let (engine, history, log) = (graph.engine(), graph.history.clone(), graph.log.fork("feed"));
+        on_core(cx, self.source.clone().reload(engine, history, log))
     }
 
     fn fetch(&mut self, continuation: Option<String>, append: bool, cx: &mut Context<Self>) {
@@ -1529,6 +1611,46 @@ impl FeedView {
 }
 
 impl FeedView {
+    /// The JVM app's `EmptyState`: centred in the rest of the page, a picture, the source's own
+    /// title, its message or this surface's, then Reload (Home leads with Search videos instead).
+    fn render_empty(&self, cx: &mut Context<Self>) -> AnyElement {
+        let (muted, ink) = (cx.theme().muted_foreground, cx.theme().foreground);
+        let message = self.page.empty_message.clone().unwrap_or_else(|| self.source.empty_message().to_owned());
+        // Material's filled / outlined button: a 40 px pill.
+        let pill = |button: Button| button.h(px(40.)).px_6().rounded_full();
+        let reload = pill(Button::new("empty-reload"))
+            .label(t(Str::Reload))
+            .on_click(cx.listener(|view, _, _, cx| view.reload(cx)));
+        let actions = if self.source == FeedSource::Home {
+            h_flex().gap_2().child(reload.outline().icon(Lucide::RefreshCw)).child(
+                pill(Button::new("empty-search"))
+                    .primary()
+                    .label(t(Str::SearchVideos))
+                    .on_click(cx.listener(|_, _, _, cx| cx.emit(RequestSearch))),
+            )
+        } else {
+            h_flex().child(reload.primary())
+        };
+        div()
+            .flex_1()
+            .flex()
+            .items_center()
+            .justify_center()
+            .p_6()
+            .child(
+                v_flex()
+                    .items_center()
+                    .gap_2()
+                    .child(div().pb_1().child(Icon::new(Lucide::Inbox).size(px(52.)).text_color(muted)))
+                    .when_some(self.page.empty_title.clone(), |empty, title| {
+                        empty.child(div().text_base().font_semibold().text_color(ink).text_center().child(title))
+                    })
+                    .child(div().text_center().text_color(muted).child(message))
+                    .child(actions.pt_2()),
+            )
+            .into_any_element()
+    }
+
     /// The server sort menu: the current order on the trigger, the options in a dropdown; picking
     /// one re-serves the feed through its token, keeping the page up like a chip.
     fn render_sort_menu(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -1672,18 +1794,7 @@ impl Render for FeedView {
 
         let item_total: usize = self.page.sections.iter().map(|section| section.items.len()).sum();
         if item_total == 0 {
-            let title = self.page.empty_title.clone().unwrap_or_else(|| t(Str::FeedEmpty).to_owned());
-            column = column.child(
-                v_flex()
-                    .py_16()
-                    .px_6()
-                    .gap_2()
-                    .items_center()
-                    .child(div().text_lg().child(title))
-                    .when_some(self.page.empty_message.clone(), |empty, message| {
-                        empty.child(div().text_sm().text_color(theme.muted_foreground).child(message))
-                    }),
-            );
+            column = column.min_h_full().child(self.render_empty(cx));
         }
         let mut first_item = 0;
         for (section_index, section) in self.page.sections.clone().iter().enumerate() {
