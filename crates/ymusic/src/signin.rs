@@ -9,6 +9,9 @@ use ym_engine::{CookieJar, EngineError, EngineManager};
 use ym_remote_config::RemoteConfig;
 use ym_signin::{DeviceLinkOffer, LinkError, SessionCookie, to_set_cookie};
 
+/// Someone signed in or out; every feed reloads under the new identity.
+pub struct AccountChanged;
+
 #[derive(Debug, thiserror::Error)]
 pub enum SignInError {
     /// Nothing in the paste or handoff looks like a signed-in session.

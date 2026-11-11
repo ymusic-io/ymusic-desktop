@@ -20,6 +20,7 @@ use crate::downloads::{DOWNLOAD_LOCATION_KEY, download_folder};
 use crate::feedback_view::link;
 use crate::graph::{AppGraph, on_core};
 use crate::settings_lists::{Licenses, RegionPicker};
+use crate::signin::AccountChanged;
 use crate::spinner::BusyButton;
 use crate::sponsor_block::SPONSOR_BLOCK_KEY;
 
@@ -127,6 +128,7 @@ pub struct SettingsView {
 }
 
 impl EventEmitter<LocaleChanged> for SettingsView {}
+impl EventEmitter<AccountChanged> for SettingsView {}
 
 impl SettingsView {
     pub fn new(playback: Entity<crate::playback::Playback>, cx: &mut Context<Self>) -> Self {
@@ -290,6 +292,7 @@ impl SettingsView {
                     cx.global::<AppGraph>().log.warn("sign-out failed", Some(&error));
                 }
                 view.refresh_account(cx);
+                cx.emit(AccountChanged);
             })
             .ok();
         })

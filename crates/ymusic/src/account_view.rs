@@ -14,6 +14,7 @@ use ym_i18n::{Str, t};
 use crate::a11y::{DragRow, FocusList, KeyboardFocusable};
 use crate::feed::{FeedView, feed_width, thumb_for};
 use crate::graph::{AppGraph, on_core};
+use crate::signin::AccountChanged;
 use crate::spinner::Spinner;
 
 const FEATURES: [Str; 7] = [
@@ -36,6 +37,8 @@ pub struct AccountView {
     account: Option<YtAccountInfo>,
     sign_in_focus: FocusHandle,
 }
+
+impl EventEmitter<AccountChanged> for AccountView {}
 
 impl AccountView {
     pub fn new(feed: Entity<FeedView>, with_header: bool, cx: &mut Context<Self>) -> Self {
@@ -106,6 +109,7 @@ impl AccountView {
                     cx.global::<AppGraph>().log.warn("sign-out failed", Some(&error));
                 }
                 view.refresh(cx);
+                cx.emit(AccountChanged);
             })
             .ok();
         })

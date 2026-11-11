@@ -30,6 +30,7 @@ use crate::play_history::HistoryRecorder;
 use crate::playback::{Playback, QueueItem};
 use crate::search_view::{SearchEvent, SearchMode, SearchView};
 use crate::settings_view::{LocaleChanged, SettingsView};
+use crate::signin::AccountChanged;
 use crate::signin_dialog::{SignInEvent, SignInView};
 use crate::sponsor_block::SponsorBlock;
 use crate::tab_row::tab_row;
@@ -875,7 +876,8 @@ impl Shell {
                 root.update(cx, |root, cx| root.reload(cx));
             }
         });
-        self._subscriptions.push(locale);
+        let account = cx.subscribe(&view, |shell, _, _: &AccountChanged, cx| shell.account_changed(cx));
+        self._subscriptions.extend([locale, account]);
         self.settings = Some(view.clone());
         view
     }
@@ -944,8 +946,8 @@ impl Shell {
     fn dev_sign_in_paste(&mut self, path: std::path::PathBuf, cx: &mut Context<Self>) {
         let graph = cx.global::<AppGraph>();
         let (jar, engines, log) = (graph.cookies.clone(), graph.engines.clone(), graph.log.fork("signin"));
-        graph.tokio.spawn(async move {
-            let text = std::fs::read_to_string(&path).unwrap_or_default();
+        let done = on_core(cx, async move {
+            let text = tokio::fs::read_to_string(&path).await.unwrap_or_default();
             let cookies = ym_signin::parse_cookie_paste(&text);
             log.info(&format!("paste parsed {} cookies", cookies.len()));
             match crate::signin::sign_in_with_cookies(cookies, jar, engines, &log).await {
@@ -953,6 +955,11 @@ impl Shell {
                 Err(error) => log.warn("sign-in failed", Some(&error)),
             }
         });
+        cx.spawn(async move |this, cx| {
+            done.await;
+            this.update(cx, |shell, cx| shell.account_changed(cx)).ok();
+        })
+        .detach();
     }
 
     /// Debug: `speed=2,pitch=1,preset=1,loop=One,shuffle=1,sleep=<seconds>,video=0,boot=1` applied at start.
@@ -1107,12 +1114,19 @@ impl Shell {
     fn dev_sign_out(&mut self, cx: &mut Context<Self>) {
         let graph = cx.global::<AppGraph>();
         let (jar, engines, log) = (graph.cookies.clone(), graph.engines.clone(), graph.log.fork("signout"));
-        graph.tokio.spawn(async move {
-            match crate::signin::sign_out(jar, engines, &log).await {
+        let done = on_core(cx, async move {
+            let result = crate::signin::sign_out(jar, engines, &log).await;
+            match &result {
                 Ok(()) => log.info("signed out"),
-                Err(error) => log.warn("sign-out failed", Some(&error)),
+                Err(error) => log.warn("sign-out failed", Some(error)),
             }
+            result
         });
+        cx.spawn(async move |this, cx| {
+            done.await;
+            this.update(cx, |shell, cx| shell.account_changed(cx)).ok();
+        })
+        .detach();
     }
 
     /// Resolves a shared YouTube link and plays it when it names a video.
@@ -1230,8 +1244,14 @@ impl Shell {
         self.push_layer(Layer::SignIn(view), cx);
     }
 
-    /// Everything that shows who is signed in re-checks.
+    /// Everything that shows who is signed in re-checks, and every feed reloads under the new
+    /// identity (the Account and YT Music Library feeds reload through their views' re-check).
     fn account_changed(&mut self, cx: &mut Context<Self>) {
+        for (source, root) in &self.roots {
+            if !matches!(source, FeedSource::Account | FeedSource::MusicLibrary) {
+                root.update(cx, |root, cx| root.reload(cx));
+            }
+        }
         for view in [self.account.clone(), self.music_library.clone()].into_iter().flatten() {
             view.update(cx, |view, cx| view.refresh(cx));
         }
@@ -1819,6 +1839,7 @@ impl Shell {
         }
         let feed = self.root(FeedSource::Account, cx);
         let view = cx.new(|cx| AccountView::new(feed, true, cx));
+        self._subscriptions.push(cx.subscribe(&view, |shell, _, _: &AccountChanged, cx| shell.account_changed(cx)));
         self.account = Some(view.clone());
         view
     }
@@ -1829,6 +1850,7 @@ impl Shell {
         }
         let feed = self.root(FeedSource::MusicLibrary, cx);
         let view = cx.new(|cx| AccountView::new(feed, false, cx));
+        self._subscriptions.push(cx.subscribe(&view, |shell, _, _: &AccountChanged, cx| shell.account_changed(cx)));
         self.music_library = Some(view.clone());
         view
     }
