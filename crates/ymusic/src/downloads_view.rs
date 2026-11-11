@@ -383,7 +383,7 @@ fn retry_dialog(
 }
 
 /// "Jul 31, 2026", in the local time zone.
-fn short_date(epoch_ms: i64) -> Option<String> {
+pub fn short_date(epoch_ms: i64) -> Option<String> {
     use chrono::{Datelike, TimeZone};
     const MONTHS: [Str; 12] = [
         Str::MonthAbbr0,

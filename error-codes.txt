@@ -53,6 +53,9 @@ R90013 - cookies: the OS cookie key is unavailable; the launch runs as a guest (
 R90014 - cookies: the sealed cookie jar does not open with this key; the launch starts signed out
 R90450 - cookies (Linux): no Secret Service answered; the cookie key is kept in app.db (cookie-key.bin), as the JVM app does
 R90600 - download location: the picked folder could not be added to the Library (media store), or the core runtime stopped
+R90800 - playlist backup: reading the playlists (media store) or writing the backup file failed
+R90801 - playlist restore: the picked backup file could not be read (I/O), or the core runtime stopped
+R90802 - playlist restore: writing the backed-up playlists to the media store failed
 R70001 - download: writing a SABR segment to the scratch file failed (not disk full)
 R70002 - download: googlevideo rejected the PO token (StreamProtectionStatus=3), after the one re-attest
 R70003 - download: googlevideo withheld media while attestation stayed pending (StreamProtectionStatus=2)

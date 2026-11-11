@@ -13,7 +13,7 @@ use std::sync::atomic::AtomicBool;
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
-use gpui_kit::component::{ActiveTheme, Icon, IconName, Sizable, StyledExt, WindowExt, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt, WindowExt, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use ym_i18n::{Str, t, tf};
@@ -25,6 +25,7 @@ use crate::graph::{AppGraph, on_core};
 use crate::library_playlist::{self, AddToLocalPlaylist, ArrangePlaylist, Changed, NameMode, PlaylistNameDialog};
 use crate::mini_player::clock;
 use crate::playback::QueueItem;
+use crate::playlist_transfer::PlaylistTransfer;
 use crate::spinner::Spinner;
 use crate::tab_row::tab_row;
 
@@ -158,6 +159,8 @@ const TOOL_SHUFFLE: usize = 1;
 const TOOL_SORT: usize = 2;
 const TOOL_SORT_DIRECTION: usize = 3;
 const TOOL_NEW_PLAYLIST: usize = 4;
+const TOOL_PLAYLIST_MENU: usize = 5;
+const TOOL_EMPTY_RESTORE: usize = 6;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tab {
@@ -236,6 +239,7 @@ struct Loaded {
     recent: Vec<MediaItem>,
     top: Vec<MediaItem>,
     playlists: Vec<(Playlist, Vec<PlaylistItemDetail>)>,
+    ready: bool,
 }
 
 fn by_codes(items: &[MediaItem], codes: &[String]) -> Vec<MediaItem> {
@@ -284,6 +288,7 @@ pub struct LibraryView {
     dev_ready: bool,
     /// The first Library folder, offered as the download location once it was added.
     location_offer: Option<Bucket>,
+    transfer: PlaylistTransfer,
 }
 
 impl EventEmitter<PlayLocal> for LibraryView {}
@@ -327,6 +332,7 @@ impl LibraryView {
             dev_actions: Vec::new(),
             dev_ready: false,
             location_offer: None,
+            transfer: PlaylistTransfer::default(),
         };
         view.refresh(cx);
         on_library_change(cx, |view, cx| {
@@ -425,6 +431,7 @@ impl LibraryView {
                     top: by_codes(&items, &top),
                     items,
                     playlists,
+                    ready: true,
                 })
             })
             .await
@@ -533,6 +540,18 @@ impl LibraryView {
     fn delete_playlist(&mut self, playlist: Playlist, window: &mut Window, cx: &mut Context<Self>) {
         let changed = self.changed(cx);
         library_playlist::confirm_delete_playlist(playlist, Some(changed), window, cx);
+    }
+
+    /// `target` skips the save panel (debug routes).
+    fn backup_playlists(&mut self, target: Option<PathBuf>, window: &mut Window, cx: &mut Context<Self>) {
+        self.transfer.backup(target, window, cx);
+        cx.notify();
+    }
+
+    /// `source` skips the open panel (debug routes).
+    fn restore_playlists(&mut self, source: Option<PathBuf>, window: &mut Window, cx: &mut Context<Self>) {
+        let changed = self.changed(cx);
+        self.transfer.open_restore(source, self.loaded.playlists.len(), changed, window, cx);
     }
 
     /// Each group's name and members, by name; an untagged file falls under the tab's unknown name.
@@ -1017,6 +1036,9 @@ impl LibraryView {
                 }
             }
             "arrange" => self.arrange(window, cx),
+            "backup" => self.backup_playlists(Some(PathBuf::from(argument)), window, cx),
+            "restore" => self.restore_playlists(Some(PathBuf::from(argument)), window, cx),
+            "transfermenu" => window.focus(&self.tool_focus.handle(TOOL_PLAYLIST_MENU, cx), cx),
             "rescan" => self.rescan(cx),
             "sort" => {
                 if let Some(context) = self.sort_context() {
@@ -1583,7 +1605,64 @@ impl LibraryView {
             _ => bar,
         };
         let sort = self.sort_context().map(|context| self.sort_control(context, cx));
-        bar.child(div().flex_1()).children(sort).into_any_element()
+        let transfer_menu =
+            (self.tab == Tab::Playlists && self.open_playlist.is_none()).then(|| self.transfer_menu(cx));
+        bar.child(div().flex_1()).children(sort).children(transfer_menu).into_any_element()
+    }
+
+    /// The Playlists toolbar's ⋮: Back up (when there is a playlist to write) and Restore.
+    fn transfer_menu(&self, cx: &mut Context<Self>) -> Div {
+        let view = cx.entity().downgrade();
+        let can_backup = !self.loaded.playlists.is_empty();
+        let more = more_button("playlist-transfer-more")
+            .track_focus(&self.tool_focus.handle(TOOL_PLAYLIST_MENU, cx))
+            .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, _| {
+                let (backup_view, restore_view) = (view.clone(), view.clone());
+                menu.when(can_backup, |menu| {
+                    menu.item(PopupMenuItem::new(t(Str::PlaylistMenuBackup)).on_click(move |_, window, cx| {
+                        backup_view.update(cx, |view, cx| view.backup_playlists(None, window, cx)).ok();
+                    }))
+                })
+                .item(PopupMenuItem::new(t(Str::PlaylistMenuRestore)).on_click(
+                    move |_, window, cx| {
+                        restore_view.update(cx, |view, cx| view.restore_playlists(None, window, cx)).ok();
+                    },
+                ))
+            });
+        self.tool_focus.wrap(TOOL_PLAYLIST_MENU, more, cx)
+    }
+
+    /// Under the system playlists while the user has none: the way to bring some in.
+    fn no_playlists_hint(&self, cx: &mut Context<Self>) -> Div {
+        let theme = cx.theme().clone();
+        let restore = Button::new("playlists-empty-restore")
+            .outline()
+            .label(t(Str::PlaylistsEmptyRestore))
+            .disabled(self.transfer.busy())
+            .on_click(cx.listener(|view, _, window, cx| view.restore_playlists(None, window, cx)));
+        v_flex()
+            .w_full()
+            .px_4()
+            .py_8()
+            .gap_2()
+            .items_center()
+            .child(
+                div()
+                    .id("playlists-empty-title")
+                    .role(Role::Heading)
+                    .text_size(px(16.))
+                    .font_medium()
+                    .text_color(theme.foreground)
+                    .child(t(Str::PlaylistsEmptyTitle)),
+            )
+            .child(
+                div()
+                    .text_size(px(13.))
+                    .text_center()
+                    .text_color(theme.muted_foreground)
+                    .child(t(Str::PlaylistsEmptyDesc)),
+            )
+            .child(div().pt_2().child(self.tool_focus.button(TOOL_EMPTY_RESTORE, restore, cx)))
     }
 
     fn shuffle_chip(&self, cx: &mut Context<Self>) -> Div {
@@ -1832,6 +1911,13 @@ impl Render for LibraryView {
             0..song_count,
             cx,
         ));
+        if self.tab == Tab::Playlists
+            && self.open_playlist.is_none()
+            && self.loaded.ready
+            && self.loaded.playlists.is_empty()
+        {
+            body = body.child(self.no_playlists_hint(cx));
+        }
         if empty {
             let message = t(match self.tab {
                 Tab::Folders => Str::LibraryEmptyFolder,
