@@ -20,6 +20,9 @@ pub struct SubtitleInput {
 
 pub type Metadata = Vec<(String, String)>;
 
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
 pub struct Ffmpeg {
     binary: PathBuf,
 }
@@ -48,6 +51,9 @@ impl Ffmpeg {
             .stdout(if on_progress.is_some() { Stdio::piped() } else { Stdio::null() })
             .stderr(Stdio::piped())
             .kill_on_drop(true);
+        // A console child of a GUI process would open a console window of its own.
+        #[cfg(windows)]
+        command.creation_flags(CREATE_NO_WINDOW);
         let mut child = command.spawn().map_err(|error| {
             DownloadError::technical("R70013", format!("ffmpeg {}: {error}", self.binary.display()))
         })?;

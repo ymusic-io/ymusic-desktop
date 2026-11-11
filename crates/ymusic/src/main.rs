@@ -1,3 +1,6 @@
+// Release builds launch without a console window; debug runs keep theirs for the log.
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 mod a11y;
 mod accent;
 mod account_view;
