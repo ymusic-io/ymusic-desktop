@@ -1,6 +1,6 @@
-//! What one launch runs on: the cookie jar, and the engine cache that goes with whoever owns it.
-//! A guest's cache is its own and is removed at quit, so a guest and the signed-in user never read
-//! each other's cached responses. The JVM app's `CookieSession` / `openCookieStore`.
+//! What one launch runs on: the cookie jar, and the caches that go with whoever owns it. A guest's
+//! caches are its own and are removed at quit, so a guest and the signed-in user never read each
+//! other's cached responses. The JVM app's `CookieSession` / `openCookieStore`.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -24,6 +24,8 @@ pub(crate) const FALLBACK_KEY_SECRET: &str = "cookie-key.bin";
 #[cfg(windows)]
 const DPAPI_KEY_SECRET: &str = "cookie-key.dpapi";
 pub const ENGINE_CACHE_DIR: &str = "engine-cache";
+/// The engine HTTP client's disk cache, in OkHttp's format (the JVM app's folder).
+pub const HTTP_CACHE_DIR: &str = "http-cache";
 /// The macOS Keychain item is bound to this app's signature, so a password adds nothing there.
 const KEY_IN_KEYCHAIN: bool = cfg!(target_os = "macos") && !cfg!(debug_assertions);
 
@@ -81,7 +83,7 @@ pub struct CookieSession {
     pub jar: Arc<dyn CookieJar>,
     /// `None` for a guest: nothing of it is kept, so there is nothing to protect.
     pub sealed: Option<Arc<SealedJar>>,
-    /// Root of the session's engine cache.
+    /// Root of the session's HTTP and engine caches.
     pub cache_root: PathBuf,
 }
 
@@ -109,7 +111,7 @@ impl CookieSession {
         Ok(Self { jar: Arc::new(MemoryCookieJar::default()), sealed: None, cache_root: root })
     }
 
-    /// A guest's cache dir, removed at quit.
+    /// A guest's cache root, removed at quit.
     pub fn guest_cache(&self) -> Option<PathBuf> {
         self.is_guest().then(|| self.cache_root.clone())
     }

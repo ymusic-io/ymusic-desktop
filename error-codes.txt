@@ -53,6 +53,23 @@ R90013 - cookies: the OS cookie key is unavailable; the launch runs as a guest (
 R90014 - cookies: the sealed cookie jar does not open with this key; the launch starts signed out
 R90450 - cookies (Linux): no Secret Service answered; the cookie key is kept in app.db (cookie-key.bin), as the JVM app does
 R90600 - download location: the picked folder could not be added to the Library (media store), or the core runtime stopped
+R90700 - http cache: a cache entry could not be read (journal or value file I/O); the request goes to the network
+R90701 - http cache: a response's metadata could not be written into the cache; the response is still delivered
+R90702 - http cache: the journal is corrupt; the cache folder is emptied and starts over (as OkHttp does)
+R90703 - http cache: a journal line could not be written; edits stop until the journal is rebuilt
+R90704 - http cache: trimming to the size cap failed
+R90705 - http cache: invalidating a URL after an unsafe request (POST/PUT/...) failed
+R90706 - http cache: refreshing an entry's metadata after a 304 failed (the cached body is still served)
+R90707 - http cache: a cached entry's metadata does not parse; treated as a miss
+R90708 - http cache: writing a response body into its entry failed; the entry is dropped, the response goes on
+R90709 - http cache: flushing a response body into its entry failed; the entry is dropped
+R90710 - http cache: committing a finished entry failed
+R90711 - http cache: the commit task stopped before finishing (panic or runtime shutdown)
+R90712 - http cache: a blocking cache task stopped before finishing (panic or runtime shutdown); treated as a miss
+R90713 - http cache: rebuilding the journal failed; edits stop until a rebuild succeeds
+R90714 - http cache: an abandoned edit could not be rolled back
+R90715 - http protocol: the cache commit task of a delivered response failed to run
+R90716 - http protocol: reading a cached response body failed mid-delivery (the exchange resets as a network failure)
 R90800 - playlist backup: reading the playlists (media store) or writing the backup file failed
 R90801 - playlist restore: the picked backup file could not be read (I/O), or the core runtime stopped
 R90802 - playlist restore: writing the backed-up playlists to the media store failed

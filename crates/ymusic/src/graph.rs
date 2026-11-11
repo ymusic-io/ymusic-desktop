@@ -9,12 +9,15 @@ use tokio::runtime::Handle;
 use ym_common::http::HttpClients;
 use ym_common::log::Logger;
 use ym_download::DownloadService;
-use ym_engine::{CookieJar, DiskCacheStore, DynamicEngine, EngineConfig, EngineError, EngineManager};
+use ym_engine::{
+    CookieJar, DEFAULT_HTTP_CACHE_BYTES, DiskCacheStore, DynamicEngine, EngineConfig, EngineError, EngineManager,
+    HttpCache,
+};
 use ym_remote_config::{ApiIdentity, BundleSource, RemoteConfig, StatUsage, VerifiedBundle};
 use ym_settings::{AppDb, SettingsStore};
 use ym_store::MediaStore;
 
-use crate::cookie_session::{CookieSession, ENGINE_CACHE_DIR, SealedJar};
+use crate::cookie_session::{CookieSession, ENGINE_CACHE_DIR, HTTP_CACHE_DIR, SealedJar};
 use crate::downloads::DownloadInputs;
 use crate::youtube_session::{CandidateSource, YoutubeSessions};
 
@@ -53,7 +56,7 @@ pub struct AppGraph {
     pub sealed_jar: Option<Arc<SealedJar>>,
     /// Offer to seal the jar under a password after a sign-in.
     pub can_protect: bool,
-    /// A guest's engine cache, removed at quit.
+    /// A guest's cache root, removed at quit.
     pub guest_cache: Option<PathBuf>,
     /// The YouTube player session playback and downloads share.
     pub youtube: Arc<YoutubeSessions>,
@@ -88,6 +91,11 @@ impl AppGraph {
         .await
         .map_err(|error| boot_error("R90001", "engine cache")(error.to_string()))?
         .map_err(|error| boot_error("R90001", "engine cache")(error.to_string()))?;
+        let http_cache = Arc::new(HttpCache::new(
+            session.cache_root.join(HTTP_CACHE_DIR),
+            DEFAULT_HTTP_CACHE_BYTES,
+            log.fork("http-cache"),
+        ));
         let cookies = session.jar;
         let device_id = match app_db.string(DEVICE_ID_KEY, "").ok().filter(|id| !id.is_empty()) {
             Some(id) => id,
@@ -160,6 +168,7 @@ impl AppGraph {
             settings: Some(settings.clone()),
             remote_features: Some(Arc::new(move |key| features_remote.current().feature(key).cloned())),
             cache: Some(cache.clone()),
+            http_cache: Some(http_cache.clone()),
             mse: None,
             main: None,
         };
@@ -174,7 +183,7 @@ impl AppGraph {
 
         let pending_player: Arc<Mutex<Option<VerifiedBundle>>> = Arc::new(Mutex::new(None));
         let media = Arc::new(media);
-        let mut player_config = template_for("player", &http, &log, &cookies, &settings, &cache, &remote);
+        let mut player_config = template_for("player", &http, &http_cache, &log, &cookies, &settings, &cache, &remote);
         player_config.main = Some({
             let engines = engines.clone();
             Arc::new(move || Some(engines.current().runtime().clone()))
@@ -322,10 +331,12 @@ fn player_candidates(
     candidates
 }
 
-/// An engine config sharing the app's HTTP, cookies, settings, cache and remote features.
+/// An engine config sharing the app's HTTP (and its disk cache), cookies, settings, cache and remote features.
+#[allow(clippy::too_many_arguments)]
 fn template_for(
     tag: &str,
     http: &HttpClients,
+    http_cache: &Arc<HttpCache>,
     log: &Logger,
     cookies: &Arc<dyn CookieJar>,
     settings: &Arc<dyn SettingsStore>,
@@ -341,6 +352,7 @@ fn template_for(
         settings: Some(settings.clone()),
         remote_features: Some(Arc::new(move |key| remote.current().feature(key).cloned())),
         cache: Some(cache.clone()),
+        http_cache: Some(http_cache.clone()),
         mse: None,
         main: None,
     }

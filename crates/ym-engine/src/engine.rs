@@ -9,6 +9,7 @@ use ym_settings::SettingsStore;
 use crate::cache::DiskCacheStore;
 use crate::cookie::CookieJar;
 use crate::error::EngineError;
+use crate::http_cache::HttpCache;
 use crate::logs::ParkedLoggers;
 use crate::settings::FeatureLookup;
 
@@ -25,6 +26,8 @@ pub struct EngineConfig {
     pub settings: Option<Arc<dyn SettingsStore>>,
     pub remote_features: Option<FeatureLookup>,
     pub cache: Option<Arc<DiskCacheStore>>,
+    /// The `http` protocol's disk cache, one per session folder, shared by every engine.
+    pub http_cache: Option<Arc<HttpCache>>,
     /// The player bundle's native MSE host and `__mse*` vtable, attached before the eval. The
     /// host must outlive the engine.
     pub mse: Option<(usize, usize)>,
@@ -62,7 +65,7 @@ impl DynamicEngine {
         });
         let runtime = QuickJsRuntime::new(config.app_version, None, Some(on_log)).map_err(load_failure)?;
         let parked = Arc::new(ParkedLoggers::new(config.logger));
-        crate::http::install(&runtime, config.http, parked.clone());
+        crate::http::install(&runtime, config.http, config.http_cache, parked.clone());
         if let Some(jar) = config.cookies {
             crate::cookie::install(&runtime, jar, parked.clone());
         }

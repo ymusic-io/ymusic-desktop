@@ -22,6 +22,11 @@ cookie_store = "0.22"
 time = "0.3"
 sha2 = "0.11"
 hex = "0.4"
+md-5 = "0.10"
+base64 = "0.22"
+flate2 = "1"
+httpdate = "1"
+indexmap = "2"
 
 [lints]
 workspace = true
