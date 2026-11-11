@@ -171,6 +171,7 @@ impl AppGraph {
             http_cache: Some(http_cache.clone()),
             mse: None,
             main: None,
+            media_proxy: None,
         };
         let mut candidates = Vec::new();
         let cached_source = engine_source.clone();
@@ -355,6 +356,7 @@ fn template_for(
         http_cache: Some(http_cache.clone()),
         mse: None,
         main: None,
+        media_proxy: None,
     }
 }
 

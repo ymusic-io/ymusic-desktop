@@ -8,6 +8,10 @@
 //! With an [`HttpCache`], a GET follows its redirects here, hop by hop, each hop through the cache
 //! (OkHttp's interceptor order), replaying the redirect rules reqwest applies so the wire is the
 //! same: gzip is requested and decoded here, the cache keeping the bytes as they arrived.
+//!
+//! A request the bundle tags with `X-Ym-Af` goes to the [`MediaProxy`] when one accepts it, ahead
+//! of the cache: the player cache answers or forwards it and the HTTP cache never sees it, as
+//! Kotlin's `SabrProxyHttpClient` sits in front of OkHttp's cache.
 
 use std::io::Write;
 use std::sync::Arc;
@@ -15,7 +19,8 @@ use std::time::Duration;
 
 use bytes::{Bytes, BytesMut};
 use flate2::write::GzDecoder;
-use futures::Stream;
+use futures::stream::BoxStream;
+use futures::{Stream, StreamExt};
 use reqwest::header::{
     ACCEPT, ACCEPT_ENCODING, AUTHORIZATION, CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_TYPE, COOKIE, HeaderMap,
     HeaderName, HeaderValue, PROXY_AUTHORIZATION, REFERER, TRANSFER_ENCODING, WWW_AUTHENTICATE,
@@ -34,18 +39,20 @@ use crate::http_cache::{
     handshake_of, invalidates_cache, is_cacheable, promises_body, vary_headers,
 };
 use crate::logs::{ParkedLoggers, prop_of, protocol_logger};
+use crate::media_proxy::{MediaProxy, ProxiedRequest, SABR_FORMATS_HEADER};
 
 pub(crate) fn install(
     runtime: &QuickJsRuntime,
     clients: HttpClients,
     cache: Option<Arc<HttpCache>>,
+    proxy: Option<Arc<dyn MediaProxy>>,
     parked: Arc<ParkedLoggers>,
 ) {
     let weak = runtime.downgrade();
-    runtime.on_accept("http", move |pipe| serve(weak.clone(), pipe, clients.clone(), cache.clone(), parked.clone()));
+    runtime.on_accept("http", move |pipe| {
+        serve(weak.clone(), pipe, clients.clone(), cache.clone(), proxy.clone(), parked.clone())
+    });
 }
-
-const SABR_FORMATS_HEADER: &str = "X-Ym-Af";
 /// reqwest's `Policy::limited(20)` in `HttpClients`.
 const MAX_REDIRECTS: usize = 20;
 
@@ -57,6 +64,8 @@ struct Prepared {
     follow_redirects: bool,
     body_command: Option<String>,
     timeout: Duration,
+    /// The bundle's `X-Ym-Af` tag for the media proxy, never on the wire.
+    media_tag: Option<String>,
 }
 
 /// A response ready for the client: the network's, or one the cache answered.
@@ -74,6 +83,7 @@ struct Delivery {
 enum DeliveryBody {
     Network(NetworkBody),
     Cached(tokio::fs::File),
+    Proxied(BoxStream<'static, std::io::Result<Bytes>>),
     Empty,
 }
 
@@ -168,6 +178,7 @@ async fn serve(
     pipe: Pipe,
     clients: HttpClients,
     cache: Option<Arc<HttpCache>>,
+    proxy: Option<Arc<dyn MediaProxy>>,
     parked: Arc<ParkedLoggers>,
 ) -> Result<(), BoxError> {
     let (head, trailing) = match read_json_head(&pipe).await {
@@ -201,7 +212,7 @@ async fn serve(
             Err(error) => Watch::Failed(error),
         }
     };
-    let exchange = exchange(&pipe, prepared, &clients, cache.as_ref(), runtime, &log);
+    let exchange = exchange(&pipe, prepared, &clients, cache.as_ref(), proxy.as_ref(), runtime, &log);
     tokio::pin!(watcher, exchange);
     let mut watching = true;
     loop {
@@ -242,12 +253,13 @@ fn prepare(head: &Value) -> Result<Prepared, BoxError> {
     let method = head.get("method").and_then(Value::as_str).unwrap_or("GET");
     let url = head.get("url").and_then(Value::as_str).unwrap_or_default();
     let mut headers = Vec::new();
+    let mut media_tag = None;
     if let Some(pairs) = head.get("headers").and_then(Value::as_array) {
         for pair in pairs {
             let name = pair.get(0).and_then(Value::as_str).ok_or("header entry without a name")?;
             let value = pair.get(1).and_then(Value::as_str).ok_or("header entry without a value")?;
-            // The bundle tags cacheable SABR requests for the host's media proxy; never on the wire.
             if name.eq_ignore_ascii_case(SABR_FORMATS_HEADER) {
+                media_tag = Some(value.to_owned());
                 continue;
             }
             HeaderName::from_bytes(name.as_bytes())?;
@@ -272,6 +284,7 @@ fn prepare(head: &Value) -> Result<Prepared, BoxError> {
         follow_redirects,
         body_command: head.get("bodyCmd").and_then(Value::as_str).map(str::to_owned),
         timeout,
+        media_tag,
     })
 }
 
@@ -326,6 +339,7 @@ async fn exchange(
     prepared: Prepared,
     clients: &HttpClients,
     cache: Option<&Arc<HttpCache>>,
+    proxy: Option<&Arc<dyn MediaProxy>>,
     runtime: WeakRuntime,
     log: &Logger,
 ) -> Result<(), BoxError> {
@@ -338,8 +352,13 @@ async fn exchange(
     });
 
     let timeout = prepared.timeout;
-    let delivery = match cache {
-        Some(cache) if prepared.method == reqwest::Method::GET && prepared.body_command.is_none() => {
+    let proxy = proxy
+        .filter(|proxy| prepared.media_tag.is_some() && proxy.accepts(prepared.method.as_str(), prepared.url.as_str()));
+    let delivery = match (proxy, cache) {
+        (Some(proxy), _) => {
+            tokio::time::timeout(timeout, execute_proxied(proxy, clients, prepared, runtime, log)).await
+        }
+        (None, Some(cache)) if prepared.method == reqwest::Method::GET && prepared.body_command.is_none() => {
             tokio::time::timeout(timeout, execute_cached(cache, clients, &prepared, log)).await
         }
         _ => tokio::time::timeout(timeout, execute_plain(clients, prepared, cache, runtime)).await,
@@ -385,6 +404,61 @@ async fn execute_plain(
         final_url: response.url().to_string(),
         cache: None,
         body: DeliveryBody::Network(NetworkBody::new(response, None, String::new(), Logger::none())),
+        gunzip: false,
+    })
+}
+
+async fn read_body(runtime: WeakRuntime, command: &str) -> Result<Bytes, BoxError> {
+    let pipe = runtime.upgrade().ok_or(PipeError::RuntimeClosed)?.open_pipe(command).await?;
+    let mut body = BytesMut::new();
+    while let Some(chunk) = pipe.receive(PIPE_CAP).await? {
+        body.extend_from_slice(&chunk);
+    }
+    finish(&pipe).await?;
+    Ok(body.freeze())
+}
+
+/// Through the media proxy, which plans from the whole request body and forwards a miss as
+/// [`execute_plain`] would send it (tag removed). Never cached here, never invalidating.
+async fn execute_proxied(
+    proxy: &Arc<dyn MediaProxy>,
+    clients: &HttpClients,
+    prepared: Prepared,
+    runtime: WeakRuntime,
+    log: &Logger,
+) -> Result<Delivery, String> {
+    let client = clients.pick(prepared.follow_redirects).clone();
+    let headers = header_map(prepared.headers.iter().map(|(name, value)| (name.as_str(), value.as_str())))
+        .map_err(|error| error.to_string())?;
+    let mut builder = client.request(prepared.method.clone(), prepared.url.clone()).headers(headers);
+    let body = match &prepared.body_command {
+        Some(command) => {
+            let body = read_body(runtime, command).await.map_err(|error| format!("request body: {error}"))?;
+            builder = builder.body(body.clone());
+            body
+        }
+        None => Bytes::new(),
+    };
+    let network = builder.build().map_err(|error| error_chain(&error.without_url()))?;
+    let mut sent = prepared.headers;
+    sent.extend(prepared.media_tag.map(|tag| (SABR_FORMATS_HEADER.to_owned(), tag)));
+    let request = ProxiedRequest {
+        method: prepared.method.to_string(),
+        url: prepared.url.to_string(),
+        headers: sent,
+        body,
+        network,
+        client,
+        log: log.clone(),
+    };
+    let response = proxy.serve(request).await.map_err(|error| error_chain(&error.without_url()))?;
+    Ok(Delivery {
+        status: response.status,
+        message: response.message,
+        headers: Headers::new(response.headers),
+        final_url: response.url,
+        cache: None,
+        body: DeliveryBody::Proxied(response.body),
         gunzip: false,
     })
 }
@@ -655,10 +729,11 @@ async fn deliver(pipe: &Pipe, delivery: Delivery, log: &Logger) -> Result<(), Bo
     if delivery_ended(pipe.send(head.to_string()).await)? {
         return Ok(());
     }
-    let (mut network, mut cached) = (None, None);
+    let (mut network, mut cached, mut proxied) = (None, None, None);
     match delivery.body {
         DeliveryBody::Network(body) => network = Some(body),
         DeliveryBody::Cached(file) => cached = Some(file),
+        DeliveryBody::Proxied(stream) => proxied = Some(stream),
         DeliveryBody::Empty => {}
     }
     let mut decoder = delivery.gunzip.then(|| GzDecoder::new(Vec::new()));
@@ -686,6 +761,17 @@ async fn deliver(pipe: &Pipe, delivery: Delivery, log: &Logger) -> Result<(), Bo
                     log.warn(&format!("R90716 {message}"), Some(&error));
                     return reset(pipe, "network", &message).await;
                 }
+            }
+        } else if let Some(stream) = proxied.as_mut() {
+            match stream.next().await {
+                Some(Ok(chunk)) => Some(chunk),
+                Some(Err(error)) => {
+                    // The head is out: a clean END now would read as a complete, truncated body.
+                    let message = format!("response body failed: {}", error_chain(&error));
+                    log.warn(&message, Some(&error));
+                    return reset(pipe, "network", &message).await;
+                }
+                None => None,
             }
         } else {
             None
@@ -716,6 +802,9 @@ async fn deliver(pipe: &Pipe, delivery: Delivery, log: &Logger) -> Result<(), Bo
     }
     if let Some(mut body) = network {
         body.finish().await;
+    }
+    if proxied.is_some() {
+        log.debug(|| format!("proxied body {raw_bytes} bytes"));
     }
     pipe.close_write(None).await?;
     Ok(())

@@ -11,6 +11,7 @@ use crate::cookie::CookieJar;
 use crate::error::EngineError;
 use crate::http_cache::HttpCache;
 use crate::logs::ParkedLoggers;
+use crate::media_proxy::MediaProxy;
 use crate::settings::FeatureLookup;
 
 pub type MainResolver = Arc<dyn Fn() -> Option<QuickJsRuntime> + Send + Sync>;
@@ -34,6 +35,9 @@ pub struct EngineConfig {
     /// Resolves the main engine at each call, for the player bundle's `host/main/*` proxy (so it
     /// follows engine swaps).
     pub main: Option<MainResolver>,
+    /// Serves the bundle's tagged media requests (the player cache); `None` sends them to the
+    /// network with the tag removed.
+    pub media_proxy: Option<Arc<dyn MediaProxy>>,
 }
 
 /// One booted `engine.js` and the host protocols it is served.
@@ -65,7 +69,7 @@ impl DynamicEngine {
         });
         let runtime = QuickJsRuntime::new(config.app_version, None, Some(on_log)).map_err(load_failure)?;
         let parked = Arc::new(ParkedLoggers::new(config.logger));
-        crate::http::install(&runtime, config.http, config.http_cache, parked.clone());
+        crate::http::install(&runtime, config.http, config.http_cache, config.media_proxy, parked.clone());
         if let Some(jar) = config.cookies {
             crate::cookie::install(&runtime, jar, parked.clone());
         }
