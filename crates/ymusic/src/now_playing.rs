@@ -807,8 +807,11 @@ impl NowPlaying {
                         STOP_SPONSOR_BLOCK,
                         Button::new("np-sponsorblock")
                             .ghost()
-                            .icon(if whitelisted { Lucide::ShieldOff } else { Lucide::ShieldCheck })
-                            .selected(!whitelisted)
+                            .icon(Icon::empty().path(crate::assets::SPONSOR_BLOCK_ICON).text_color(if whitelisted {
+                                cx.theme().muted_foreground
+                            } else {
+                                cx.theme().primary
+                            }))
                             .accessibility_label(t(Str::SettingsSponsorBlock))
                             .tooltip(state)
                             .on_click(cx.listener(move |view, _, _, cx| {

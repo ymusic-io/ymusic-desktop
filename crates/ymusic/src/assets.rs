@@ -76,6 +76,9 @@ gpui_kit::assets::icon_assets!(
     ]
 );
 
+/// SponsorBlock's mark (the JVM app's ic_sponsor_block), a monochrome icon tinted by its text color.
+pub const SPONSOR_BLOCK_ICON: &str = "brand/sponsor-block.svg";
+
 const LOGO_SVG: &str = include_str!("../assets/ymusic-logo.svg");
 const LOGO_PREFIX: &str = "brand/ymusic-logo@";
 
@@ -98,6 +101,9 @@ impl AssetSource for AppAssets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
         if LocalArt::handles(path) {
             return self.local_art.load(path).map(Some);
+        }
+        if path == SPONSOR_BLOCK_ICON {
+            return Ok(Some(Cow::Borrowed(include_bytes!("../assets/sponsor-block.svg"))));
         }
         if let Some(svg) = logo_at(path) {
             return Ok(Some(Cow::Owned(svg.into_bytes())));
