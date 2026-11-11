@@ -14,6 +14,8 @@ use crate::graph::AppGraph;
 
 /// Shared with the JVM app: nothing is sent unless this is on.
 pub const CRASH_REPORTS_KEY: &str = "telemetry.crashReports";
+/// Shared with the JVM app: "Send anonymous stats"; nothing is recorded or sent while off.
+pub const STATS_KEY: &str = "telemetry.stats";
 const DEVICE_ID_KEY: &str = "telemetry.deviceId";
 /// Debug builds: the feedback report's envelopes go to this file instead of Sentry.
 const FEEDBACK_DRY_RUN_ENV: &str = "YMUSIC_DEV_FEEDBACK_ENVELOPE";

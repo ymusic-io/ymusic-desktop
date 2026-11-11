@@ -10,7 +10,7 @@ use ym_common::http::HttpClients;
 use ym_common::log::Logger;
 use ym_download::DownloadService;
 use ym_engine::{CookieJar, DiskCacheStore, DynamicEngine, EngineConfig, EngineError, EngineManager};
-use ym_remote_config::{ApiIdentity, BundleSource, RemoteConfig, VerifiedBundle};
+use ym_remote_config::{ApiIdentity, BundleSource, RemoteConfig, StatUsage, VerifiedBundle};
 use ym_settings::{AppDb, SettingsStore};
 use ym_store::MediaStore;
 
@@ -40,6 +40,10 @@ pub struct AppGraph {
     pub settings: Arc<dyn SettingsStore>,
     pub media: Arc<MediaStore>,
     pub remote: Arc<RemoteConfig>,
+    /// Anonymous usage stats: `graph.stats.record(..)` from anywhere; the consent gate is inside.
+    /// Only `app_start` is recorded today (as in the JVM app); holding it keeps its queue task alive.
+    #[allow(dead_code)]
+    pub stats: StatUsage,
     pub player_source: Arc<BundleSource>,
     /// A newer published player bundle, verified, for the next playback session; cached once it boots.
     pub pending_player: Arc<Mutex<Option<VerifiedBundle>>>,
@@ -124,6 +128,15 @@ impl AppGraph {
                 .await
                 .map_err(|error| boot_error("R90011", "remote config")(error.to_string()))?,
         );
+        let stats_settings = settings.clone();
+        let stats = StatUsage::start(
+            remote.clone(),
+            move || stats_settings.boolean(crate::telemetry::STATS_KEY, true).unwrap_or(false),
+            data_dir.join("stat-queue.json"),
+            &tokio,
+            log.fork("stats"),
+        );
+        stats.on_app_start();
         let public_key = option_env!("YMUSIC_BUNDLE_PUBLIC_KEY").unwrap_or_default();
         let source = |name: &str, embedded: &'static str, version: &str| {
             BundleSource::new(
@@ -225,6 +238,7 @@ impl AppGraph {
             settings,
             media,
             remote,
+            stats,
             player_source,
             pending_player,
             guest,

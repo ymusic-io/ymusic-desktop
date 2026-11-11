@@ -23,11 +23,11 @@ use crate::settings_lists::{Licenses, RegionPicker};
 use crate::signin::AccountChanged;
 use crate::spinner::BusyButton;
 use crate::sponsor_block::SPONSOR_BLOCK_KEY;
+use crate::telemetry::STATS_KEY;
 
 pub const THEME_KEY: &str = "app.theme";
 pub const LANGUAGE_KEY: &str = "app.uiLanguage";
 const CRASH_REPORTS_KEY: &str = "telemetry.crashReports";
-const STATS_KEY: &str = "telemetry.stats";
 const AUTO_UPDATE_KEY: &str = "update.autoDownload";
 pub const SHOW_FPS_KEY: &str = "debug.showFps";
 const SOURCE_CODE_URL: &str = "https://github.com/ymusic-io/YMusicV4";
