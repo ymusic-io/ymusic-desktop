@@ -112,10 +112,11 @@ impl Launch {
 }
 
 impl Render for Launch {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        match &self.stage {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let content = match &self.stage {
             Stage::Unlock(view) => view.clone().into_any_element(),
             Stage::Shell(shell) => shell.clone().into_any_element(),
-        }
+        };
+        crate::desktop::frame(content, window, cx)
     }
 }

@@ -226,6 +226,7 @@ fn main() {
             window_background: WindowBackgroundAppearance::Transparent,
             app_id: Some(crate::desktop::APP_ID.into()),
             icon: window_icon,
+            window_decorations: cfg!(target_os = "linux").then_some(WindowDecorations::Client),
             ..Default::default()
         };
         cx.open_window(options, |window, cx| {

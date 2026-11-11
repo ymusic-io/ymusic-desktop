@@ -517,7 +517,7 @@ impl Shell {
 
     /// The close button: with music queued and a tray icon up the window goes to the tray, else the
     /// app quits. True when the window may close.
-    fn close_requested(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+    pub(crate) fn close_requested(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         // Without a tray icon a hidden window could never come back.
         let tray_up = self.tray.as_ref().is_some_and(|tray| tray.available());
         if !tray_up || self.playback.read(cx).queue.is_empty() {

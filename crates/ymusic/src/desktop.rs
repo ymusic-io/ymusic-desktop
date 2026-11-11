@@ -822,3 +822,36 @@ impl Tray {
         self.available.load(std::sync::atomic::Ordering::Relaxed)
     }
 }
+
+/// GNOME on Wayland leaves decorations to the app: a client-decorated window draws its own title
+/// bar, border, shadow and resize edges.
+#[cfg(target_os = "linux")]
+pub fn frame(content: AnyElement, window: &mut Window, cx: &mut App) -> AnyElement {
+    use gpui_kit::component::{TitleBar, v_flex, window_border};
+    if !matches!(window.window_decorations(), Decorations::Client { .. }) {
+        return content;
+    }
+    let title = div().flex_1().text_sm().font_weight(FontWeight::SEMIBOLD).child(t(Str::AppName));
+    let content = v_flex()
+        .size_full()
+        .bg(gpui_kit::component::ActiveTheme::theme(cx).background)
+        .child(TitleBar::new().on_close_window(|_, window, cx| close_from_title_bar(window, cx)).child(title))
+        .child(div().flex_1().min_h_0().child(content));
+    window_border().child(content).into_any_element()
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn frame(content: AnyElement, _: &mut Window, _: &mut App) -> AnyElement {
+    content
+}
+
+/// The title bar's close button behaves as the window manager's would.
+#[cfg(target_os = "linux")]
+fn close_from_title_bar(window: &mut Window, cx: &mut App) {
+    match cx.try_global::<crate::shell::ShellHandle>().and_then(|handle| handle.0.upgrade()) {
+        Some(shell) => {
+            shell.update(cx, |shell, cx| shell.close_requested(window, cx));
+        }
+        None => cx.quit(),
+    }
+}
