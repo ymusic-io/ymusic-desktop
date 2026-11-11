@@ -64,6 +64,7 @@ fn main() {
     }
     let images = ReqwestHttpClient::new(http.following.clone(), tokio.handle().clone());
 
+    crate::a11y::install_debug_log();
     application().with_assets(crate::assets::AppAssets).with_http_client(images).run(move |cx| {
         init(cx);
         crate::shortcuts::bind(cx);
@@ -78,7 +79,10 @@ fn main() {
             titlebar: Some(TitlebarOptions { title: Some(t(Str::AppName).into()), ..Default::default() }),
             // Debug dev-route runs float, so a window launched from a terminal still draws frames
             // (a covered window gets none) for screenshots.
-            kind: if cfg!(debug_assertions) && std::env::var_os("YMUSIC_DEV_ROUTE").is_some() {
+            kind: if cfg!(debug_assertions)
+                && std::env::var_os("YMUSIC_DEV_ROUTE").is_some()
+                && std::env::var_os("YMUSIC_DEV_A11Y_DUMP").is_none()
+            {
                 WindowKind::PopUp
             } else {
                 WindowKind::Normal

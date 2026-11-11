@@ -286,6 +286,8 @@ impl Shell {
             }
             cx.notify();
         });
+        crate::video_layer::forward_accessibility_focus(window);
+        window.on_next_frame(|window, _| crate::video_layer::sync_accessibility_focus(window));
         let visibility = cx.observe_window_visibility(window, |shell, visibility, window, cx| {
             let hidden = !visibility.is_visible() && crate::video_layer::window_out_of_sight(window);
             shell.playback.update(cx, |playback, cx| playback.set_window_hidden(hidden, cx));
@@ -362,6 +364,7 @@ impl Shell {
             })
             .detach();
         }
+        crate::a11y::dev_dump_tree(window, cx);
         if let Ok(spec) = std::env::var("YMUSIC_DEV_PLAYER") {
             self.dev_player(&spec, cx);
         }

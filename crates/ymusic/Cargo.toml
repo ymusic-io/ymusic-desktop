@@ -20,6 +20,7 @@ futures.workspace = true
 anyhow = "1"
 thiserror.workspace = true
 url.workspace = true
+log = "0.4"
 dirs = "6"
 souvlaki = { version = "0.9", default-features = false }
 raw-window-handle = "0.6"

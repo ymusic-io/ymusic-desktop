@@ -137,3 +137,73 @@ pub fn window_out_of_sight(window: &Window) -> bool {
 pub fn window_out_of_sight(_: &Window) -> bool {
     true
 }
+
+/// Hack: gpui creates the window's AccessKit adapter after the window first became key, so the
+/// adapter believes its view is unfocused and VoiceOver hears only the window until the next key
+/// change. Replaying `windowDidBecomeKey:` (the window is its own delegate) tells it.
+#[cfg(target_os = "macos")]
+pub fn sync_accessibility_focus(window: &Window) {
+    use objc2::msg_send;
+    use objc2::rc::Retained;
+    use objc2::runtime::AnyObject;
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    let Ok(handle) = HasWindowHandle::window_handle(window) else { return };
+    let RawWindowHandle::AppKit(appkit) = handle.as_raw() else { return };
+    let view = appkit.ns_view.as_ptr().cast::<AnyObject>();
+    // SAFETY: gpui's live NSView and its window, on the main thread; gpui's own delegate method.
+    unsafe {
+        let ns_window: Option<Retained<AnyObject>> = msg_send![&*view, window];
+        let Some(ns_window) = ns_window else { return };
+        let key: bool = msg_send![&*ns_window, isKeyWindow];
+        if key {
+            let _: () = msg_send![&*ns_window, windowDidBecomeKey: std::ptr::null_mut::<AnyObject>()];
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn sync_accessibility_focus(_: &Window) {}
+
+/// Hack: gpui puts its AccessKit adapter on the window's content view, but the first responder is
+/// the GPUIView inside it, and AppKit asks the first responder for the focused element. Without
+/// this, VoiceOver is told the window itself has focus and never reads the focused control.
+#[cfg(target_os = "macos")]
+pub fn forward_accessibility_focus(window: &Window) {
+    use std::sync::Once;
+
+    use objc2::runtime::{AnyClass, AnyObject, Imp, Sel};
+    use objc2::{msg_send, sel};
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    unsafe extern "C-unwind" fn focused_element(this: *mut AnyObject, _: Sel) -> *mut AnyObject {
+        // SAFETY: `this` is a live GPUIView receiving an AppKit accessibility message.
+        unsafe {
+            let superview: *mut AnyObject = msg_send![this, superview];
+            if superview.is_null() {
+                return std::ptr::null_mut();
+            }
+            msg_send![superview, accessibilityFocusedUIElement]
+        }
+    }
+
+    static ONCE: Once = Once::new();
+    let Ok(handle) = HasWindowHandle::window_handle(window) else { return };
+    let RawWindowHandle::AppKit(appkit) = handle.as_raw() else { return };
+    let view = appkit.ns_view.as_ptr().cast::<AnyObject>();
+    ONCE.call_once(|| {
+        // SAFETY: adds a method to gpui's own NSView class, whose superclass only inherits
+        // NSView's; the signature matches `-(id)accessibilityFocusedUIElement`.
+        unsafe {
+            let class = (*view).class() as *const AnyClass as *mut AnyClass;
+            let imp: Imp = std::mem::transmute::<
+                unsafe extern "C-unwind" fn(*mut AnyObject, Sel) -> *mut AnyObject,
+                Imp,
+            >(focused_element);
+            objc2::ffi::class_addMethod(class, sel!(accessibilityFocusedUIElement), imp, c"@@:".as_ptr());
+        }
+    });
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn forward_accessibility_focus(_: &Window) {}

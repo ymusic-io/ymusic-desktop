@@ -236,3 +236,117 @@ impl KeyboardFocusable for Stateful<Div> {
 pub fn focusable(element: Stateful<Div>, cx: &App) -> Stateful<Div> {
     element.keyboard_focusable(cx.theme().ring)
 }
+
+/// Debug builds: gpui's own warnings (an unannounced focus, a node without a role) go to stderr.
+pub fn install_debug_log() {
+    struct Stderr;
+    impl log::Log for Stderr {
+        fn enabled(&self, metadata: &log::Metadata) -> bool {
+            metadata.level() <= log::Level::Info
+        }
+        fn log(&self, record: &log::Record) {
+            if self.enabled(record.metadata()) {
+                eprintln!("[{} {}] {}", record.level(), record.target(), record.args());
+            }
+        }
+        fn flush(&self) {}
+    }
+    static LOGGER: Stderr = Stderr;
+    if cfg!(debug_assertions) && log::set_logger(&LOGGER).is_ok() {
+        log::set_max_level(log::LevelFilter::Info);
+    }
+}
+
+/// Debug: `YMUSIC_DEV_A11Y_DUMP=<file>` writes the accessibility tree there every second while an
+/// assistive client is connected.
+pub fn dev_dump_tree<V: 'static>(window: &mut Window, cx: &mut Context<V>) {
+    let Some(path) = std::env::var_os("YMUSIC_DEV_A11Y_DUMP").filter(|_| cfg!(debug_assertions)) else { return };
+    let executor = cx.background_executor().clone();
+    cx.spawn_in(window, async move |_, cx| {
+        loop {
+            executor.timer(std::time::Duration::from_secs(1)).await;
+            let dump = cx.update(|window, _| (window.is_a11y_active(), window.debug_a11y_tree_json()));
+            let Ok((active, json)) = dump else { return };
+            let text = format!("active={active}\nappkit_focus={}\n{}", appkit_focus(), json.unwrap_or_default());
+            if let Err(error) = std::fs::write(&path, text) {
+                eprintln!("YMUSIC_DEV_A11Y_DUMP: {error}");
+                return;
+            }
+        }
+    })
+    .detach();
+}
+
+/// What AppKit answers when VoiceOver asks the app for its focused element.
+#[cfg(target_os = "macos")]
+fn appkit_focus() -> String {
+    use objc2::msg_send;
+    use objc2::rc::Retained;
+    use objc2::runtime::{AnyClass, AnyObject};
+
+    fn text(object: Option<Retained<AnyObject>>) -> String {
+        let Some(object) = object else { return "nil".into() };
+        // SAFETY: an NSString (or nil), read on the main thread.
+        unsafe {
+            let utf8: *const std::ffi::c_char = msg_send![&*object, UTF8String];
+            if utf8.is_null() { "?".into() } else { std::ffi::CStr::from_ptr(utf8).to_string_lossy().into_owned() }
+        }
+    }
+    // SAFETY: NSApplication / NSAccessibility queries on the main thread.
+    unsafe {
+        let Some(app_class) = AnyClass::get(c"NSApplication") else { return "no NSApplication".into() };
+        let app: Retained<AnyObject> = msg_send![app_class, sharedApplication];
+        let key_window: Option<Retained<AnyObject>> = msg_send![&*app, keyWindow];
+        let responder = match &key_window {
+            Some(window) => {
+                let responder: Option<Retained<AnyObject>> = msg_send![&**window, firstResponder];
+                responder.map(|responder| {
+                    let class: Retained<AnyObject> = msg_send![&*responder, className];
+                    text(Some(class))
+                })
+            }
+            None => None,
+        };
+        let focused: Option<Retained<AnyObject>> = msg_send![&*app, accessibilityFocusedUIElement];
+        let (role, label) = match &focused {
+            Some(element) => {
+                let role: Option<Retained<AnyObject>> = msg_send![&**element, accessibilityRole];
+                let label: Option<Retained<AnyObject>> = msg_send![&**element, accessibilityTitle];
+                (text(role), text(label))
+            }
+            None => ("nil".into(), "nil".into()),
+        };
+        let content = match &key_window {
+            Some(window) => {
+                let view: Option<Retained<AnyObject>> = msg_send![&**window, contentView];
+                view.map(|view| {
+                    let class: Retained<AnyObject> = msg_send![&*view, className];
+                    let subviews: Retained<AnyObject> = msg_send![&*view, subviews];
+                    let count: usize = msg_send![&*subviews, count];
+                    let focused: Option<Retained<AnyObject>> = msg_send![&*view, accessibilityFocusedUIElement];
+                    let focused_role = focused.map(|element| {
+                        let role: Option<Retained<AnyObject>> = msg_send![&*element, accessibilityRole];
+                        text(role)
+                    });
+                    format!(
+                        "{}({count} subviews, ax_focus={})",
+                        text(Some(class)),
+                        focused_role.unwrap_or_else(|| "nil".into())
+                    )
+                })
+            }
+            None => None,
+        };
+        format!(
+            "content_view={} key_window={} first_responder={} focused_role={role} focused_label={label}",
+            content.unwrap_or_else(|| "nil".into()),
+            key_window.is_some(),
+            responder.unwrap_or_else(|| "nil".into())
+        )
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn appkit_focus() -> String {
+    String::new()
+}
