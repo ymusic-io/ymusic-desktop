@@ -194,6 +194,133 @@ pub fn set_dock_visible(visible: bool) {
 #[cfg(not(target_os = "macos"))]
 pub fn set_dock_visible(_visible: bool) {}
 
+/// The always-on-top pin at the title bar's trailing end (JVM title bar pin): toggles the window
+/// between the normal and the floating level. Not kept across launches, like the JVM app.
+#[cfg(target_os = "macos")]
+pub fn install_pin_button(window: &Window, log: &Logger) {
+    use objc2::rc::Retained;
+    use objc2::runtime::{AnyClass, AnyObject, ClassBuilder, NSObject, Sel};
+    use objc2::{ClassType, msg_send, sel};
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    const PIN_SYMBOL: &str = "pin";
+    const PINNED_SYMBOL: &str = "pin.fill";
+    const NS_NORMAL_WINDOW_LEVEL: isize = 0;
+    const NS_FLOATING_WINDOW_LEVEL: isize = 3;
+    const PIN_WIDTH: f64 = 28.;
+    const PIN_HEIGHT: f64 = 22.;
+    const PIN_END_INSET: f64 = 6.;
+
+    // SAFETY (the helpers): AppKit objects messaged on the main thread.
+    unsafe fn ns_string(text: &str) -> Option<Retained<AnyObject>> {
+        let class = AnyClass::get(c"NSString")?;
+        let text = std::ffi::CString::new(text).ok()?;
+        unsafe { msg_send![class, stringWithUTF8String: text.as_ptr()] }
+    }
+
+    unsafe fn show_state(button: *mut AnyObject, pinned: bool) {
+        let Some(image_class) = AnyClass::get(c"NSImage") else { return };
+        let symbol = if pinned { PINNED_SYMBOL } else { PIN_SYMBOL };
+        unsafe {
+            let (Some(name), Some(label)) = (ns_string(symbol), ns_string(t(Str::CdAlwaysOnTop))) else {
+                return;
+            };
+            let image: Option<Retained<AnyObject>> =
+                msg_send![image_class, imageWithSystemSymbolName: &*name, accessibilityDescription: &*label];
+            if let Some(image) = image {
+                let _: () = msg_send![button, setImage: &*image];
+            }
+            let _: () = msg_send![button, setState: isize::from(pinned)];
+            if let Some(color_class) = AnyClass::get(c"NSColor") {
+                let tint: Retained<AnyObject> = if pinned {
+                    msg_send![color_class, controlAccentColor]
+                } else {
+                    msg_send![color_class, secondaryLabelColor]
+                };
+                let _: () = msg_send![button, setContentTintColor: &*tint];
+            }
+        }
+    }
+
+    unsafe extern "C-unwind" fn toggle_pin(_this: *mut AnyObject, _: Sel, button: *mut AnyObject) {
+        unsafe {
+            let ns_window: *mut AnyObject = msg_send![button, window];
+            if ns_window.is_null() {
+                return;
+            }
+            // A push-on/push-off button has flipped its state before it sends the action.
+            let state: isize = msg_send![button, state];
+            let pinned = state != 0;
+            let level = if pinned { NS_FLOATING_WINDOW_LEVEL } else { NS_NORMAL_WINDOW_LEVEL };
+            let _: () = msg_send![ns_window, setLevel: level];
+            show_state(button, pinned);
+        }
+    }
+
+    static TARGET_CLASS: std::sync::OnceLock<Option<&'static AnyClass>> = std::sync::OnceLock::new();
+    let target_class = TARGET_CLASS.get_or_init(|| {
+        let mut builder = ClassBuilder::new(c"YMusicPinTarget", NSObject::class())?;
+        // SAFETY: `togglePin:` takes the sending control and returns nothing, matching `toggle_pin`.
+        unsafe {
+            builder.add_method(
+                sel!(togglePin:),
+                toggle_pin as unsafe extern "C-unwind" fn(*mut AnyObject, Sel, *mut AnyObject),
+            );
+        }
+        Some(builder.register())
+    });
+    let Ok(handle) = HasWindowHandle::window_handle(window) else { return };
+    let RawWindowHandle::AppKit(appkit) = handle.as_raw() else { return };
+    let view = appkit.ns_view.as_ptr().cast::<AnyObject>();
+    let (Some(target_class), Some(button_class)) = (target_class, AnyClass::get(c"NSButton")) else {
+        log.warn("always-on-top pin: AppKit classes missing", None);
+        return;
+    };
+    // SAFETY: gpui's live NSView and its window, on the main thread.
+    unsafe {
+        let ns_window: Option<Retained<AnyObject>> = msg_send![view, window];
+        let Some(ns_window) = ns_window else { return };
+        // Hack: a titlebar accessory view controller collapses to zero height on gpui's window, so
+        // the pin joins the traffic lights' superview, held to its right edge.
+        let close: Option<Retained<AnyObject>> = msg_send![&*ns_window, standardWindowButton: 0usize];
+        let titlebar: Option<Retained<AnyObject>> = close.and_then(|close| msg_send![&*close, superview]);
+        let (Some(titlebar), Some(empty)) = (titlebar, ns_string("")) else {
+            log.warn("always-on-top pin: no title bar", None);
+            return;
+        };
+        let target: Retained<AnyObject> = msg_send![*target_class, new];
+        let button: Retained<AnyObject> = msg_send![button_class, new];
+        // NSButtonTypePushOnPushOff: VoiceOver reads it as a toggle with its state.
+        let _: () = msg_send![&*button, setButtonType: 1usize];
+        let _: () = msg_send![&*button, setBordered: false];
+        let _: () = msg_send![&*button, setTitle: &*empty];
+        if let Some(label) = ns_string(t(Str::CdAlwaysOnTop)) {
+            let _: () = msg_send![&*button, setToolTip: &*label];
+            let _: () = msg_send![&*button, setAccessibilityLabel: &*label];
+        }
+        show_state(Retained::as_ptr(&button).cast_mut(), false);
+        let _: () = msg_send![&*button, setTarget: &*target];
+        let _: () = msg_send![&*button, setAction: sel!(togglePin:)];
+        let bounds: objc2_core_foundation::CGRect = msg_send![&*titlebar, bounds];
+        let frame = objc2_core_foundation::CGRect::new(
+            objc2_core_foundation::CGPoint::new(
+                bounds.size.width - PIN_WIDTH - PIN_END_INSET,
+                (bounds.size.height - PIN_HEIGHT) / 2.,
+            ),
+            objc2_core_foundation::CGSize::new(PIN_WIDTH, PIN_HEIGHT),
+        );
+        let _: () = msg_send![&*button, setFrame: frame];
+        // NSViewMinXMargin: keeps the right inset as the window resizes.
+        let _: () = msg_send![&*button, setAutoresizingMask: 1usize];
+        let _: () = msg_send![&*titlebar, addSubview: &*button];
+        // A control's target is weak: the target lives as long as the window, the whole process.
+        std::mem::forget(target);
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn install_pin_button(_window: &Window, _log: &Logger) {}
+
 gpui_kit::actions!(ymusic_dock, [DockTogglePlay, DockStop]);
 
 /// The Dock icon's menu (JVM `DockMenu`): Pause/Resume and Stop while there is a queue; the Dock

@@ -165,6 +165,7 @@ fn main() {
             ..Default::default()
         };
         cx.open_window(options, |window, cx| {
+            crate::desktop::install_pin_button(window, &cx.global::<AppGraph>().log.fork("pin"));
             let shell = cx.new(|cx| {
                 let mut shell = Shell::new(window, cx);
                 shell.apply_dev_route(window, cx);
