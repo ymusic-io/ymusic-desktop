@@ -54,11 +54,14 @@ die() { echo "bundle-macos: $*" >&2; exit 1; }
 [[ -f $v4/desktopApp/ymusic.icns ]] || die "no icon at $v4/desktopApp/ymusic.icns (set YMUSIC_V4_DIR)"
 [[ $release == 1 && $identity == - ]] && die "--release needs CODESIGN_IDENTITY (the JVM app's Developer ID)"
 [[ $release == 1 && $profile == debug ]] && die "--release ships the release profile, not --debug"
+# The JVM app's floor: its updater offers this build to every Mac the JVM app runs on.
+min_os=$(sed -n 's/.*const val macosMin = "\([0-9.]*\)".*/\1/p' "$v4/buildSrc/src/main/kotlin/Dependencies.kt")
+[[ -n $min_os ]] || die "no macosMin in $v4/buildSrc/src/main/kotlin/Dependencies.kt"
 
 if [[ $build == 1 ]]; then
     cargo_profile=()
     [[ $profile == release ]] && cargo_profile=(--release)
-    (cd "$root" && YMUSIC_V4_DIR=$v4 FFMPEG_ROOT=$ffmpeg_root cargo build ${cargo_profile[@]+"${cargo_profile[@]}"} -p ymusic)
+    (cd "$root" && MACOSX_DEPLOYMENT_TARGET=$min_os YMUSIC_V4_DIR=$v4 FFMPEG_ROOT=$ffmpeg_root cargo build ${cargo_profile[@]+"${cargo_profile[@]}"} -p ymusic)
 fi
 binary=$target_dir/$profile/ymusic
 [[ -f $binary ]] || die "no $profile binary at $binary"
@@ -72,9 +75,9 @@ contents=$app/Contents
 frameworks=$contents/Frameworks
 rm -rf "$app"
 mkdir -p "$contents/MacOS" "$contents/Resources" "$frameworks"
-cp "$binary" "$contents/MacOS/ymusic"
+cp "$binary" "$contents/MacOS/YMusic"
 cp "$ffmpeg_root/pack/ffmpeg" "$contents/MacOS/ffmpeg"
-cp "$v4/desktopApp/ymusic.icns" "$contents/Resources/ymusic.icns"
+cp "$v4/desktopApp/ymusic.icns" "$contents/Resources/YMusic.icns"
 # macOS 26+ draws CFBundleIconName from Assets.car; older ones the .icns.
 [[ -f $v4/desktopApp/macos/Assets.car ]] && cp "$v4/desktopApp/macos/Assets.car" "$contents/Resources/Assets.car"
 printf 'APPL????' > "$contents/PkgInfo"
@@ -110,7 +113,7 @@ for dylib in "$frameworks"/*.dylib; do
     install_name_tool -id "@rpath/$(basename "$dylib")" "$dylib" 2>/dev/null
     relink "$dylib"
 done
-for executable in "$contents/MacOS/ymusic" "$contents/MacOS/ffmpeg"; do
+for executable in "$contents/MacOS/YMusic" "$contents/MacOS/ffmpeg"; do
     for rpath in $(rpaths "$executable"); do
         install_name_tool -delete_rpath "$rpath" "$executable" 2>/dev/null
     done
@@ -118,9 +121,13 @@ for executable in "$contents/MacOS/ymusic" "$contents/MacOS/ffmpeg"; do
     relink "$executable"
 done
 
-min_os=$(for macho in "$contents/MacOS/"* "$frameworks"/*.dylib; do
-    otool -l "$macho" | awk '/cmd LC_BUILD_VERSION/ { found = 1 } found && $1 == "minos" { print $2; exit }'
-done | sort -V | tail -n 1)
+for macho in "$contents/MacOS/"* "$frameworks"/*.dylib; do
+    needs=$(otool -l "$macho" | awk '/cmd LC_BUILD_VERSION/ { found = 1 } /cmd LC_VERSION_MIN_MACOSX/ { legacy = 1 }
+        found && $1 == "minos" { print $2; exit } legacy && $1 == "version" { print $2; exit }')
+    [[ -n $needs ]] || die "no minimum macOS in $macho"
+    [[ $(printf '%s\n%s\n' "$needs" "$min_os" | sort -V | tail -n 1) == "$min_os" ]] ||
+        die "$(basename "$macho") needs macOS $needs, above the JVM app's $min_os"
+done
 
 cat > "$contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -130,7 +137,7 @@ cat > "$contents/Info.plist" <<PLIST
     <key>CFBundleDevelopmentRegion</key>
     <string>en</string>
     <key>CFBundleExecutable</key>
-    <string>ymusic</string>
+    <string>YMusic</string>
     <key>CFBundleIdentifier</key>
     <string>$bundle_id</string>
     <key>CFBundleInfoDictionaryVersion</key>
@@ -146,7 +153,7 @@ cat > "$contents/Info.plist" <<PLIST
     <key>CFBundleVersion</key>
     <string>$version</string>
     <key>CFBundleIconFile</key>
-    <string>ymusic</string>
+    <string>YMusic</string>
     <key>CFBundleIconName</key>
     <string>YMusic</string>
     <key>LSMinimumSystemVersion</key>
