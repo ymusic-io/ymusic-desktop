@@ -13,9 +13,10 @@ use ym_i18n::{Str, t, tf};
 
 use crate::a11y::FocusList;
 use crate::graph::{AppGraph, on_core};
+use crate::local_art::{self, from_jvm_art};
 use crate::mini_player::clock;
 use crate::play_history::decode_items;
-use crate::playback::QueueItem;
+use crate::playback::{QueueItem, Source};
 
 /// Resume this saved queue.
 pub struct ResumeQueue {
@@ -50,8 +51,7 @@ impl PlayAgainView {
     }
 
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
-        let history = self.history.clone();
-        let load = on_core(cx, async move { tokio::task::spawn_blocking(move || history.sessions()).await });
+        let load = self.load_sessions(cx);
         cx.spawn(async move |this, cx| {
             let result = load.await;
             this.update(cx, |view, cx| {
@@ -78,8 +78,7 @@ impl PlayAgainView {
 
     /// Debug: resumes the newest session once the list has loaded.
     pub fn resume_newest(&mut self, cx: &mut Context<Self>) {
-        let history = self.history.clone();
-        let load = on_core(cx, async move { tokio::task::spawn_blocking(move || history.sessions()).await });
+        let load = self.load_sessions(cx);
         cx.spawn(async move |this, cx| {
             if let Some(Ok(Ok(sessions))) = load.await
                 && let Some(newest) = sessions.into_iter().next()
@@ -90,15 +89,45 @@ impl PlayAgainView {
         .detach();
     }
 
+    /// The sessions with the JVM app's `art://` thumbnails resolved.
+    fn load_sessions(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> impl std::future::Future<
+        Output = Option<Result<rusqlite::Result<Vec<PlayAgainSession>>, tokio::task::JoinError>>,
+    > + use<> {
+        let (history, media) = (self.history.clone(), cx.global::<AppGraph>().media.clone());
+        on_core(cx, async move {
+            tokio::task::spawn_blocking(move || {
+                let mut sessions = history.sessions()?;
+                for session in &mut sessions {
+                    session.thumbnail_url =
+                        session.thumbnail_url.take().and_then(|url| from_jvm_art(&url, &media, local_art::PLAYER_PX));
+                    for thumb in &mut session.strip_thumbs {
+                        *thumb = thumb.take().and_then(|url| from_jvm_art(&url, &media, local_art::ROW_PX));
+                    }
+                }
+                Ok(sessions)
+            })
+            .await
+        })
+    }
+
     fn resume(&mut self, session: PlayAgainSession, cx: &mut Context<Self>) {
-        let history = self.history.clone();
+        let (history, media) = (self.history.clone(), cx.global::<AppGraph>().media.clone());
         let queue_id = session.queue_id.clone();
-        let load =
-            on_core(cx, async move { tokio::task::spawn_blocking(move || history.load_session(&queue_id)).await });
+        let load = on_core(cx, async move {
+            tokio::task::spawn_blocking(move || {
+                history.load_session(&queue_id).map(|loaded| {
+                    loaded.map(|(saved, json)| (saved, decode_items(&json).map(|items| adopt_items(items, &media))))
+                })
+            })
+            .await
+        });
         cx.spawn(async move |this, cx| {
             let loaded = load.await;
             this.update(cx, |view, cx| match loaded {
-                Some(Ok(Ok(Some((saved, json))))) => match decode_items(&json) {
+                Some(Ok(Ok(Some((saved, decoded))))) => match decoded {
                     Ok(items) if !items.is_empty() => {
                         let start_ms = if saved.resumes_mid_item() { saved.position_ms } else { 0 };
                         let index = saved.queue_index.min(items.len() - 1);
@@ -320,4 +349,26 @@ impl Render for PlayAgainView {
             .child(grid)
             .into_any_element()
     }
+}
+
+/// Blocking. A local item the Library knows plays as its Library item (its history code and art);
+/// a JVM app `art://` thumbnail of any other item is resolved.
+fn adopt_items(items: Vec<QueueItem>, media: &ym_store::MediaStore) -> Vec<QueueItem> {
+    items
+        .into_iter()
+        .map(|mut item| {
+            if let Source::Local(path) = &item.source
+                && let Ok(Some((known, false))) = media.find_item_by_uri(&path.to_string_lossy())
+            {
+                return QueueItem::from_local(&known);
+            }
+            for thumb in &mut item.thumbs {
+                let px = thumb.w.map_or(local_art::PLAYER_PX, |width| width.max(0) as u32);
+                if let Some(url) = from_jvm_art(&thumb.url, media, px) {
+                    thumb.url = url;
+                }
+            }
+            item
+        })
+        .collect()
 }

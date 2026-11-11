@@ -52,6 +52,55 @@ fn local_path(kind: &str, stream: i32, px: u32, item: &MediaItem) -> SharedStrin
     format!("{PREFIX}{kind}/{stream}/{px}/{}/{}/{}", item.file_size, item.last_modified, item.uri).into()
 }
 
+/// The JVM app's form of an artwork URL, for rows it may read back: a local file's art becomes
+/// `art://file?kind=<cover|frame>&uri=<file URI>`; anything else is kept.
+pub fn to_jvm_art(url: &str) -> String {
+    let Some(rest) = url.strip_prefix(PREFIX) else { return url.to_owned() };
+    let mut parts = rest.splitn(6, '/');
+    let (Some(kind), Some(file)) = (parts.next(), parts.nth(4)) else { return url.to_owned() };
+    let file_uri = ym_common::file_uri::to_file_uri(file);
+    format!("art://file?kind={}&uri={}", query_value(kind), query_value(&file_uri))
+}
+
+/// This app's form of the JVM app's `art://` URLs (`pic/<media id>`, `yt/<video id>`,
+/// `file?kind=&uri=`); `None` when the file is gone or has no art. Other URLs are kept. Blocking: a
+/// Library lookup, and a probe for a file outside it.
+pub fn from_jvm_art(url: &str, media: &ym_store::MediaStore, px: u32) -> Option<String> {
+    let Some(rest) = url.strip_prefix("art://") else { return Some(url.to_owned()) };
+    let (place, query) = rest.split_once('?').unwrap_or((rest, ""));
+    let item = match place.split_once('/').unwrap_or((place, "")) {
+        ("pic", id) => media.item(id.parse().ok()?).ok()??,
+        ("yt", video_id) => return Some(format!("https://i.ytimg.com/vi/{video_id}/mqdefault.jpg")),
+        ("file", _) => {
+            let file_uri = query
+                .split('&')
+                .filter_map(|pair| pair.split_once('='))
+                .find(|(name, _)| *name == "uri")
+                .map(|(_, value)| ym_common::file_uri::percent_decode(value))?;
+            let path = ym_common::file_uri::file_uri_path(&file_uri)?;
+            match media.find_item_by_uri(&path).ok()? {
+                Some((item, false)) => item,
+                _ => ym_store::describe_file(Path::new(&path)).ok()?.item,
+            }
+        }
+        _ => return None,
+    };
+    art_url(&item, px).map(String::from)
+}
+
+/// A query value as the JVM app's `UriBuilder.appendQueryParam` encodes it.
+fn query_value(value: &str) -> String {
+    let mut encoded = String::new();
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || b"-._~!$'()*+,;=:@/?".contains(&byte) {
+            encoded.push(byte as char);
+        } else {
+            encoded.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    encoded
+}
+
 enum Kind {
     Cover(i32),
     Frame,

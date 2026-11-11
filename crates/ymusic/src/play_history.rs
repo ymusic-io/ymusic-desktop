@@ -18,30 +18,38 @@ use crate::playback::{PlayState, Playback, QueueItem, Source};
 const PROGRESS_EVERY: Duration = Duration::from_secs(30);
 const MIN_POSITION_DELTA_MS: i64 = 3_000;
 
+/// The JVM app's `PlayAgainStore` item JSON, so either app resumes the other's queues; `thumbs`
+/// and `code` are this app's own extras, which the JVM app ignores.
 pub fn encode_items(items: &[QueueItem]) -> String {
     let rows: Vec<Value> = items
         .iter()
         .map(|item| {
             let thumbs: Vec<Value> =
                 item.thumbs.iter().map(|thumb| json!({ "url": thumb.url, "w": thumb.w, "h": thumb.h })).collect();
+            let thumbnail = item.thumb(480).map(|url| crate::local_art::to_jvm_art(&url));
             let mut row = json!({
                 "title": item.title,
                 "artist": item.artist,
+                "thumbnailUrl": thumbnail,
                 "durationMs": item.duration_ms,
-                "duration": item.duration_label,
                 "thumbs": thumbs,
             });
             match &item.source {
                 Source::YouTube(video_id) => {
                     row["type"] = json!("yt");
                     row["videoId"] = json!(video_id);
+                    row["duration"] = json!(item.duration_label);
+                    row["channelUrl"] = Value::Null;
+                    row["live"] = json!(false);
                 }
                 Source::Local(path) => {
                     row["type"] = json!("local");
-                    row["uri"] = json!(path.to_string_lossy());
+                    row["uri"] = json!(ym_common::file_uri::to_file_uri(&path.to_string_lossy()));
+                    row["mediaId"] = Value::Null;
+                    row["album"] = Value::Null;
                     row["code"] = json!(item.history_code);
                     row["videoId"] = json!(item.youtube_vid);
-                    row["gainDb"] = json!(item.loudness_gain_db);
+                    row["loudnessGainDb"] = json!(item.loudness_gain_db);
                 }
             }
             row
@@ -50,6 +58,8 @@ pub fn encode_items(items: &[QueueItem]) -> String {
     Value::Array(rows).to_string()
 }
 
+/// Reads either app's item JSON. A JVM app thumbnail (`thumbnailUrl`, maybe `art://`) is kept as
+/// written: [`crate::play_again`] resolves it off the UI thread.
 pub fn decode_items(text: &str) -> Result<Vec<QueueItem>, String> {
     let rows: Vec<Value> = serde_json::from_str(text).map_err(|error| error.to_string())?;
     rows.iter()
@@ -57,31 +67,41 @@ pub fn decode_items(text: &str) -> Result<Vec<QueueItem>, String> {
             let string = |key: &str| row.get(key).and_then(Value::as_str).map(str::to_owned);
             let source = match row.get("type").and_then(Value::as_str) {
                 Some("yt") => Source::YouTube(string("videoId").ok_or("yt item without videoId")?),
-                Some("local") => Source::Local(PathBuf::from(string("uri").ok_or("local item without uri")?)),
+                Some("local") => {
+                    let uri = string("uri").ok_or("local item without uri")?;
+                    Source::Local(PathBuf::from(ym_common::file_uri::file_uri_path(&uri).unwrap_or(uri)))
+                }
                 other => return Err(format!("unknown play-again item type {other:?}")),
             };
             let local = matches!(source, Source::Local(_));
+            let mut thumbs: Vec<YtThumb> = row
+                .get("thumbs")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|thumb| {
+                    Some(YtThumb {
+                        url: thumb.get("url")?.as_str()?.to_owned(),
+                        w: thumb.get("w").and_then(Value::as_i64).map(|w| w as i32),
+                        h: thumb.get("h").and_then(Value::as_i64).map(|h| h as i32),
+                    })
+                })
+                .collect();
+            if thumbs.is_empty()
+                && let Some(url) = string("thumbnailUrl")
+            {
+                thumbs.push(YtThumb { url, w: None, h: None });
+            }
+            let gain = row.get("loudnessGainDb").or_else(|| row.get("gainDb")).and_then(Value::as_f64);
             Ok(QueueItem {
                 title: string("title").unwrap_or_default(),
                 artist: string("artist"),
                 duration_ms: row.get("durationMs").and_then(Value::as_i64),
                 duration_label: string("duration"),
-                thumbs: row
-                    .get("thumbs")
-                    .and_then(Value::as_array)
-                    .into_iter()
-                    .flatten()
-                    .filter_map(|thumb| {
-                        Some(YtThumb {
-                            url: thumb.get("url")?.as_str()?.to_owned(),
-                            w: thumb.get("w").and_then(Value::as_i64).map(|w| w as i32),
-                            h: thumb.get("h").and_then(Value::as_i64).map(|h| h as i32),
-                        })
-                    })
-                    .collect(),
+                thumbs,
                 history_code: if local { string("code") } else { None },
                 youtube_vid: if local { string("videoId") } else { None },
-                loudness_gain_db: if local { row.get("gainDb").and_then(Value::as_f64) } else { None },
+                loudness_gain_db: if local { gain } else { None },
                 source,
             })
         })
@@ -315,7 +335,7 @@ fn snapshot(playback: &Playback, item: &QueueItem, playing: bool) -> Snapshot {
             queue_id: playback.queue_id.clone(),
             title: item.title.clone(),
             subtitle: item.artist.clone(),
-            thumbnail_url: item.thumb(480).map(|url| url.to_string()),
+            thumbnail_url: item.thumb(480).map(|url| crate::local_art::to_jvm_art(&url)),
             queue_index: playback.index,
             queue_size: size,
             position_ms: playback.position_ms.max(0),
@@ -323,7 +343,7 @@ fn snapshot(playback: &Playback, item: &QueueItem, playing: bool) -> Snapshot {
             strip_start,
             strip_thumbs: playback.queue[strip_start..(strip_start + PlayAgainSession::STRIP_SIZE).min(size)]
                 .iter()
-                .map(|item| item.thumb(120).map(|url| url.to_string()))
+                .map(|item| item.thumb(120).map(|url| crate::local_art::to_jvm_art(&url)))
                 .collect(),
             source_token: None,
         },
