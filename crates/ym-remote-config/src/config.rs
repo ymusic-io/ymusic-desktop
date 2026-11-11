@@ -8,6 +8,8 @@ use serde_json::{Map, Value};
 use tokio::sync::watch;
 use ym_common::log::{Logger, now_millis};
 
+use crate::stats::{PULSE_MAX_EVENTS, PulseEvent};
+
 /// Hammering `check_update` from every screen costs at most one request per interval.
 const MIN_INTERVAL: Duration = Duration::from_secs(5 * 60);
 
@@ -258,7 +260,37 @@ impl RemoteConfig {
         if let Some(key) = &identity.api_key {
             request = request.header("x-api-key", key);
         }
+        let (engine, player) = *self.running_bundles.lock().unwrap();
+        if let Some(version) = engine {
+            request = request.header("x-engine-js-ver", version.to_string());
+        }
+        if let Some(version) = player {
+            request = request.header("x-player-js-ver", version.to_string());
+        }
         Some(request)
+    }
+
+    /// This build has a config service.
+    pub fn has_service(&self) -> bool {
+        self.identity.is_some()
+    }
+
+    /// `POST /v1/pulse`: usage events, all or nothing, oldest first (the service credits a day only
+    /// past its last credited one). More than [`PULSE_MAX_EVENTS`] is refused as the service would,
+    /// with 413, before any request leaves.
+    pub async fn pulse(&self, events: &[PulseEvent]) -> Result<(), ServiceError> {
+        if events.len() > PULSE_MAX_EVENTS {
+            return Err(ServiceError::Status(413));
+        }
+        let body = serde_json::to_vec(&serde_json::json!({ "events": events })).map_err(|_| ServiceError::Status(0))?;
+        let request = self.request(reqwest::Method::POST, "/v1/pulse").ok_or(ServiceError::NoService)?;
+        let response = request
+            .header("content-type", "application/json")
+            .body(body)
+            .send()
+            .await
+            .map_err(ServiceError::transport)?;
+        if response.status().is_success() { Ok(()) } else { Err(ServiceError::Status(response.status().as_u16())) }
     }
 
     /// The SponsorBlock spans to skip in a YouTube video, sorted; empty when it has none. HTTP 503
