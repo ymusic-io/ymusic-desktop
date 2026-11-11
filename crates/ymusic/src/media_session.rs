@@ -32,7 +32,10 @@ pub struct MediaSession {
 impl MediaSession {
     pub fn new(playback: Entity<Playback>, cx: &mut Context<Self>) -> Self {
         let (sender, mut receiver) = mpsc::unbounded::<MediaControlEvent>();
-        let controls = PlatformConfig { display_name: t(Str::AppName), dbus_name: "ymusic", hwnd: None };
+        // MPRIS bus names are unique per bus; souvlaki's service thread panics when one is taken
+        // (by a second instance or the JVM app), so each process gets the spec's instance suffix.
+        let dbus_name = format!("ymusic.instance{}", std::process::id());
+        let controls = PlatformConfig { display_name: t(Str::AppName), dbus_name: &dbus_name, hwnd: None };
         let controls = match MediaControls::new(controls) {
             Ok(mut controls) => match controls.attach(move |event| {
                 let _ = sender.unbounded_send(event);
