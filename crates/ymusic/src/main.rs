@@ -27,6 +27,7 @@ mod shell;
 mod shortcuts;
 mod signin;
 mod signin_dialog;
+mod sleep_timer;
 mod sound_panel;
 mod spinner;
 mod sponsor_block;

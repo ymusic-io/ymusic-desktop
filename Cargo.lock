@@ -9780,6 +9780,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bytes",
+ "chrono",
  "dirs 6.0.0",
  "futures",
  "gpui-kit",
