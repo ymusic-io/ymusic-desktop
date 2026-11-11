@@ -181,7 +181,8 @@ pub struct FeedView {
     /// The filter chips, then the page's Show more.
     chips: FocusList,
     tabs: FocusList,
-    /// Drawn above the page, scrolling with it (the Account tab's header).
+    /// Drawn above the page, scrolling with it, in place of the page's own header (the Account
+    /// tab's card, which already shows who the page belongs to).
     top: Option<AnyView>,
     chips_drag: DragRow,
     tabs_drag: DragRow,
@@ -1301,7 +1302,10 @@ impl Render for FeedView {
         let selected_tab = tabs.iter().position(|tab| tab.selected).unwrap_or(0);
         let on_home_tab = tabs.get(selected_tab).is_none_or(|tab| tab.home);
         let category = self.header_kind() == HeaderKind::Category;
-        if on_home_tab && let Some(header) = self.page.page_header.clone() {
+        if on_home_tab
+            && self.top.is_none()
+            && let Some(header) = self.page.page_header.clone()
+        {
             column = column.child(self.render_header(&header, cx));
         } else if category {
             column = column.child(self.render_category_bar(cx));
