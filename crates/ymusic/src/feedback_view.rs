@@ -1,14 +1,19 @@
-//! Feedback: the anonymous ids a report needs, and GitHub / email with them filled in.
+//! Feedback: the anonymous ids a report needs, GitHub / email with them filled in, and a message
+//! sent through Sentry with the app log (JVM `FeedbackScreen.kt` / `captureFeedbackReportAction`).
+
+use std::rc::Rc;
 
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::button::{Button, ButtonVariants};
-use gpui_kit::component::{ActiveTheme, Icon, Sizable, StyledExt, h_flex, v_flex};
+use gpui_kit::component::input::{InputEvent, Textarea, TextareaState};
+use gpui_kit::component::{ActiveTheme, Disableable, Icon, Sizable, StyledExt, WindowExt, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use ym_i18n::{Str, t, tf};
 
 use crate::a11y::KeyboardFocusable;
-use crate::graph::AppGraph;
+use crate::graph::{AppGraph, on_core};
+use crate::telemetry::{AppLogs, CRASH_REPORTS_KEY, crash_reports_allowed, feedback_available};
 
 const FEEDBACK_EMAIL: &str = "feedback@ymusic.io";
 const FEEDBACK_ISSUE_URL: &str = "https://github.com/ymusic-io/YMusicV4/issues/new";
@@ -50,11 +55,67 @@ fn percent_encode(value: &str) -> String {
 
 pub struct FeedbackView {
     copied: bool,
+    /// A message went out this visit.
+    sent: bool,
 }
 
 impl FeedbackView {
     pub fn new() -> Self {
-        Self { copied: false }
+        Self { copied: false, sent: false }
+    }
+
+    /// The message dialog; with anonymous reports off, the consent dialog first (the report is the
+    /// app log, which only leaves with reports on).
+    pub fn write_message(
+        &mut self,
+        prefill: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Entity<MessageDialog>> {
+        let view = cx.entity().downgrade();
+        let on_sent: Rc<dyn Fn(&mut App)> = Rc::new(move |cx| {
+            view.update(cx, |view, cx| {
+                view.sent = true;
+                cx.notify();
+            })
+            .ok();
+        });
+        if crash_reports_allowed(cx.global::<AppGraph>().settings.as_ref()) {
+            return Some(MessageDialog::open(prefill, on_sent, window, cx));
+        }
+        let prefill = std::cell::RefCell::new(prefill);
+        window.open_alert_dialog(cx, move |alert, _, _| {
+            let on_sent = on_sent.clone();
+            let prefill = prefill.borrow().clone();
+            alert
+                .title(t(Str::FeedbackReportsOffTitle))
+                .description(format!("{}\n\n{}", t(Str::FeedbackReportsOffMessage), t(Str::FeedbackReportsOffNote)))
+                .ok_text(t(Str::FeedbackContinue))
+                .cancel_text(t(Str::DialogCancel))
+                .show_cancel(true)
+                .on_ok(move |_, window, cx| {
+                    crate::settings_view::save_setting(CRASH_REPORTS_KEY, "true".to_owned(), cx);
+                    let (on_sent, prefill) = (on_sent.clone(), prefill.clone());
+                    window.defer(cx, move |window, cx| {
+                        MessageDialog::open(prefill, on_sent, window, cx);
+                    });
+                    true
+                })
+        });
+        None
+    }
+
+    /// Debug route `feedback:message:<text>` / `feedback:send:<text>`: the dialog prefilled, and
+    /// with `send` sent a few seconds later (reports on).
+    pub fn dev_message(&mut self, text: String, send: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(dialog) = self.write_message(Some(text), window, cx) else { return };
+        if send {
+            cx.spawn_in(window, async move |_, cx| {
+                cx.background_executor().timer(std::time::Duration::from_secs(4)).await;
+                dialog.update_in(cx, |dialog, window, cx| dialog.send(window, cx)).ok();
+            })
+            .detach();
+        }
     }
 
     fn info(cx: &App) -> Info {
@@ -65,6 +126,126 @@ impl FeedbackView {
             engine: format!("{} / {}", graph.engines.backend_version(), graph.player_source.embedded().1),
             language: ym_i18n::current_locale().to_owned(),
         }
+    }
+}
+
+/// "Send via Sentry": the message, with the anonymous info and app log attached; Send stays off
+/// while it is blank. The send runs on after the dialog closes.
+pub struct MessageDialog {
+    message: Entity<TextareaState>,
+    on_sent: Rc<dyn Fn(&mut App)>,
+    focused: bool,
+    cancel: FocusHandle,
+    _subscription: Subscription,
+}
+
+impl MessageDialog {
+    fn open(
+        prefill: Option<String>,
+        on_sent: Rc<dyn Fn(&mut App)>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Entity<MessageDialog> {
+        let view = cx.new(|cx| {
+            let message = cx.new(|cx| {
+                TextareaState::new(window, cx)
+                    .placeholder(t(Str::FeedbackSentryLabel))
+                    .auto_grow(4, 10)
+                    .default_value(prefill.unwrap_or_default())
+            });
+            let subscription = cx.subscribe_in(&message, window, |_: &mut Self, _, _: &InputEvent, _, cx| cx.notify());
+            Self { message, on_sent, focused: false, cancel: cx.focus_handle(), _subscription: subscription }
+        });
+        let dialog_view = view.clone();
+        window.open_dialog(cx, move |dialog, _, _| {
+            let submit = dialog_view.clone();
+            dialog
+                .title(t(Str::FeedbackSentryTitle))
+                .width(px(480.))
+                .overlay_closable(false)
+                .child(dialog_view.clone())
+                .on_ok(move |_, window, cx| {
+                    submit.update(cx, |view, cx| {
+                        if view.cancel.is_focused(window) {
+                            window.close_dialog(cx);
+                        } else {
+                            view.send(window, cx);
+                        }
+                    });
+                    false
+                })
+        });
+        view
+    }
+
+    fn trimmed(&self, cx: &App) -> String {
+        self.message.read(cx).value().trim().to_owned()
+    }
+
+    fn send(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let message = self.trimmed(cx);
+        if message.is_empty() {
+            return;
+        }
+        let graph = cx.global::<AppGraph>();
+        let (settings, log) = (graph.settings.clone(), graph.log.fork("feedback"));
+        let logs = cx.try_global::<AppLogs>().and_then(|logs| logs.0.clone());
+        let failure_log = log.clone();
+        let send = on_core(cx, async move {
+            if let Err(error) =
+                crate::telemetry::send_feedback(logs, settings, message.clone(), Some(message), log).await
+            {
+                failure_log.capture_error("feedback report capture failed", &error);
+            }
+        });
+        cx.background_executor().spawn(send).detach();
+        (self.on_sent)(cx);
+        window.close_dialog(cx);
+    }
+}
+
+impl Render for MessageDialog {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if !self.focused {
+            self.focused = true;
+            let message = self.message.clone();
+            window.defer(cx, move |window, cx| {
+                message.update(cx, |input, cx| {
+                    input.focus(window, cx);
+                    let end = input.value().len();
+                    input.set_selected_range(end..end, cx);
+                })
+            });
+        }
+        let theme = cx.theme().clone();
+        let blank = self.trimmed(cx).is_empty();
+        v_flex()
+            .gap_2()
+            .px_4()
+            .pb_2()
+            .child(div().text_sm().text_color(theme.muted_foreground).child(t(Str::FeedbackSentryLabel)))
+            .child(Textarea::new(&self.message))
+            .child(div().text_xs().text_color(theme.muted_foreground).child(t(Str::FeedbackSentryNote)))
+            .child(
+                h_flex()
+                    .justify_end()
+                    .gap_2()
+                    .pt_2()
+                    .child(
+                        Button::new("feedback-message-cancel")
+                            .track_focus(&self.cancel)
+                            .outline()
+                            .label(t(Str::DialogCancel))
+                            .on_click(|_, window, cx| window.close_dialog(cx)),
+                    )
+                    .child(
+                        Button::new("feedback-message-send")
+                            .primary()
+                            .label(t(Str::FeedbackSentrySend))
+                            .disabled(blank)
+                            .on_click(cx.listener(|view, _, window, cx| view.send(window, cx))),
+                    ),
+            )
     }
 }
 
@@ -192,6 +373,37 @@ impl Render for FeedbackView {
                 t(Str::FeedbackEmailHint),
                 mailto,
             ))
+            .when(feedback_available(), |column| {
+                column.child(h_flex().justify_center().child(if self.sent {
+                    div()
+                        .id("feedback-sent")
+                        .role(Role::Status)
+                        .aria_label(t(Str::FeedbackSentrySent))
+                        .p_2()
+                        .text_sm()
+                        .text_color(theme.muted_foreground)
+                        .child(t(Str::FeedbackSentrySent))
+                        .into_any_element()
+                } else {
+                    div()
+                        .id("feedback-sentry")
+                        .role(Role::Link)
+                        .aria_label(t(Str::FeedbackSentryLink))
+                        .keyboard_focusable(theme.ring)
+                        .p_2()
+                        .rounded(px(4.))
+                        .cursor_pointer()
+                        .text_sm()
+                        .font_semibold()
+                        .text_color(theme.primary)
+                        .hover(|style| style.bg(theme.secondary))
+                        .child(t(Str::FeedbackSentryLink))
+                        .on_click(cx.listener(|view, _, window, cx| {
+                            view.write_message(None, window, cx);
+                        }))
+                        .into_any_element()
+                }))
+            })
             .child(div().text_xs().text_color(theme.muted_foreground).child(t(Str::FeedbackPrefilledNote)));
         div().id("feedback-scroll").size_full().overflow_y_scroll().child(
             h_flex()

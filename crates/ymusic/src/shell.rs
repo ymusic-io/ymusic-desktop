@@ -545,7 +545,7 @@ impl Shell {
     }
 
     /// Debug builds only: `YMUSIC_DEV_ROUTE` opens a surface at start (`trending`, `music`,
-    /// `search:<query>`, `searchfilter:<n>:<query>` (the filter dialog once the results land; `n` > 0 first applies that option, counted across groups from 1), `open:<app link>`, `musictab:<n>`, `play:<youtube url>`, `nowplaying:<url>`, `library:<dir>`, `localplay:<dir>`, `libraryact:<a;b>` (`LibraryView::dev_action`), `details:<videoId>`, `addtoplaylist:<videoId>`, `sleeptimer`, `signin-paste:<file>`, `devicelink`, `signout`,
+    /// `search:<query>`, `searchfilter:<n>:<query>` (the filter dialog once the results land; `n` > 0 first applies that option, counted across groups from 1), `open:<app link>`, `musictab:<n>`, `play:<youtube url>`, `nowplaying:<url>`, `library:<dir>`, `localplay:<dir>`, `libraryact:<a;b>` (`LibraryView::dev_action`), `details:<videoId>`, `addtoplaylist:<videoId>`, `feedback:message|send:<text>` (with `YMUSIC_DEV_FEEDBACK_ENVELOPE=<file>` the report is written there, not sent), `sleeptimer`, `signin-paste:<file>`, `devicelink`, `signout`,
     /// `download:<FORMAT>:<videoId>` into `YMUSIC_DEV_DOWNLOAD_DIR` or the chosen folder), for
     /// screenshots and checks without driving the UI. `YMUSIC_DEV_CAPTIONS=1|<vssId>` turns captions on (with that track), `YMUSIC_DEV_QUALITY=<token>` picks a quality, `YMUSIC_DEV_TRAY_POPUP=1|hidden` opens the tray popup.
     pub fn apply_dev_route(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -782,6 +782,15 @@ impl Shell {
             }
             _ if route == "shortcuts" => window.defer(cx, crate::shortcuts_help::ShortcutsHelp::open),
             _ if route == "feedback" => self.section = Section::Feedback,
+            Some(("feedback", spec)) => {
+                self.section = Section::Feedback;
+                let (mode, text) = spec.split_once(':').unwrap_or((spec, ""));
+                let (send, text) = (mode == "send", text.to_owned());
+                let view = self.feedback.get_or_insert_with(|| cx.new(|_| FeedbackView::new())).clone();
+                window.defer(cx, move |window, cx| {
+                    view.update(cx, |view, cx| view.dev_message(text, send, window, cx));
+                });
+            }
             _ if route == "sound" => self.pending_sound = true,
             _ if route == "sleeptimer" => {
                 let playback = self.playback.clone();

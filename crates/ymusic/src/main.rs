@@ -100,6 +100,7 @@ fn main() {
     };
     crate::settings_view::apply_language(graph.settings.as_ref());
     let _reporting = crate::telemetry::start_reporting(&log_setup, &graph);
+    let app_logs = crate::telemetry::AppLogs(log_setup.logs.clone());
     if graph.cookies_locked {
         log.warn("cookie jar is password-sealed: running signed out until it is unlocked", None);
     }
@@ -149,6 +150,7 @@ fn main() {
             None => crate::desktop::initial_bounds(graph.settings.as_ref(), size(px(1180.), px(780.)), cx),
         };
         cx.set_global(graph);
+        cx.set_global(app_logs);
         let options = WindowOptions {
             window_bounds: Some(window_bounds),
             titlebar: Some(TitlebarOptions { title: Some(t(Str::AppName).into()), ..Default::default() }),
