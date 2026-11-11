@@ -64,6 +64,8 @@ pub fn frame_marker() -> impl IntoElement {
         },
     )
     .absolute()
+    .top_0()
+    .left_0()
     .size_0()
 }
 
@@ -165,8 +167,9 @@ impl FocusList {
         self.slot(index, cx).handle.clone()
     }
 
-    /// Records the stop's bounds each frame and reveals it when it gains focus.
-    fn tracker(&self, slot: Rc<Slot>) -> impl IntoElement {
+    /// Records the stop's bounds each frame and reveals it when it gains focus, in `inner` (a
+    /// horizontal row) and then in the list's own scroll container.
+    fn tracker(&self, slot: Rc<Slot>, inner: Option<ScrollHandle>) -> impl IntoElement {
         let scroll = self.scroll.clone();
         canvas(
             |_, _, _| {},
@@ -174,21 +177,27 @@ impl FocusList {
                 slot.bounds.set(bounds);
                 slot.painted.set(cx.global::<RovingItems>().frame.get());
                 let focused = slot.handle.is_focused(window);
-                if focused
-                    && !slot.was_focused.get()
-                    && let Some(scroll) = &scroll
-                {
-                    reveal(scroll, bounds, window);
+                if focused && !slot.was_focused.get() {
+                    for scroll in inner.iter().chain(scroll.iter()) {
+                        reveal(scroll, bounds, window);
+                    }
                 }
                 slot.was_focused.set(focused);
             },
         )
         .absolute()
+        .top_0()
+        .left_0()
         .size_full()
     }
 
     /// Makes `element` the list's `index`th stop. It needs an id and a role of its own.
     pub fn item(&self, index: usize, element: Stateful<Div>, cx: &App) -> Stateful<Div> {
+        self.item_in(index, element, None, cx)
+    }
+
+    /// [`Self::item`] inside a horizontally scrolling row, `row`.
+    pub fn item_in(&self, index: usize, element: Stateful<Div>, row: Option<ScrollHandle>, cx: &App) -> Stateful<Div> {
         let slot = self.slot(index, cx);
         let ring = cx.theme().ring;
         on_arrows(
@@ -204,20 +213,26 @@ impl FocusList {
                         inset: true,
                     }])
                 })
-                .child(self.tracker(slot)),
+                .child(self.tracker(slot, row)),
         )
     }
 
     /// Makes `button` the list's `index`th stop (a chip, a pill), reachable by the arrows too.
     pub fn button(&self, index: usize, button: Button, cx: &App) -> Div {
+        self.button_in(index, button, None, cx)
+    }
+
+    /// [`Self::button`] inside a horizontally scrolling row, `row`.
+    pub fn button_in(&self, index: usize, button: Button, row: Option<ScrollHandle>, cx: &App) -> Div {
         let button = button.track_focus(&self.handle(index, cx));
-        self.wrap(index, button, cx)
+        let slot = self.slot(index, cx);
+        on_arrows(div().relative().flex_shrink_0().child(button).child(self.tracker(slot, row)))
     }
 
     /// Makes `element`, already tracking [`Self::handle`]`(index)`, the list's `index`th stop.
     pub fn wrap(&self, index: usize, element: impl IntoElement, cx: &App) -> Div {
         let slot = self.slot(index, cx);
-        on_arrows(div().relative().child(element).child(self.tracker(slot)))
+        on_arrows(div().relative().flex_shrink_0().child(element).child(self.tracker(slot, None)))
     }
 
     /// Home and End over the stops in `items`.
@@ -404,4 +419,81 @@ fn appkit_focus() -> String {
 #[cfg(not(target_os = "macos"))]
 fn appkit_focus() -> String {
     String::new()
+}
+
+/// Pointer travel before a press on a row becomes a drag rather than a click.
+const DRAG_THRESHOLD: f32 = 4.;
+
+/// A horizontal row the mouse can drag sideways, like a touch screen. A press that moves past
+/// the threshold scrolls the row with the pointer and does not click what it started on.
+#[derive(Clone, Default)]
+pub struct DragRow {
+    scroll: ScrollHandle,
+    /// Where the drag started: pointer x and the row's offset x then.
+    start: Rc<Cell<Option<(Pixels, Pixels)>>>,
+    dragging: Rc<Cell<bool>>,
+}
+
+impl DragRow {
+    pub fn scroll(&self) -> &ScrollHandle {
+        &self.scroll
+    }
+
+    /// Wraps `row`, which tracks [`Self::scroll`], with the drag handling.
+    pub fn wrap(&self, row: impl IntoElement) -> Div {
+        let state = self.clone();
+        div().relative().child(row).child(
+            canvas(
+                |_, _, _| {},
+                move |bounds, _, window, _| {
+                    let down = state.clone();
+                    window.on_mouse_event(move |event: &MouseDownEvent, phase, _, _| {
+                        if phase == DispatchPhase::Capture
+                            && event.button == MouseButton::Left
+                            && bounds.contains(&event.position)
+                        {
+                            down.start.set(Some((event.position.x, down.scroll.offset().x)));
+                            down.dragging.set(false);
+                        }
+                    });
+                    let moved = state.clone();
+                    window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
+                        if phase != DispatchPhase::Capture {
+                            return;
+                        }
+                        let Some((start_x, start_offset)) = moved.start.get() else { return };
+                        if event.pressed_button != Some(MouseButton::Left) {
+                            moved.start.set(None);
+                            moved.dragging.set(false);
+                            return;
+                        }
+                        let travel = event.position.x - start_x;
+                        if f32::from(travel).abs() > DRAG_THRESHOLD {
+                            moved.dragging.set(true);
+                        }
+                        if moved.dragging.get() {
+                            let max = moved.scroll.max_offset().x;
+                            let offset = moved.scroll.offset();
+                            moved.scroll.set_offset(point((start_offset + travel).clamp(-max, px(0.)), offset.y));
+                            window.refresh();
+                            cx.stop_propagation();
+                        }
+                    });
+                    let up = state.clone();
+                    window.on_mouse_event(move |_: &MouseUpEvent, phase, _, cx| {
+                        if phase != DispatchPhase::Capture || up.start.take().is_none() {
+                            return;
+                        }
+                        if up.dragging.replace(false) {
+                            cx.stop_propagation();
+                        }
+                    });
+                },
+            )
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full(),
+        )
+    }
 }

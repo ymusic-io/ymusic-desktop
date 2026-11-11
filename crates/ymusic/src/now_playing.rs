@@ -287,6 +287,8 @@ impl NowPlaying {
                     },
                 )
                 .absolute()
+                .top_0()
+                .left_0()
                 .size_full(),
             )
             .when(controls, |frame| frame.child(overlay))

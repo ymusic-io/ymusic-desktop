@@ -13,7 +13,7 @@ use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use ym_i18n::{Str, t, tf};
 
-use crate::a11y::{FocusList, focusable};
+use crate::a11y::{DragRow, FocusList, focusable};
 use crate::download_dialog::{DownloadPicker, DownloadTarget};
 use crate::downloads_view::DownloadsView;
 use crate::feed::{FeedAction, FeedSource, FeedView, ItemAction, Navigate, Play};
@@ -244,6 +244,7 @@ pub struct Shell {
     nav_focus: FocusList,
     tab_focus: FocusList,
     music_tab_focus: FocusList,
+    music_tab_drag: DragRow,
     /// The last Esc that had nothing to close; a second one soon after goes back.
     idle_escape_at: Option<Instant>,
     playback: Entity<Playback>,
@@ -325,6 +326,7 @@ impl Shell {
             nav_focus: FocusList::new(None),
             tab_focus: FocusList::new(None),
             music_tab_focus: FocusList::new(None),
+            music_tab_drag: DragRow::default(),
             idle_escape_at: None,
             _subscriptions: vec![toggle, now_playing_events, visibility],
         }
@@ -367,6 +369,42 @@ impl Shell {
             .detach();
         }
         crate::a11y::dev_dump_tree(window, cx);
+        // `YMUSIC_DEV_DRAG=x0,y,x1` presses at (x0, y) after 8 s and drags to x1, to check
+        // drag-to-scroll without driving the real mouse.
+        if let Some((from, y, to)) = std::env::var("YMUSIC_DEV_DRAG").ok().and_then(|spec| {
+            let values: Vec<f32> = spec.split(',').filter_map(|value| value.trim().parse().ok()).collect();
+            (values.len() == 3).then(|| (values[0], values[1], values[2]))
+        }) {
+            let executor = cx.background_executor().clone();
+            cx.spawn_in(window, async move |_, cx| {
+                executor.timer(Duration::from_secs(8)).await;
+                let press = MouseDownEvent {
+                    button: MouseButton::Left,
+                    position: point(px(from), px(y)),
+                    modifiers: Modifiers::default(),
+                    click_count: 1,
+                    first_mouse: false,
+                };
+                cx.update(|window, cx| window.dispatch_event(PlatformInput::MouseDown(press), cx)).ok();
+                for step in 1..=20 {
+                    executor.timer(Duration::from_millis(16)).await;
+                    let motion = MouseMoveEvent {
+                        position: point(px(from + (to - from) * step as f32 / 20.), px(y)),
+                        pressed_button: Some(MouseButton::Left),
+                        modifiers: Modifiers::default(),
+                    };
+                    cx.update(|window, cx| window.dispatch_event(PlatformInput::MouseMove(motion), cx)).ok();
+                }
+                let release = MouseUpEvent {
+                    button: MouseButton::Left,
+                    position: point(px(to), px(y)),
+                    modifiers: Modifiers::default(),
+                    click_count: 1,
+                };
+                cx.update(|window, cx| window.dispatch_event(PlatformInput::MouseUp(release), cx)).ok();
+            })
+            .detach();
+        }
         if let Ok(spec) = std::env::var("YMUSIC_DEV_PLAYER") {
             self.dev_player(&spec, cx);
         }
@@ -993,6 +1031,7 @@ impl Shell {
                 MusicTab::ALL.iter().map(|tab| SharedString::from(tab.label())).collect(),
                 selected,
                 &self.music_tab_focus,
+                &self.music_tab_drag,
                 move |index, _, cx| {
                     if let Some(tab) = MusicTab::ALL.get(index).copied() {
                         shell

@@ -15,7 +15,7 @@ use gpui_kit::*;
 use ym_download::{DownloadChange, DownloadService, DownloadState, DownloadTask, TaskError};
 use ym_i18n::{Str, t, tf};
 
-use crate::a11y::FocusList;
+use crate::a11y::{DragRow, FocusList};
 use crate::graph::{AppGraph, on_core};
 use crate::library::PlayLocal;
 use crate::playback::{QueueItem, Source};
@@ -77,6 +77,7 @@ pub struct DownloadsView {
     scroll: ScrollHandle,
     focus: FocusList,
     chip_focus: FocusList,
+    chip_drag: DragRow,
     _changes: Task<()>,
 }
 
@@ -115,6 +116,7 @@ impl DownloadsView {
             scroll: scroll.clone(),
             focus: FocusList::new(Some(scroll.clone())),
             chip_focus: FocusList::new(Some(scroll)),
+            chip_drag: DragRow::default(),
             _changes: changes,
         };
         view.refresh(cx);
@@ -502,7 +504,13 @@ impl Render for DownloadsView {
         let any_active = self.tasks.iter().any(|task| task.state.is_active());
         let any_paused = self.tasks.iter().any(|task| task.state == DownloadState::Paused);
 
-        let mut chips = h_flex().id("download-filters").role(Role::TabList).gap_2().overflow_x_scroll();
+        let mut chips = h_flex()
+            .id("download-filters")
+            .role(Role::TabList)
+            .gap_2()
+            .track_scroll(self.chip_drag.scroll())
+            .overflow_x_scroll()
+            .restrict_scroll_to_axis();
         for (index, candidate) in Filter::ALL.into_iter().enumerate() {
             let count = self.tasks.iter().filter(|task| candidate.matches(task.state)).count();
             let label = if candidate == Filter::All {
@@ -522,7 +530,7 @@ impl Render for DownloadsView {
 
         let width = crate::feed::feed_width(window);
         let columns = ((width - 32. + 16.) / (CARD_MIN + 16.)).floor().max(1.) as usize;
-        let mut grid = v_flex().w_full().px_4().pt_2().pb(px(88.)).gap(px(12.)).child(chips);
+        let mut grid = v_flex().w_full().px_4().pt_2().pb(px(88.)).gap(px(12.)).child(self.chip_drag.wrap(chips));
         let mut cards = v_flex().w_full().gap(px(12.));
         if visible.is_empty() {
             grid = grid

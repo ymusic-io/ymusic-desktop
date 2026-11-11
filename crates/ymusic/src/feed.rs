@@ -17,7 +17,7 @@ use ym_engine::yt::{YtFeedItem, YtFeedPage, YtPageHeader, YtSectionHeader, YtThu
 use ym_engine::{DynamicEngine, EngineError, ErrorKind};
 use ym_i18n::{Str, t, tf};
 
-use crate::a11y::{FocusList, focusable};
+use crate::a11y::{DragRow, FocusList, focusable};
 use crate::graph::{AppGraph, on_core};
 use crate::tab_row::tab_row;
 
@@ -181,6 +181,9 @@ pub struct FeedView {
     /// The filter chips, then the page's Show more.
     chips: FocusList,
     tabs: FocusList,
+    chips_drag: DragRow,
+    tabs_drag: DragRow,
+    carousel_drags: std::cell::RefCell<std::collections::HashMap<usize, DragRow>>,
 }
 
 /// Which page header a detail page shows.
@@ -217,6 +220,9 @@ impl FeedView {
             controls: FocusList::new(Some(scroll.clone())),
             chips: FocusList::new(Some(scroll)),
             tabs: FocusList::new(None),
+            chips_drag: DragRow::default(),
+            tabs_drag: DragRow::default(),
+            carousel_drags: Default::default(),
         };
         view.reload(cx);
         view
@@ -842,6 +848,7 @@ impl FeedView {
         id: (&'static str, usize),
         item: &YtFeedItem,
         queue: Option<std::rc::Rc<Vec<YtFeedItem>>>,
+        row: Option<ScrollHandle>,
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
         let clicked = item.clone();
@@ -858,7 +865,7 @@ impl FeedView {
                     queue.as_ref().map(|items| items.iter().filter(|item| item.kind == "video").cloned().collect());
                 view.open_item(&clicked, queue, cx)
             }));
-        self.focus.item(id.1, element, cx)
+        self.focus.item_in(id.1, element, row, cx)
     }
 
     /// A grid card: 16:9 thumbnail on top, title and subtitle below with the ⋮ menu beside them;
@@ -872,7 +879,7 @@ impl FeedView {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = cx.theme().clone();
-        let card = self.clickable(("feed-card", index), item, queue, cx).flex_1().min_w_0().p(px(bands.inset()));
+        let card = self.clickable(("feed-card", index), item, queue, None, cx).flex_1().min_w_0().p(px(bands.inset()));
         if item.kind == "channel" {
             return card
                 .relative()
@@ -961,7 +968,7 @@ impl FeedView {
             _ if bands.square => (92., 92., false),
             _ => (160., 90., false),
         };
-        self.clickable(("feed-row", index), item, queue, cx)
+        self.clickable(("feed-row", index), item, queue, None, cx)
             .child(
                 h_flex()
                     .pl_4()
@@ -1145,10 +1152,18 @@ impl FeedView {
                 return block.child(pills).into_any_element();
             }
             "carousel" => {
-                let mut row = h_flex().gap_1().px_3();
+                let drag = self.carousel_drags.borrow_mut().entry(section_index).or_default().clone();
+                let row_scroll = drag.scroll().clone();
+                let mut row = h_flex()
+                    .id(("carousel-scroll", section_index))
+                    .track_scroll(&row_scroll)
+                    .overflow_x_scroll()
+                    .restrict_scroll_to_axis()
+                    .gap_1()
+                    .px_3();
                 for (offset, item) in section.items.iter().enumerate() {
                     row = row.child(
-                        self.clickable(("carousel", first_item + offset), item, None, cx)
+                        self.clickable(("carousel", first_item + offset), item, None, Some(row_scroll.clone()), cx)
                             .w(px(80.))
                             .flex_shrink_0()
                             .p_1()
@@ -1171,9 +1186,7 @@ impl FeedView {
                     );
                 }
                 let row = self.focus.container(row, first_item..first_item + section.items.len(), cx);
-                return block
-                    .child(div().id(("carousel-scroll", section_index)).overflow_x_scroll().child(row))
-                    .into_any_element();
+                return block.child(drag.wrap(row)).into_any_element();
             }
             _ => {}
         }
@@ -1294,6 +1307,7 @@ impl Render for FeedView {
                 tabs.iter().map(|tab| SharedString::from(tab.title.clone())).collect(),
                 selected_tab,
                 &self.tabs,
+                &self.tabs_drag,
                 move |index, _, cx| {
                     if let Some(Some(url)) = urls.get(index).cloned() {
                         entity.update(cx, |view, cx| view.open_tab(url, cx)).ok();
@@ -1303,7 +1317,11 @@ impl Render for FeedView {
             ))
         });
         if !self.page.chips.is_empty() {
-            let mut chips = h_flex().gap_2().px_4().py_2().when(self.page.chips_wrap, |row| row.flex_wrap());
+            let wrap = self.page.chips_wrap;
+            let mut chips =
+                h_flex().id("chips").gap_2().px_4().py_2().when(wrap, |row| row.flex_wrap()).when(!wrap, |row| {
+                    row.track_scroll(self.chips_drag.scroll()).overflow_x_scroll().restrict_scroll_to_axis()
+                });
             for (index, chip) in self.page.chips.clone().into_iter().enumerate() {
                 let token = chip.token.clone();
                 let mut button = Button::new(("chip", index)).label(chip.title.clone()).small().rounded_full();
@@ -1313,9 +1331,10 @@ impl Render for FeedView {
                         view.refilter(token, cx);
                     }
                 }));
-                chips = chips.child(self.chips.button(index, button, cx));
+                let row = (!wrap).then(|| self.chips_drag.scroll().clone());
+                chips = chips.child(self.chips.button_in(index, button, row, cx));
             }
-            column = column.child(div().id("chips").overflow_x_scroll().child(chips));
+            column = column.child(if wrap { div().child(chips) } else { self.chips_drag.wrap(chips) });
         } else if self.page.page_header.is_none() && !category {
             column = column.child(div().h(px(6.)));
         }

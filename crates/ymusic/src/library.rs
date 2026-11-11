@@ -15,7 +15,7 @@ use gpui_kit::*;
 use ym_i18n::{Str, t, tf};
 use ym_store::{Bucket, MediaItem, MediaStore};
 
-use crate::a11y::{FocusList, KeyboardFocusable};
+use crate::a11y::{DragRow, FocusList, KeyboardFocusable};
 use crate::graph::{AppGraph, on_core};
 use crate::mini_player::clock;
 use crate::playback::QueueItem;
@@ -130,6 +130,8 @@ pub struct LibraryView {
     card_focus: FocusList,
     tab_focus: FocusList,
     tool_focus: FocusList,
+    tab_drag: DragRow,
+    crumb_drag: DragRow,
     song_focus: FocusList,
     song_sort: (SongKey, bool),
     group_sort: (GroupKey, bool),
@@ -158,6 +160,8 @@ impl LibraryView {
             card_focus: FocusList::new(Some(scroll.clone())),
             tab_focus: FocusList::new(None),
             tool_focus: FocusList::new(None),
+            tab_drag: DragRow::default(),
+            crumb_drag: DragRow::default(),
             song_focus: FocusList::new(Some(scroll)),
             song_sort: (SongKey::Name, true),
             group_sort: (GroupKey::Name, true),
@@ -734,7 +738,13 @@ impl LibraryView {
                 )
                 .child(self.rescan_button(cx)),
             (Tab::Folders, _) => {
-                let mut crumbs = h_flex().id("crumbs").flex_1().min_w_0().overflow_x_scroll().gap_1().items_center();
+                let mut crumbs = h_flex()
+                    .id("crumbs")
+                    .track_scroll(self.crumb_drag.scroll())
+                    .overflow_x_scroll()
+                    .restrict_scroll_to_axis()
+                    .gap_1()
+                    .items_center();
                 crumbs = crumbs.child(
                     div()
                         .id("crumb-root")
@@ -773,7 +783,7 @@ impl LibraryView {
                             .into_any_element()
                     });
                 }
-                bar.child(crumbs).child(self.rescan_button(cx))
+                bar.child(self.crumb_drag.wrap(crumbs).flex_1().min_w_0()).child(self.rescan_button(cx))
             }
             (_, Some(group)) => bar
                 .child(
@@ -830,6 +840,7 @@ impl Render for LibraryView {
             Tab::ALL.iter().map(|tab| SharedString::from(tab.label())).collect(),
             selected,
             &self.tab_focus,
+            &self.tab_drag,
             move |index, _, cx| {
                 view.update(cx, |view, cx| view.select_tab(Tab::ALL[index], cx)).ok();
             },
