@@ -781,7 +781,7 @@ impl NowPlaying {
         ))
     }
 
-    /// Close, then download · sleep · quality · ⋮ on the right.
+    /// Close, then download · SponsorBlock · sleep · quality · ⋮ on the right.
     fn render_top_bar(&self, current: &QueueItem, cx: &mut Context<Self>) -> AnyElement {
         let playback = self.playback.read(cx);
         let sleep_remaining = playback.sleep_remaining();
@@ -848,7 +848,9 @@ impl NowPlaying {
             .track_focus(&self.bar_focus.handle(STOP_QUALITY, cx))
             .outline()
             .xsmall()
-            .label(current.clone())
+            .rounded(px(6.))
+            .px(px(8.))
+            .child(div().text_size(px(11.)).font_bold().child(current.clone()))
             .accessibility_label(format!("{}, {current}", t(Str::DownloadQuality)))
             .dropdown_menu_with_anchor(Anchor::TopRight, move |mut menu, _, _| {
                 for (quality, text) in &choices {
@@ -909,6 +911,7 @@ impl NowPlaying {
             });
 
         h_flex()
+            .w_full()
             .h(px(TOP_BAR))
             .px_2()
             .gap(px(5.))
