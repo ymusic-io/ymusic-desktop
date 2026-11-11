@@ -324,7 +324,8 @@ impl Shell {
         let shell_handle = cx.entity().downgrade();
         window.on_window_should_close(cx, move |window, cx| {
             let Some(shell) = shell_handle.upgrade() else { return true };
-            if shell.read(cx).playback.read(cx).queue.is_empty() {
+            // Without a tray icon a hidden window could never come back.
+            if shell.read(cx).tray.is_none() || shell.read(cx).playback.read(cx).queue.is_empty() {
                 Self::quit(window, cx);
                 return true;
             }

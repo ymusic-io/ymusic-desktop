@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use gpui_kit::*;
 use ym_common::log::Logger;
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use ym_i18n::{Str, t};
 use ym_settings::SettingsStore;
 
@@ -108,6 +109,7 @@ pub fn set_dock_visible(visible: bool) {
 pub fn set_dock_visible(_visible: bool) {}
 
 /// What a tray click or menu entry asks for.
+#[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
 pub enum TrayCommand {
     Open,
     TogglePlay,
