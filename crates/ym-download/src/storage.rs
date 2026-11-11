@@ -76,9 +76,7 @@ impl DownloadStorage {
             fs::remove_file(scratch)
                 .map_err(|error| DownloadError::file("R70019", "drop the copied scratch", error))?;
         }
-        url::Url::from_file_path(&destination)
-            .map(|uri| uri.to_string())
-            .map_err(|_| DownloadError::technical("R70020", format!("no file URI for {}", destination.display())))
+        Ok(ym_common::file_uri::to_file_uri(&destination.to_string_lossy()))
     }
 }
 

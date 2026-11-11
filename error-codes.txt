@@ -70,7 +70,6 @@ R70016 - download: the scratch folder could not be created (not disk full)
 R70017 - download: syncing the finished file before publish failed
 R70018 - download: publishing into the download folder failed (rename and copy)
 R70019 - download: the copied scratch could not be removed after publish
-R70020 - download: the published path has no file URI
 R70021 - download: a scratch of a stream YouTube no longer offers could not be dropped
 R70022 - download: the audio scratch file could not be opened
 R70023 - download: a caption track answered a non-success HTTP status (caption skipped)

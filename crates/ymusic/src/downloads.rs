@@ -120,11 +120,15 @@ pub fn download_folder(settings: &dyn SettingsStore) -> Option<PathBuf> {
     url::Url::parse(&uri).ok()?.to_file_path().ok()
 }
 
+/// The download location as the JVM app keeps it: the folder's `file://` URI, no trailing slash.
+pub fn folder_uri(folder: &Path) -> String {
+    ym_common::file_uri::to_file_uri(&folder.to_string_lossy())
+}
+
 /// Saves `folder` as the download location, off the UI thread.
 pub fn save_download_folder(folder: &Path, cx: &App) {
-    let Ok(uri) = url::Url::from_directory_path(folder) else { return };
     let graph = cx.global::<AppGraph>();
-    let (settings, log, uri) = (graph.settings.clone(), graph.log.fork("downloads"), uri.to_string());
+    let (settings, log, uri) = (graph.settings.clone(), graph.log.fork("downloads"), folder_uri(folder));
     graph.tokio.spawn_blocking(move || {
         if let Err(error) = settings.put_raw(DOWNLOAD_LOCATION_KEY, uri) {
             log.warn(&format!("the download folder could not be saved: {error}"), None);

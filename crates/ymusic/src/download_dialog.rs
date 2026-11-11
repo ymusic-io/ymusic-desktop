@@ -195,10 +195,10 @@ impl DownloadPicker {
             let Some(folder) = pick.await else { return };
             let folder = folder.path().to_path_buf();
             this.update(cx, |picker, cx| {
-                if let Ok(uri) = url::Url::from_directory_path(&folder) {
+                {
                     let graph = cx.global::<AppGraph>();
                     let (settings, log) = (graph.settings.clone(), graph.log.fork("downloads"));
-                    let uri = uri.to_string();
+                    let uri = crate::downloads::folder_uri(&folder);
                     graph.tokio.spawn_blocking(move || {
                         if let Err(error) = settings.put_raw(DOWNLOAD_LOCATION_KEY, uri) {
                             log.warn(&format!("the download folder could not be saved: {error}"), None);

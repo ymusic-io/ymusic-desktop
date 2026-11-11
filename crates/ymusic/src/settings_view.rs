@@ -270,9 +270,7 @@ impl SettingsView {
         cx.spawn(async move |this, cx| {
             let Some(folder) = pick.await else { return };
             this.update(cx, |view, cx| {
-                if let Ok(uri) = url::Url::from_directory_path(folder.path()) {
-                    view.put(DOWNLOAD_LOCATION_KEY, uri.to_string(), cx);
-                }
+                view.put(DOWNLOAD_LOCATION_KEY, crate::downloads::folder_uri(folder.path()), cx);
             })
             .ok();
         })

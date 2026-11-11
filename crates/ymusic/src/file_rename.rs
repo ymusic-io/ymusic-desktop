@@ -90,9 +90,8 @@ async fn rename_file(
     })
     .await
     .map_err(|_| RenameError::Stopped)??;
-    if let (Ok(old_uri), Ok(new_uri)) = (url::Url::from_file_path(&from), url::Url::from_file_path(&target)) {
-        downloads.relocate(old_uri.as_str(), new_uri.as_str()).await?;
-    }
+    let file_uri = |path: &std::path::Path| ym_common::file_uri::to_file_uri(&path.to_string_lossy());
+    downloads.relocate(&file_uri(&from), &file_uri(&target)).await?;
     Ok(target)
 }
 

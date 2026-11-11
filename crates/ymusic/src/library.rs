@@ -770,10 +770,7 @@ impl LibraryView {
                     String::new()
                 } else {
                     probe_download_folder(&folder)?;
-                    match url::Url::from_directory_path(&folder) {
-                        Ok(uri) => uri.to_string(),
-                        Err(()) => return Err(Str::DownloadLocationMissing),
-                    }
+                    crate::downloads::folder_uri(&folder)
                 };
                 if let Err(error) = settings.put_raw(crate::downloads::DOWNLOAD_LOCATION_KEY, value) {
                     log.warn(&format!("download.location could not be saved: {error}"), None);
@@ -1003,6 +1000,7 @@ impl LibraryView {
                 }
             }
             "arrange" => self.arrange(window, cx),
+            "rescan" => self.rescan(cx),
             "sort" => {
                 if let Some(context) = self.sort_context() {
                     self.pick_sort(context, index, window, cx);
