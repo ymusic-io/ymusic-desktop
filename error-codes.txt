@@ -97,6 +97,12 @@ R90020 - top tracks: play history could not be read
 R90021 - sponsorblock: the per-video whitelist could not be saved
 R90022 - downloads: a finished file could not be deleted from disk
 R90023 - sign-in: the device-link QR could not be drawn
+R90300 - self-update: the config's update entry does not verify against the pinned update key (UpdateService.accept)
+R90301 - self-update: the downloaded installer's size or sha256 differs from the signed entry
+R90302 - self-update: the installer download failed (disk I/O other than full storage)
+R90303 - self-update: the installer failed to run (DMG copy, signature check, bundle swap, setup or apt)
+R90304 - self-update: the installer download was refused (non-2xx HTTP status)
+R90305 - self-update: another package manager held the dpkg lock past the wait (Linux)
 R92000 - playlist download: the downloads could not be added to the chosen Library playlist
 R92001 - Library playlist: a new playlist could not be created
 R92002 - local playlist from downloads: the playlist could not be created or filled
