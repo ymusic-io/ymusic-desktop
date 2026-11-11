@@ -18,6 +18,7 @@ use gpui_kit::*;
 use ym_i18n::{Str, t, tf};
 
 use crate::a11y::{FocusList, KeyboardFocusable};
+use crate::audio_only::AudioOnlyArt;
 use crate::download_dialog::DownloadTarget;
 use crate::graph::{AppGraph, on_core};
 use crate::mini_player::clock;
@@ -100,6 +101,9 @@ pub struct NowPlaying {
     video_layer: Option<Rc<VideoLayer>>,
     /// The video box as last painted, to report viewport changes to the player.
     video_box: Rc<Cell<(i32, i32)>>,
+    audio_only_art: Entity<AudioOnlyArt>,
+    /// Audio only as last drawn: it holds between items until the next one's tracks are known.
+    audio_only: Cell<bool>,
     caption_strip: std::cell::RefCell<CaptionStrip>,
     reported_box: (i32, i32),
     seek: Entity<SliderState>,
@@ -260,6 +264,8 @@ impl NowPlaying {
             }
         });
         let queue_scroll = ScrollHandle::new();
+        let video_box = Rc::new(Cell::new((0, 0)));
+        let audio_only_art = cx.new(|_| AudioOnlyArt::new(playback.clone(), video_box.clone()));
         Self {
             playback,
             sponsor_block,
@@ -269,7 +275,9 @@ impl NowPlaying {
             drag: Rc::default(),
             _autoscroll: None,
             video_layer: None,
-            video_box: Rc::new(Cell::new((0, 0))),
+            video_box,
+            audio_only_art,
+            audio_only: Cell::new(false),
             caption_strip: std::cell::RefCell::new(CaptionStrip::new()),
             reported_box: (0, 0),
             seek,
@@ -353,14 +361,24 @@ impl NowPlaying {
             .on_click(cx.listener(|view, _, _, cx| view.playback.update(cx, |playback, cx| playback.toggle(cx))))
     }
 
-    fn render_video(&mut self, current: &QueueItem, fill: bool, cx: &mut Context<Self>) -> AnyElement {
+    /// Audio only by the user's pick or because the item has no picture.
+    fn shows_audio_only(&self, cx: &App) -> bool {
         let playback = self.playback.read(cx);
-        let (video_on, playing) = (playback.video, playback.is_playing());
+        let track = playback.has_video_track();
+        let shown = !playback.video || track == Some(false) || (track.is_none() && self.audio_only.get());
+        self.audio_only.set(shown);
+        shown
+    }
+
+    fn render_video(&mut self, current: &QueueItem, fill: bool, cx: &mut Context<Self>) -> AnyElement {
+        let audio_only = self.shows_audio_only(cx);
+        let playback = self.playback.read(cx);
+        let playing = playback.is_playing();
         let buffering = playback.state == PlayState::Buffering;
         let (position, duration) = (playback.position_ms, playback.duration_ms);
         let layer = self.video_layer.clone();
         let video_box = self.video_box.clone();
-        let show_video = video_on && layer.is_some();
+        let show_video = !audio_only && layer.is_some();
         let controls = self.controls_visible(cx);
         self.controls_were_visible = controls;
         let fullscreen = self.fullscreen;
@@ -438,11 +456,7 @@ impl NowPlaying {
             .overflow_hidden()
             .map(|frame| if fill { frame.size_full() } else { frame.w_full().aspect_ratio(16. / 9.) })
             .when_some(layer.clone().filter(|_| show_video), |frame, layer| layer.underlay(frame))
-            .when(!show_video, |frame| {
-                frame.bg(black()).when_some(current.thumb(i32::MAX), |frame, url| {
-                    frame.child(img(url).size_full().object_fit(ObjectFit::Contain))
-                })
-            })
+            .when(!show_video, |frame| frame.bg(black()).child(self.audio_only_art.clone()))
             .on_mouse_move(cx.listener(|view, _, _, cx| view.touch(cx)))
             .child(
                 canvas(
@@ -461,8 +475,8 @@ impl NowPlaying {
                 .left_0()
                 .size_full(),
             )
-            .when_some(self.caption_overlay(controls, cx), |frame, captions| frame.child(captions))
-            .children(crate::fps_badge::badge(&self.playback, cx))
+            .when_some(self.caption_overlay(controls, audio_only, cx), |frame, captions| frame.child(captions))
+            .when(!audio_only, |frame| frame.children(crate::fps_badge::badge(&self.playback, cx)))
             .when(controls, |frame| frame.child(overlay))
             .when_some(self.failure_panel(controls, cx), |frame, panel| frame.child(panel))
             .into_any_element()
@@ -576,7 +590,7 @@ impl NowPlaying {
 
     /// The cues on the picture's bottom, left-aligned at YouTube's inset, newest at the bottom;
     /// above the controls strip while it shows.
-    fn caption_overlay(&self, controls: bool, cx: &App) -> Option<Div> {
+    fn caption_overlay(&self, controls: bool, audio_only: bool, cx: &App) -> Option<Div> {
         let playback = self.playback.read(cx);
         if !playback.captions || playback.caption_lines.is_empty() {
             return None;
@@ -592,8 +606,13 @@ impl NowPlaying {
         };
         // The picture is contain-fit: captions go in the bar under it when two rows fit there clear
         // of the controls, else over its bottom.
-        let (picture_width, picture_height) =
-            if width / height.max(1.) <= VIDEO_RATIO { (width, width / VIDEO_RATIO) } else { (height * VIDEO_RATIO, height) };
+        let (picture_width, picture_height) = if audio_only {
+            (width, height)
+        } else if width / height.max(1.) <= VIDEO_RATIO {
+            (width, width / VIDEO_RATIO)
+        } else {
+            (height * VIDEO_RATIO, height)
+        };
         let bar = (height - picture_height) / 2.;
         let under_picture = bar >= CAPTION_TWO_ROWS * look.scale + CAPTION_ABOVE_CONTROLS + 8.;
         let side = (width - picture_width) / 2. + picture_width * inset;

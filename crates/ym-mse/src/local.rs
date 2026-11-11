@@ -28,6 +28,19 @@ unsafe extern "C" {
     fn file_av_position(player: *mut c_void) -> f64;
     fn file_av_ended(player: *mut c_void) -> c_int;
     fn file_av_last_error(player: *mut c_void) -> *const c_char;
+    fn file_av_stream_count(player: *mut c_void) -> c_int;
+    fn file_av_stream_at(
+        player: *mut c_void,
+        position: c_int,
+        kind: *mut c_int,
+        index: *mut c_int,
+        width: *mut c_int,
+        height: *mut c_int,
+        lang: *mut c_char,
+        lang_len: c_int,
+        codec: *mut c_char,
+        codec_len: c_int,
+    ) -> c_int;
     fn ym_probe(path: *const c_char, out: *mut RawProbe) -> c_int;
     fn ym_attached_pic(path: *const c_char, stream_index: c_int, out: *mut *mut u8, out_len: *mut c_int) -> c_int;
     fn ym_video_frame(
@@ -48,6 +61,9 @@ pub struct LocalAv {
 
 // Driven from its one player thread; the C side guards what its own threads share.
 unsafe impl Send for LocalAv {}
+
+/// `file_av_stream_at`'s kind for a picture stream.
+const STREAM_VIDEO: c_int = 1;
 
 impl LocalAv {
     pub fn create() -> Option<Self> {
@@ -127,6 +143,30 @@ impl LocalAv {
 
     pub fn ended(&self) -> bool {
         unsafe { file_av_ended(self.raw) != 0 }
+    }
+
+    /// The open file has a picture stream (attached cover art does not count).
+    pub fn has_video(&self) -> bool {
+        let count = unsafe { file_av_stream_count(self.raw) };
+        (0..count).any(|position| {
+            let (mut kind, mut width, mut height) = (-1, 0, 0);
+            let null: *mut c_int = std::ptr::null_mut();
+            let found = unsafe {
+                file_av_stream_at(
+                    self.raw,
+                    position,
+                    &mut kind,
+                    null,
+                    &mut width,
+                    &mut height,
+                    null.cast(),
+                    0,
+                    null.cast(),
+                    0,
+                )
+            };
+            found == 0 && kind == STREAM_VIDEO && width.min(height) > 0
+        })
     }
 
     pub fn last_error(&self) -> String {

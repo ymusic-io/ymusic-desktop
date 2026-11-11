@@ -10,7 +10,10 @@ use ym_mse::{LocalAv, Presenter};
 use crate::audio_effects::AudioEffects;
 
 pub enum LocalCommand {
-    Load { path: PathBuf, video: bool },
+    Load {
+        path: PathBuf,
+        video: bool,
+    },
     Play,
     Pause,
     Seek(i64),
@@ -18,6 +21,8 @@ pub enum LocalCommand {
     Effects(AudioEffects),
     Video(bool),
     Presenter(Option<Arc<Presenter>>),
+    /// The spectrum of what plays now, `count` bars.
+    Levels(usize, mpsc::Sender<Vec<f32>>),
     Stop,
 }
 
@@ -30,6 +35,8 @@ pub struct LocalStatus {
     pub playing: bool,
     pub ended: bool,
     pub error: Option<String>,
+    /// The open file and whether it has a picture stream.
+    pub video_track: Option<(PathBuf, bool)>,
 }
 
 pub struct LocalEngine {
@@ -38,6 +45,7 @@ pub struct LocalEngine {
 }
 
 const IDLE_WAIT: Duration = Duration::from_millis(50);
+const LEVELS_WAIT: Duration = Duration::from_millis(100);
 
 impl LocalEngine {
     pub fn start() -> Option<Self> {
@@ -63,6 +71,27 @@ impl LocalEngine {
     pub fn send(&self, command: LocalCommand) {
         let _ = self.commands.send(command);
     }
+
+    pub fn level_tap(&self) -> LocalLevelTap {
+        LocalLevelTap { commands: self.commands.clone() }
+    }
+}
+
+/// Reads the local player's spectrum from any thread.
+#[derive(Clone)]
+pub struct LocalLevelTap {
+    commands: mpsc::Sender<LocalCommand>,
+}
+
+impl LocalLevelTap {
+    /// Blocks until the player thread answers; empty when it is gone or busy past `LEVELS_WAIT`.
+    pub fn read(&self, count: usize) -> Vec<f32> {
+        let (reply, levels) = mpsc::channel();
+        if self.commands.send(LocalCommand::Levels(count, reply)).is_err() {
+            return Vec::new();
+        }
+        levels.recv_timeout(LEVELS_WAIT).unwrap_or_default()
+    }
 }
 
 fn run(mut player: LocalAv, commands: mpsc::Receiver<LocalCommand>, status: Arc<Mutex<LocalStatus>>) {
@@ -84,8 +113,10 @@ fn run(mut player: LocalAv, commands: mpsc::Receiver<LocalCommand>, status: Arc<
                     status.generation += 1;
                     status.ended = false;
                     status.position_ms = 0;
+                    status.video_track = None;
                     match player.open(&path) {
                         Ok(()) => {
+                            status.video_track = Some((path, player.has_video()));
                             player.set_speed_pitch(f64::from(effects.speed), f64::from(effects.pitch));
                             player.set_tone(&effects.tone);
                             loaded = true;
@@ -127,6 +158,9 @@ fn run(mut player: LocalAv, commands: mpsc::Receiver<LocalCommand>, status: Arc<
                 }
                 LocalCommand::Video(on) => player.set_video_enabled(on),
                 LocalCommand::Presenter(presenter) => player.bind_presenter(presenter.as_deref()),
+                LocalCommand::Levels(count, reply) => {
+                    let _ = reply.send(if loaded { player.levels(count) } else { Vec::new() });
+                }
                 LocalCommand::Stop => {
                     player.pause();
                     player.close();

@@ -18,7 +18,7 @@ use ym_mse::Presenter;
 
 use crate::audio_effects::AudioEffects;
 use crate::graph::{AppGraph, on_core};
-use crate::local_engine::{LocalCommand, LocalEngine};
+use crate::local_engine::{LocalCommand, LocalEngine, LocalLevelTap};
 use crate::queue_nav::{LoopMode, QueueNav, moved_index};
 use crate::youtube_session::YoutubeSession;
 
@@ -170,6 +170,23 @@ impl QueueItem {
         match &self.source {
             Source::YouTube(video_id) => Some(video_id),
             Source::Local(_) => None,
+        }
+    }
+}
+
+/// Reads the spectrum of what plays now; [`LevelTap::read`] blocks, so call it off the UI thread.
+#[derive(Clone)]
+pub enum LevelTap {
+    YouTube(Arc<ym_mse::MseHost>),
+    Local(LocalLevelTap),
+}
+
+impl LevelTap {
+    /// Bars in 0..=1, bass first; empty while nothing plays.
+    pub fn read(&self, count: usize) -> Vec<f32> {
+        match self {
+            Self::YouTube(host) => host.levels(count),
+            Self::Local(tap) => tap.read(count),
         }
     }
 }
@@ -349,6 +366,29 @@ impl Playback {
 
     pub fn is_playing(&self) -> bool {
         matches!(self.state, PlayState::Playing | PlayState::Buffering)
+    }
+
+    pub fn level_tap(&self) -> Option<LevelTap> {
+        match self.active? {
+            Active::YouTube => self.session.as_ref().map(|session| LevelTap::YouTube(session.host.clone())),
+            Active::Local => self.local.as_ref().map(|local| LevelTap::Local(local.level_tap())),
+        }
+    }
+
+    /// Whether the current item has a picture to show; `None` until its engine reports.
+    pub fn has_video_track(&self) -> Option<bool> {
+        match (self.active?, &self.current()?.source) {
+            (Active::Local, Source::Local(path)) => {
+                let status = self.local.as_ref()?.status.lock().unwrap();
+                status.video_track.as_ref().filter(|(open, _)| open == path).map(|(_, video)| *video)
+            }
+            (Active::YouTube, Source::YouTube(_)) => match self.quality_actual.as_deref() {
+                Some(QUALITY_AUDIO_ONLY) => Some(false),
+                None if self.quality_options.is_empty() => None,
+                _ => Some(true),
+            },
+            _ => None,
+        }
     }
 
     /// Plays a feed video. A `section` queue plays in order; without one the engine's radio for

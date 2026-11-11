@@ -4,6 +4,7 @@ mod account_view;
 mod app_update;
 mod assets;
 mod audio_effects;
+mod audio_only;
 mod caption_style;
 mod cookie_guide;
 mod cookie_lock;
