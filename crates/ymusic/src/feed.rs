@@ -18,6 +18,7 @@ use ym_i18n::{Str, t, tf};
 
 use crate::a11y::{DragRow, FocusList, focusable};
 use crate::graph::{AppGraph, on_core};
+use crate::local_playlist::LocalPlaylistFromDownloads;
 use crate::playlist_download::PlaylistDownload;
 use crate::spinner::Spinner;
 use crate::tab_row::tab_row;
@@ -369,8 +370,11 @@ impl FeedView {
         }
         let title = self.page.page_header.as_ref().and_then(|header| header.title.clone());
         let title = title.or_else(|| self.title.as_ref().map(|title| title.to_string())).unwrap_or_default();
-        let _ = local;
-        PlaylistDownload::open(self.source.clone(), title, &self.page, window, cx);
+        if local {
+            LocalPlaylistFromDownloads::open(self.source.clone(), title, &self.page, window, cx);
+        } else {
+            PlaylistDownload::open(self.source.clone(), title, &self.page, window, cx);
+        }
         true
     }
 
@@ -631,6 +635,17 @@ impl FeedView {
                 .tooltip(t(Str::CdDownload))
                 .on_click(cx.listener(|view, _, window, cx| {
                     view.open_playlist_dialog(false, window, cx);
+                })),
+        );
+        actions = actions.child(
+            Button::new("playlist-local")
+                .ghost()
+                .icon(Lucide::LibraryBig)
+                .disabled(!has_videos)
+                .accessibility_label(t(Str::LocalPlaylistCreate))
+                .tooltip(t(Str::LocalPlaylistCreate))
+                .on_click(cx.listener(|view, _, window, cx| {
+                    view.open_playlist_dialog(true, window, cx);
                 })),
         );
         actions = actions.child(div().flex_1()).child(

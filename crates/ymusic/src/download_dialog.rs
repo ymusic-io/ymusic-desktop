@@ -12,9 +12,10 @@ use ym_download::options::DownloadOptions;
 use ym_download::{AudioQuality, DownloadError, DownloadFormat, DownloadRequest, DownloadService};
 use ym_i18n::{Str, t, tf};
 
-use crate::downloads::{DOWNLOAD_LOCATION_KEY, download_folder};
+use crate::downloads::{DOWNLOAD_LOCATION_KEY, download_folder, offline_ids};
 use crate::downloads_view::{size_label, task_error_text};
 use crate::graph::{AppGraph, on_core};
+use crate::quick_download::confirm_redownload;
 use crate::spinner::Spinner;
 
 /// The video to download, as the card showed it.
@@ -56,6 +57,7 @@ pub struct DownloadPicker {
     container: DownloadFormat,
     caption: Option<String>,
     folder: Option<PathBuf>,
+    already_downloaded: bool,
 }
 
 impl DownloadPicker {
@@ -74,6 +76,13 @@ impl DownloadPicker {
         let probe_service = service.clone();
         let video_id = target.video_id.clone();
         let probe = on_core(cx, async move { probe_service.probe(&video_id).await });
+        let offline = offline_ids(cx);
+        let offline_id = target.video_id.clone();
+        cx.spawn(async move |this, cx| {
+            let downloaded = offline.await.contains(&offline_id);
+            this.update(cx, |picker, _| picker.already_downloaded = downloaded).ok();
+        })
+        .detach();
         cx.spawn(async move |this, cx| {
             let result = probe.await;
             this.update(cx, |picker, cx| {
@@ -101,6 +110,7 @@ impl DownloadPicker {
             container: DownloadFormat::VideoMp4,
             caption: None,
             folder,
+            already_downloaded: false,
         }
     }
 
@@ -158,6 +168,17 @@ impl DownloadPicker {
     }
 
     fn download(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.already_downloaded {
+            let picker = cx.entity().downgrade();
+            confirm_redownload(&self.target.title, window, cx, move |window, cx| {
+                picker.update(cx, |picker, cx| picker.start(window, cx)).ok();
+            });
+        } else {
+            self.start(window, cx);
+        }
+    }
+
+    fn start(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let target = self.target.clone();
         self.service.enqueue(DownloadRequest {
             video_id: target.video_id,

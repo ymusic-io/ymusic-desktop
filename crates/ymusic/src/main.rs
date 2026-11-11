@@ -17,6 +17,7 @@ mod library;
 mod library_search;
 mod local_art;
 mod local_engine;
+mod local_playlist;
 mod media_session;
 mod mini_player;
 mod now_playing;

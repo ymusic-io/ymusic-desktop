@@ -99,6 +99,7 @@ R90022 - downloads: a finished file could not be deleted from disk
 R90023 - sign-in: the device-link QR could not be drawn
 R92000 - playlist download: the downloads could not be added to the chosen Library playlist
 R92001 - Library playlist: a new playlist could not be created
+R92002 - local playlist from downloads: the playlist could not be created or filled
 R93000 - settings: a setting could not be saved
 R93001 - settings: the UI language could not be saved
 R95000 - now playing: a local queue item could not be looked up in the library to open its artist or album
