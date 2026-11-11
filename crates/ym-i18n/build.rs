@@ -1,6 +1,7 @@
 //! Generates the string tables from YMusicV4's compose-resources `values*/strings.xml`: one key
 //! set (the default `values/`), every locale's translations, English fallback where a locale omits
-//! a key (brand marks are omitted on purpose).
+//! a key (brand marks are omitted on purpose). A `string-array` item is the string `name.N`
+//! (`month_abbr` item 0 = `Str::MonthAbbr0`).
 
 use std::collections::BTreeMap;
 use std::fmt::Write;
@@ -110,6 +111,12 @@ fn parse(file: &Path, code: String) -> Locale {
         match node.tag_name().name() {
             "string" => {
                 locale.strings.insert(name.to_owned(), unescape(&inner_text(node)));
+            }
+            "string-array" => {
+                let items = node.children().filter(|item| item.has_tag_name("item"));
+                for (index, item) in items.enumerate() {
+                    locale.strings.insert(format!("{name}.{index}"), unescape(&inner_text(item)));
+                }
             }
             "plurals" => {
                 let forms = node
