@@ -125,6 +125,18 @@ enum Active {
     Local,
 }
 
+/// A caption track the playing video offers.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CaptionTrack {
+    pub vss_id: String,
+    pub language_code: String,
+    pub display_name: String,
+    /// `"translate"` for YouTube's auto-translations of the video's main track.
+    pub kind: String,
+}
+
+pub const AUTO_TRANSLATE_KIND: &str = "translate";
+
 pub struct Playback {
     session: Option<Arc<YoutubeSession>>,
     booting: bool,
@@ -160,6 +172,13 @@ pub struct Playback {
     sleep_deadline: Option<Instant>,
     pub sleep_after_current: bool,
     pub captions: bool,
+    pub caption_tracks: Vec<CaptionTrack>,
+    /// The track the bundle shows (a vssId or a language code), from the catalog stream.
+    pub caption_selected: Option<String>,
+    /// The cues on screen now, oldest first: (cue id, text with hard breaks).
+    pub caption_lines: Vec<(i64, String)>,
+    caption_stream: Option<(tokio::task::JoinHandle<()>, Task<()>)>,
+    _catalog: Option<Task<()>>,
     _sleep: Option<Task<()>>,
     /// Video on: loads request pictures and the presenter shows them; off: audio only.
     pub video: bool,
@@ -212,6 +231,11 @@ impl Playback {
             sleep_deadline: None,
             sleep_after_current: false,
             captions: false,
+            caption_tracks: Vec::new(),
+            caption_selected: None,
+            caption_lines: Vec::new(),
+            caption_stream: None,
+            _catalog: None,
             _sleep: None,
             video: true,
             video_hidden: true,
@@ -350,6 +374,95 @@ impl Playback {
     pub fn set_captions(&mut self, visible: bool, cx: &mut Context<Self>) {
         self.captions = visible;
         self.command(cx, move |engine, log| async move { engine.player_set_caption(None, visible, &log).await });
+        self.sync_caption_stream(cx);
+        cx.notify();
+    }
+
+    /// Shows captions from the track with this vssId (or language code).
+    pub fn select_caption(&mut self, id: String, cx: &mut Context<Self>) {
+        self.captions = true;
+        self.caption_selected = Some(id.clone());
+        self.command(cx, move |engine, log| async move { engine.player_set_caption(Some(&id), true, &log).await });
+        self.sync_caption_stream(cx);
+        cx.notify();
+    }
+
+    /// The cue stream runs only while captions are on: closing it pauses the bundle's caption work.
+    fn sync_caption_stream(&mut self, cx: &mut Context<Self>) {
+        let wanted = self.captions && self.session.is_some();
+        if !wanted {
+            if let Some((handle, _)) = self.caption_stream.take() {
+                handle.abort();
+            }
+            self.caption_lines.clear();
+            return;
+        }
+        if self.caption_stream.is_some() {
+            return;
+        }
+        let Some(session) = self.session.clone() else { return };
+        let (sender, mut receiver) = mpsc::unbounded::<Value>();
+        let (engine, log) = (session.engine.clone(), cx.global::<AppGraph>().log.fork("captions"));
+        let handle = cx.global::<AppGraph>().tokio.spawn(async move {
+            if let Err(error) = engine
+                .listen_player("player/caption", move |value| {
+                    let _ = sender.unbounded_send(value);
+                })
+                .await
+            {
+                log.warn("caption stream failed", Some(&error));
+            }
+        });
+        let task = cx.spawn(async move |this, cx| {
+            while let Some(value) = receiver.next().await {
+                let lines = value
+                    .get("lines")
+                    .and_then(Value::as_array)
+                    .map(|lines| {
+                        lines
+                            .iter()
+                            .filter_map(|line| {
+                                let id = line.get("id").and_then(Value::as_i64)?;
+                                Some((id, line.get("text").and_then(Value::as_str).unwrap_or_default().to_owned()))
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let applied = this.update(cx, |playback, cx| {
+                    if playback.captions {
+                        playback.caption_lines = lines;
+                        cx.notify();
+                    }
+                });
+                if applied.is_err() {
+                    return;
+                }
+            }
+        });
+        self.caption_stream = Some((handle, task));
+    }
+
+    fn apply_catalog(&mut self, catalog: &Value, cx: &mut Context<Self>) {
+        let tracks: Vec<CaptionTrack> = catalog
+            .get("captionTracks")
+            .and_then(Value::as_array)
+            .map(|rows| {
+                rows.iter()
+                    .filter_map(|row| {
+                        let vss_id = row.get("vssId").and_then(Value::as_str)?.to_owned();
+                        let text = |key: &str| row.get(key).and_then(Value::as_str).map(str::to_owned);
+                        Some(CaptionTrack {
+                            display_name: text("displayName").unwrap_or_else(|| vss_id.clone()),
+                            language_code: text("languageCode").unwrap_or_default(),
+                            kind: text("kind").unwrap_or_default(),
+                            vss_id,
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        self.caption_tracks = tracks;
+        self.caption_selected = catalog.get("caption").and_then(Value::as_str).map(str::to_owned);
         cx.notify();
     }
 
@@ -721,6 +834,8 @@ impl Playback {
                 if self.active == Some(Active::Local) {
                     self.send_local(LocalCommand::Stop);
                 }
+                self.caption_lines.clear();
+                self.caption_tracks.clear();
                 self.active = Some(Active::YouTube);
                 self.bind_presenter();
                 self.loading_video = Some(video_id.clone());
@@ -887,6 +1002,32 @@ impl Playback {
                 }
             }
         }));
+        let (sender, mut receiver) = mpsc::unbounded::<Value>();
+        let (engine, log) = (session.engine.clone(), cx.global::<AppGraph>().log.fork("catalog"));
+        cx.global::<AppGraph>().tokio.spawn(async move {
+            if let Err(error) = engine
+                .listen_player("listen/player/catalog", move |value| {
+                    let _ = sender.unbounded_send(value);
+                })
+                .await
+            {
+                log.warn("catalog stream failed", Some(&error));
+            }
+        });
+        self._catalog = Some(cx.spawn(async move |this, cx| {
+            while let Some(value) = receiver.next().await {
+                if this.update(cx, |playback, cx| playback.apply_catalog(&value, cx)).is_err() {
+                    return;
+                }
+            }
+        }));
+        if self.captions {
+            let selected = self.caption_selected.clone();
+            self.command(cx, move |engine, log| async move {
+                engine.player_set_caption(selected.as_deref(), true, &log).await
+            });
+        }
+        self.sync_caption_stream(cx);
     }
 
     fn apply_status(&mut self, status: &Value, cx: &mut Context<Self>) {

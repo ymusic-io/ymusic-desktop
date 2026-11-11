@@ -20,7 +20,7 @@ use ym_i18n::{Str, t, tf};
 use crate::a11y::{FocusList, KeyboardFocusable};
 use crate::download_dialog::DownloadTarget;
 use crate::mini_player::clock;
-use crate::playback::{PlayState, Playback, QueueItem};
+use crate::playback::{AUTO_TRANSLATE_KIND, CaptionTrack, PlayState, Playback, QueueItem};
 use crate::queue_nav::LoopMode;
 use crate::sponsor_block::SponsorBlock;
 use crate::video_layer::VideoLayer;
@@ -55,6 +55,17 @@ pub struct NowPlaying {
 }
 
 impl EventEmitter<NowPlayingEvent> for NowPlaying {}
+
+/// Cues shown at once, newest at the bottom.
+const CAPTION_ROWS: usize = 2;
+/// The JVM caption style's default box opacity.
+const CAPTION_BACKGROUND_OPACITY: f32 = 0.55;
+/// Clears the video controls' bottom strip.
+const CAPTION_ABOVE_CONTROLS: f32 = 72.;
+/// Two caption rows: 24 line height plus the box's 2 + 2 padding, each.
+const CAPTION_TWO_ROWS: f32 = 56.;
+/// The picture's shape until the stream reports its own.
+const VIDEO_RATIO: f32 = 16. / 9.;
 
 fn icon_button(id: impl Into<ElementId>, icon: impl Into<Icon>, label: &'static str) -> Button {
     Button::new(id).ghost().icon(icon).accessibility_label(label).tooltip(label)
@@ -184,7 +195,7 @@ impl NowPlaying {
         let playback = self.playback.read(cx);
         let (video_on, playing) = (playback.video, playback.is_playing());
         let buffering = playback.state == PlayState::Buffering;
-        let (position, duration, captions) = (playback.position_ms, playback.duration_ms, playback.captions);
+        let (position, duration) = (playback.position_ms, playback.duration_ms);
         let layer = self.video_layer.clone();
         let video_box = self.video_box.clone();
         let show_video = video_on && layer.is_some();
@@ -221,13 +232,7 @@ impl NowPlaying {
                     .items_center()
                     .child(div().text_sm().child(format!("{} / {}", clock(position), clock(duration))))
                     .child(div().flex_1())
-                    .child(
-                        icon_button("np-captions", Lucide::Captions, t(Str::CdCaptions)).selected(captions).on_click(
-                            cx.listener(move |view, _, _, cx| {
-                                view.playback.update(cx, |playback, cx| playback.set_captions(!captions, cx))
-                            }),
-                        ),
-                    )
+                    .when_some(self.caption_button(cx), |row, button| row.child(button))
                     .child(
                         icon_button(
                             "np-fullscreen",
@@ -291,8 +296,115 @@ impl NowPlaying {
                 .left_0()
                 .size_full(),
             )
+            .when_some(self.caption_overlay(controls, cx), |frame, captions| frame.child(captions))
             .when(controls, |frame| frame.child(overlay))
             .into_any_element()
+    }
+
+    /// The CC control, absent when the video has no caption tracks: Off, each track, and YouTube's
+    /// auto-translations in a submenu; a pick turns captions on.
+    fn caption_button(&self, cx: &App) -> Option<AnyElement> {
+        let playback = self.playback.read(cx);
+        if playback.caption_tracks.is_empty() {
+            return None;
+        }
+        let (visible, selected) = (playback.captions, playback.caption_selected.clone());
+        let is_on = move |track: &CaptionTrack| {
+            visible && selected.as_deref().is_some_and(|id| id == track.vss_id || id == track.language_code)
+        };
+        let (translations, tracks): (Vec<CaptionTrack>, Vec<CaptionTrack>) =
+            playback.caption_tracks.iter().cloned().partition(|track| track.kind == AUTO_TRANSLATE_KIND);
+        let on_track = tracks.iter().chain(&translations).find(|track| is_on(track)).map(|track| track.display_name.clone());
+        let state = on_track.unwrap_or_else(|| t(Str::CaptionsOff).to_owned());
+        let label = format!("{}, {state}", t(Str::CdCaptions));
+        let target = self.playback.clone();
+        Some(
+            Button::new("np-captions")
+                .ghost()
+                .icon(Lucide::Captions)
+                .selected(visible)
+                .accessibility_label(label.clone())
+                .tooltip(label)
+                .dropdown_menu_with_anchor(Anchor::BottomRight, move |mut menu, window, cx| {
+                    let off = target.clone();
+                    menu = menu.item(
+                        PopupMenuItem::new(t(Str::CaptionsOff))
+                            .checked(!visible)
+                            .on_click(move |_, _, cx| off.update(cx, |playback, cx| playback.set_captions(false, cx))),
+                    );
+                    let pick = |track: &CaptionTrack| {
+                        let (playback, id) = (target.clone(), track.vss_id.clone());
+                        PopupMenuItem::new(track.display_name.clone())
+                            .checked(is_on(track))
+                            .on_click(move |_, _, cx| playback.update(cx, |playback, cx| playback.select_caption(id.clone(), cx)))
+                    };
+                    for track in &tracks {
+                        menu = menu.item(pick(track));
+                    }
+                    if !translations.is_empty() {
+                        let current = translations.iter().find(|track| is_on(track)).map(|track| track.display_name.clone());
+                        let title = match current {
+                            Some(name) => format!("{} · {name}", t(Str::CaptionsAutoTranslate)),
+                            None => t(Str::CaptionsAutoTranslate).to_owned(),
+                        };
+                        let items: Vec<PopupMenuItem> = translations.iter().map(&pick).collect();
+                        let items = std::rc::Rc::new(std::cell::RefCell::new(Some(items)));
+                        menu = menu.submenu(title, window, cx, move |mut submenu, _, _| {
+                            for item in items.borrow_mut().take().into_iter().flatten() {
+                                submenu = submenu.item(item);
+                            }
+                            submenu.max_h(px(360.)).scrollable(true)
+                        });
+                    }
+                    menu
+                })
+                .into_any_element(),
+        )
+    }
+
+    /// The cues on the picture's bottom, left-aligned at YouTube's inset, newest at the bottom;
+    /// above the controls strip while it shows.
+    fn caption_overlay(&self, controls: bool, cx: &App) -> Option<Div> {
+        let playback = self.playback.read(cx);
+        if !playback.captions || playback.caption_lines.is_empty() {
+            return None;
+        }
+        let (width, height) = self.video_box.get();
+        let (width, height) = (width as f32, height as f32);
+        let inset = if width.min(height) < 600. {
+            if height > width { 0.03 } else { 0.05 }
+        } else {
+            0.1 + 0.1 * ((width - 600.) / (1920. - 600.)).clamp(0., 1.)
+        };
+        // The picture is contain-fit: captions go in the bar under it when two rows fit there clear
+        // of the controls, else over its bottom.
+        let (picture_width, picture_height) =
+            if width / height.max(1.) <= VIDEO_RATIO { (width, width / VIDEO_RATIO) } else { (height * VIDEO_RATIO, height) };
+        let bar = (height - picture_height) / 2.;
+        let under_picture = bar >= CAPTION_TWO_ROWS + CAPTION_ABOVE_CONTROLS + 8.;
+        let cues = playback.caption_lines.iter().rev().take(CAPTION_ROWS).rev();
+        let mut column = v_flex().items_start().gap_1();
+        for (_, text) in cues {
+            column = column.child(
+                div()
+                    .px_2()
+                    .py(px(2.))
+                    .rounded(px(4.))
+                    .bg(black().opacity(CAPTION_BACKGROUND_OPACITY))
+                    .text_color(white())
+                    .text_size(px(16.))
+                    .line_height(px(24.))
+                    .child(text.clone()),
+            );
+        }
+        let side = (width - picture_width) / 2. + picture_width * inset;
+        let placed = div().absolute().left_0().right_0().px(px(side));
+        Some(if under_picture {
+            placed.top(px(bar + picture_height + 8.)).child(column)
+        } else {
+            let bottom = (bar + 12.).max(if controls { CAPTION_ABOVE_CONTROLS } else { 12. });
+            placed.bottom(px(bottom)).child(column)
+        })
     }
 
     /// Close, then download · sleep · quality · ⋮ on the right.
