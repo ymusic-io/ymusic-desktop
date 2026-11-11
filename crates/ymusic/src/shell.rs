@@ -40,6 +40,8 @@ const DRAWER_ICON_START: f32 = 20.;
 const RAIL_ICON_START: f32 = RAIL_COLLAPSED / 2. - SECTION_ICON / 2.;
 const SECTION_ICON: f32 = 16.;
 const RAIL_EXPANDED: f32 = 280.;
+/// The rail's logo, larger than the JVM rail's 24 so the mark reads at a glance.
+const RAIL_LOGO: f32 = 32.;
 const DRAWER_WIDTH: f32 = 300.;
 const WEBSITE: &str = "https://ymusic.io";
 
@@ -1375,7 +1377,7 @@ impl Shell {
             .min_h(px(48.))
             .items_center()
             .child(toggle)
-            .when(expanded, |header| header.pr_4().child(self.brand(24., cx)))
+            .when(expanded, |header| header.pr_4().child(self.brand(RAIL_LOGO, cx)))
             .into_any_element();
         let website = expanded.then(|| {
             focusable(div().id("website").role(Role::Link).aria_label("ymusic.io"), cx)
