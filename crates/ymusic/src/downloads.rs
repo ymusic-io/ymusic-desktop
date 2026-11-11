@@ -6,14 +6,15 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 use futures::future::BoxFuture;
-use gpui_kit::App;
+use gpui_kit::component::WindowExt;
+use gpui_kit::{App, Window};
 use serde_json::Value;
 use ym_common::log::Logger;
 use ym_download::spec::ResolvedVideo;
 use ym_download::streams::SpecResolver;
 use ym_download::{DownloadConfig, DownloadError, DownloadService, DownloadState};
 use ym_engine::CookieJar;
-use ym_i18n::{Str, t};
+use ym_i18n::{Str, t, tf};
 use ym_settings::SettingsStore;
 use ym_store::MediaStore;
 use ym_ytmedia::sabr::SabrHttp;
@@ -150,6 +151,36 @@ pub fn usable_download_folder(
         Some(folder) => futures::future::Either::Left(futures::future::ready(Some(folder))),
         None => futures::future::Either::Right(pick_download_folder(cx)),
     }
+}
+
+/// The Library's first folder, when it can hold downloads (a test write); blocking.
+pub fn location_offer(media: &MediaStore, log: &Logger) -> Result<Option<ym_store::Bucket>, ym_store::StoreError> {
+    let Some(root) = media.root_buckets()?.into_iter().next() else { return Ok(None) };
+    let probe = Path::new(&root.uri).join(".ymusic-write-test");
+    let writable = std::fs::write(&probe, b"").is_ok();
+    if writable && let Err(error) = std::fs::remove_file(&probe) {
+        log.warn("the download folder write test file could not be removed", Some(&error));
+    }
+    Ok(writable.then_some(root))
+}
+
+/// Offers `folder`, just added as the first Library folder, as the download location.
+pub fn offer_download_location(folder: ym_store::Bucket, window: &mut Window, cx: &mut App) {
+    let message = tf(Str::DownloadLocationPromptMessage, &[&folder.alias_name.clone().unwrap_or(folder.name.clone())]);
+    let path = PathBuf::from(&folder.uri);
+    window.open_alert_dialog(cx, move |alert, _, _| {
+        let path = path.clone();
+        alert
+            .title(t(Str::MenuDownloadLocation))
+            .description(message.clone())
+            .ok_text(t(Str::DownloadLocationPromptSetDefault))
+            .cancel_text(t(Str::DownloadLocationPromptNotNow))
+            .show_cancel(true)
+            .on_ok(move |_, _, cx| {
+                save_download_folder(&path, cx);
+                true
+            })
+    });
 }
 
 /// Video ids already saved: Library files tagged with their YouTube id, and finished downloads.

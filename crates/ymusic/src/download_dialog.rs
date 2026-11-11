@@ -5,12 +5,13 @@ use std::path::PathBuf;
 
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::checkbox::Checkbox;
+use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::component::{ActiveTheme, Disableable, Sizable, StyledExt, WindowExt, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use ym_download::options::DownloadOptions;
-use ym_download::{AudioQuality, DownloadError, DownloadFormat, DownloadRequest, DownloadService};
+use ym_download::{AudioQuality, DownloadError, DownloadFormat, DownloadRequest, DownloadService, names};
 use ym_i18n::{Str, t, tf};
 
 use crate::downloads::{DOWNLOAD_LOCATION_KEY, download_folder, offline_ids};
@@ -61,18 +62,44 @@ pub struct DownloadPicker {
     already_downloaded: bool,
     /// Also keep these picks as the Quick download preset; unticked on every open, by design.
     save_as_quick: bool,
+    /// The `audioTrack.id` to download; none = the default track (or a video without dubs).
+    audio_track: Option<String>,
+    file_name: Entity<InputState>,
+    /// The last edit dropped a character no file name may hold.
+    stripped: bool,
+    /// The next change is the stripped value written back, not an edit.
+    stripping: bool,
+    _name_changes: Subscription,
 }
 
 impl DownloadPicker {
     /// Opens the dialog for `target`.
     pub fn open(target: DownloadTarget, window: &mut Window, cx: &mut App) {
-        let picker = cx.new(|cx| DownloadPicker::new(target, cx));
+        let picker = cx.new(|cx| DownloadPicker::new(target, window, cx));
         window.open_dialog(cx, move |dialog, _, _| {
             dialog.title(t(Str::DownloadTitle)).width(px(560.)).child(picker.clone())
         });
     }
 
-    fn new(target: DownloadTarget, cx: &mut Context<Self>) -> Self {
+    fn new(target: DownloadTarget, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let stem = Some(names::from_title(&target.title)).filter(|stem| !stem.is_empty());
+        let stem = stem.unwrap_or_else(|| target.video_id.clone());
+        let file_name = cx.new(|cx| InputState::new(window, cx).default_value(stem));
+        let name_changes = cx.subscribe_in(&file_name, window, |picker: &mut Self, input, event, window, cx| {
+            if !matches!(event, InputEvent::Change) {
+                return;
+            }
+            let raw = input.read(cx).value().to_string();
+            if names::has_forbidden(&raw) {
+                let clean = names::strip_forbidden(&raw);
+                input.update(cx, |input, cx| input.set_value(clean, window, cx));
+                picker.stripped = true;
+                picker.stripping = true;
+            } else if !std::mem::take(&mut picker.stripping) {
+                picker.stripped = false;
+            }
+            cx.notify();
+        });
         let graph = cx.global::<AppGraph>();
         let service = graph.downloads.clone();
         let folder = download_folder(graph.settings.as_ref());
@@ -115,6 +142,11 @@ impl DownloadPicker {
             folder,
             already_downloaded: false,
             save_as_quick: false,
+            audio_track: None,
+            file_name,
+            stripped: false,
+            stripping: false,
+            _name_changes: name_changes,
         }
     }
 
@@ -132,6 +164,16 @@ impl DownloadPicker {
             .max()
             .or_else(|| options.video.last().map(|option| option.height))
             .unwrap_or(0);
+        self.audio_track = options
+            .audio_tracks
+            .iter()
+            .find(|track| track.is_default)
+            .or(options.audio_tracks.first())
+            .map(|track| track.id.clone());
+    }
+
+    fn finalized_name(&self, cx: &App) -> String {
+        names::finalize(&self.file_name.read(cx).value())
     }
 
     fn format(&self) -> DownloadFormat {
@@ -187,7 +229,11 @@ impl DownloadPicker {
         QuickPreset {
             format: self.format(),
             height: self.video.then_some(self.height),
-            audio_language: None,
+            audio_language: self
+                .audio_track
+                .as_deref()
+                .filter(|_| !options.audio_tracks.is_empty())
+                .map(|id| ym_download::selection::audio_track_language(id).to_owned()),
             caption_language: self
                 .caption
                 .as_ref()
@@ -216,8 +262,8 @@ impl DownloadPicker {
             thumbnail_url: target.thumbnail_url,
             format: self.format(),
             requested_height: self.video.then_some(self.height),
-            file_name: None,
-            audio_track_id: None,
+            file_name: Some(self.finalized_name(cx)).filter(|name| !name.is_empty()),
+            audio_track_id: self.audio_track.clone(),
             captions: Some(self.caption.iter().cloned().collect()),
             audio_language: None,
             caption_language: None,
@@ -415,6 +461,41 @@ impl Render for DownloadPicker {
             ));
         }
 
+        if !options.audio_tracks.is_empty() {
+            let current = self
+                .audio_track
+                .as_ref()
+                .and_then(|id| options.audio_tracks.iter().find(|track| track.id == *id))
+                .map_or_else(|| t(Str::DownloadDefaultTrack).to_owned(), |track| track.name.clone());
+            let (tracks, selected) = (options.audio_tracks.clone(), self.audio_track.clone());
+            let picker = cx.entity().downgrade();
+            let menu = Button::new("audio-track")
+                .small()
+                .label(current.clone())
+                .accessibility_label(format!("{}, {current}", t(Str::DownloadAudioLanguage)))
+                .dropdown_menu(move |mut menu, _, _| {
+                    menu = menu.scrollable(true).max_h(px(320.));
+                    for track in &tracks {
+                        let (target, id) = (picker.clone(), track.id.clone());
+                        menu = menu.item(
+                            PopupMenuItem::new(track.name.clone())
+                                .checked(selected.as_deref() == Some(track.id.as_str()))
+                                .on_click(move |_, _, cx| {
+                                    let id = id.clone();
+                                    target
+                                        .update(cx, |picker, cx| {
+                                            picker.audio_track = Some(id);
+                                            cx.notify();
+                                        })
+                                        .ok();
+                                }),
+                        );
+                    }
+                    menu
+                });
+            body = body.child(section(t(Str::DownloadAudioLanguage), menu, cx));
+        }
+
         if !options.captions.is_empty() {
             let current = self
                 .caption
@@ -457,6 +538,28 @@ impl Render for DownloadPicker {
             body = body.child(section(t(Str::DownloadCaptions), menu, cx));
         }
 
+        let name_empty = self.finalized_name(cx).is_empty();
+        let name_hint = if name_empty {
+            t(Str::DownloadNameEmpty).to_owned()
+        } else {
+            tf(Str::DownloadForbiddenHint, &[&names::FORBIDDEN_DISPLAY])
+        };
+        body = body.child(section(
+            t(Str::DownloadFileName),
+            v_flex()
+                .gap_1()
+                .child(Input::new(&self.file_name).small().suffix(
+                    div().text_sm().text_color(theme.muted_foreground).child(format!(".{}", self.format().extension())),
+                ))
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(if name_empty || self.stripped { theme.danger } else { theme.muted_foreground })
+                        .child(name_hint),
+                ),
+            cx,
+        ));
+
         let folder_label = self
             .folder
             .as_ref()
@@ -497,7 +600,7 @@ impl Render for DownloadPicker {
                 Button::new("download")
                     .primary()
                     .label(label)
-                    .disabled(self.folder.is_none())
+                    .disabled(self.folder.is_none() || name_empty)
                     .on_click(cx.listener(|picker, _, window, cx| picker.download(window, cx))),
             ),
         )

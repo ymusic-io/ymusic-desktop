@@ -135,6 +135,8 @@ pub struct LibraryView {
     song_focus: FocusList,
     song_sort: (SongKey, bool),
     group_sort: (GroupKey, bool),
+    /// The first Library folder, offered as the download location once it was added.
+    location_offer: Option<Bucket>,
 }
 
 impl EventEmitter<PlayLocal> for LibraryView {}
@@ -165,6 +167,7 @@ impl LibraryView {
             song_focus: FocusList::new(Some(scroll)),
             song_sort: (SongKey::Name, true),
             group_sort: (GroupKey::Name, true),
+            location_offer: None,
         };
         view.refresh(cx);
         view
@@ -434,8 +437,10 @@ impl LibraryView {
                 return;
             }
             let scan = cx.update(|cx| {
+                let log = cx.global::<AppGraph>().log.fork("download-location");
                 on_core(cx, async move {
                     tokio::task::spawn_blocking(move || {
+                        let first_folder = store.root_buckets()?.is_empty();
                         let cancel = AtomicBool::new(false);
                         let mut total = ym_store::ScanReport::default();
                         for root in &roots {
@@ -446,7 +451,8 @@ impl LibraryView {
                             total.removed += report.removed;
                             total.errors.extend(report.errors);
                         }
-                        Ok::<_, ym_store::StoreError>(total)
+                        let offer = if first_folder { crate::downloads::location_offer(&store, &log)? } else { None };
+                        Ok::<_, ym_store::StoreError>((total, offer))
                     })
                     .await
                 })
@@ -455,6 +461,12 @@ impl LibraryView {
             this.update(cx, |view, cx| {
                 view.scanning = false;
                 let log = cx.global::<AppGraph>().log.fork("library");
+                if let Some(Ok(Ok((_, Some(offer))))) = &result
+                    && crate::downloads::download_folder(cx.global::<AppGraph>().settings.as_ref()).is_none()
+                {
+                    view.location_offer = Some(offer.clone());
+                }
+                let result = result.map(|joined| joined.map(|scanned| scanned.map(|(report, _)| report)));
                 view.summary = Some(match result {
                     Some(Ok(Ok(report))) => {
                         for error in &report.errors {
@@ -913,6 +925,9 @@ impl LibraryView {
 
 impl Render for LibraryView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if let Some(offer) = self.location_offer.take() {
+            window.defer(cx, move |window, cx| crate::downloads::offer_download_location(offer, window, cx));
+        }
         let theme = cx.theme().clone();
         let width = crate::feed::feed_width(window);
         let grid = width >= GRID_MIN_WIDTH;
