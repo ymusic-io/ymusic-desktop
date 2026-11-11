@@ -26,6 +26,19 @@ pub struct DownloadTarget {
     pub thumbnail_url: Option<String>,
 }
 
+impl DownloadTarget {
+    pub fn from_feed(item: &ym_engine::yt::YtFeedItem) -> Self {
+        Self {
+            video_id: item.id.clone(),
+            title: item.title.clone(),
+            artist: item.channel_title.clone().or_else(|| item.subtitle_line1.clone()),
+            thumbnail_url: item.thumbs.last().map(|thumb| {
+                if thumb.url.starts_with("//") { format!("https:{}", thumb.url) } else { thumb.url.clone() }
+            }),
+        }
+    }
+}
+
 enum Phase {
     Loading,
     Ready(Box<DownloadOptions>),
@@ -183,7 +196,7 @@ fn probe_error(error: &DownloadError, cx: &App) -> String {
     }
 }
 
-fn format_name(format: DownloadFormat) -> &'static str {
+pub fn format_name(format: DownloadFormat) -> &'static str {
     match format {
         DownloadFormat::Mp3 => "MP3",
         DownloadFormat::M4a => "M4A",
@@ -201,7 +214,7 @@ fn format_detail(format: DownloadFormat) -> &'static str {
     })
 }
 
-fn quality_name(quality: AudioQuality) -> &'static str {
+pub fn quality_name(quality: AudioQuality) -> &'static str {
     t(match quality {
         AudioQuality::Save => Str::DownloadQualitySave,
         AudioQuality::Medium => Str::DownloadQualityMedium,

@@ -1,20 +1,24 @@
 //! The download service over the app's YouTube session, ffmpeg and stores.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 use futures::future::BoxFuture;
+use gpui_kit::App;
 use serde_json::Value;
 use ym_common::log::Logger;
 use ym_download::spec::ResolvedVideo;
 use ym_download::streams::SpecResolver;
-use ym_download::{DownloadConfig, DownloadError, DownloadService};
+use ym_download::{DownloadConfig, DownloadError, DownloadService, DownloadState};
 use ym_engine::CookieJar;
+use ym_i18n::{Str, t};
 use ym_settings::SettingsStore;
 use ym_store::MediaStore;
 use ym_ytmedia::sabr::SabrHttp;
 
+use crate::graph::{AppGraph, on_core};
 use crate::youtube_session::YoutubeSessions;
 
 /// Where finished downloads go: a `file://` folder URI, shared with the JVM app's key.
@@ -113,6 +117,61 @@ pub fn open(inputs: DownloadInputs) -> Result<DownloadService, String> {
 pub fn download_folder(settings: &dyn SettingsStore) -> Option<PathBuf> {
     let uri = settings.get_raw(DOWNLOAD_LOCATION_KEY).ok().flatten().filter(|uri| !uri.is_empty())?;
     url::Url::parse(&uri).ok()?.to_file_path().ok()
+}
+
+/// Saves `folder` as the download location, off the UI thread.
+pub fn save_download_folder(folder: &Path, cx: &App) {
+    let Ok(uri) = url::Url::from_directory_path(folder) else { return };
+    let graph = cx.global::<AppGraph>();
+    let (settings, log, uri) = (graph.settings.clone(), graph.log.fork("downloads"), uri.to_string());
+    graph.tokio.spawn_blocking(move || {
+        if let Err(error) = settings.put_raw(DOWNLOAD_LOCATION_KEY, uri) {
+            log.warn(&format!("the download folder could not be saved: {error}"), None);
+        }
+    });
+}
+
+/// The OS folder picker; a pick becomes the download location. None when canceled.
+pub fn pick_download_folder(cx: &mut App) -> impl Future<Output = Option<PathBuf>> + use<> {
+    let pick = rfd::AsyncFileDialog::new().set_title(t(Str::FolderPickerTitle)).pick_folder();
+    let saver = cx.to_async();
+    async move {
+        let folder = pick.await?.path().to_path_buf();
+        saver.update(|cx| save_download_folder(&folder, cx));
+        Some(folder)
+    }
+}
+
+/// The download folder while it still exists, else the picker first (a cancel gives none).
+pub fn usable_download_folder(
+    cx: &mut App,
+) -> futures::future::Either<futures::future::Ready<Option<PathBuf>>, impl Future<Output = Option<PathBuf>> + use<>> {
+    match download_folder(cx.global::<AppGraph>().settings.as_ref()).filter(|folder| folder.is_dir()) {
+        Some(folder) => futures::future::Either::Left(futures::future::ready(Some(folder))),
+        None => futures::future::Either::Right(pick_download_folder(cx)),
+    }
+}
+
+/// Video ids already saved: Library files tagged with their YouTube id, and finished downloads.
+pub fn offline_ids(cx: &App) -> impl Future<Output = HashSet<String>> + use<> {
+    let graph = cx.global::<AppGraph>();
+    let (media, service, log) = (graph.media.clone(), graph.downloads.clone(), graph.log.fork("available-offline"));
+    let load = on_core(cx, async move {
+        let mut ids = HashSet::new();
+        match tokio::task::spawn_blocking(move || media.youtube_video_ids()).await {
+            Ok(Ok(library)) => ids.extend(library),
+            Ok(Err(error)) => log.warn("library video ids could not be read", Some(&error)),
+            Err(error) => log.warn("library video ids could not be read", Some(&error)),
+        }
+        match service.snapshot().await {
+            Ok(tasks) => ids.extend(
+                tasks.into_iter().filter(|task| task.state == DownloadState::Completed).map(|task| task.video_id),
+            ),
+            Err(error) => log.warn("finished downloads could not be read", Some(&error)),
+        }
+        ids
+    });
+    async move { load.await.unwrap_or_default() }
 }
 
 /// A file in a Library folder shows up there: that folder's next scan picks it up, so run it now.

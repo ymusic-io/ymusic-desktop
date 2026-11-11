@@ -640,6 +640,25 @@ impl Shell {
                 view.update(cx, |library, cx| library.select_tab_index(index, cx));
             }
             Some(("signin-paste", path)) => self.dev_sign_in_paste(path.into(), cx),
+            Some(("playlistdialog", spec)) => {
+                let (dialog, link) = spec.split_once(':').unwrap_or(("download", spec));
+                if let Some(source) = FeedSource::from_link(link) {
+                    let view = self.feed_view(source, None, cx);
+                    self.push_layer(Layer::Feed { view: view.clone(), title: t(Str::A11yKindPlaylist).into() }, cx);
+                    let (local, executor) = (dialog == "local", cx.background_executor().clone());
+                    cx.spawn_in(window, async move |_, cx| {
+                        for _ in 0..60 {
+                            executor.timer(Duration::from_millis(500)).await;
+                            let opened =
+                                view.update_in(cx, |view, window, cx| view.open_playlist_dialog(local, window, cx));
+                            if opened.unwrap_or(true) {
+                                return;
+                            }
+                        }
+                    })
+                    .detach();
+                }
+            }
             Some(("downloaddialog", video_id)) => {
                 self.pending_download = Some(DownloadTarget {
                     video_id: video_id.to_owned(),
@@ -763,13 +782,12 @@ impl Shell {
             let (items, index) = (event.items.clone(), event.index);
             shell.playback.update(cx, |playback, cx| playback.play_queue(items, index, cx));
         });
-        let queue =
-            cx.subscribe(&view, |shell, _, event: &QueueLocal, cx| {
-                let (item, next) = (event.item.clone(), event.next);
-                shell.playback.update(cx, |playback, cx| {
-                    if next { playback.queue_next(item, cx) } else { playback.queue_last(item, cx) }
-                });
+        let queue = cx.subscribe(&view, |shell, _, event: &QueueLocal, cx| {
+            let (item, next) = (event.item.clone(), event.next);
+            shell.playback.update(cx, |playback, cx| {
+                if next { playback.queue_next(item, cx) } else { playback.queue_last(item, cx) }
             });
+        });
         self._subscriptions.extend([play, queue]);
         self.library = Some(view.clone());
         view

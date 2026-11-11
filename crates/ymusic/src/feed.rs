@@ -18,6 +18,7 @@ use ym_i18n::{Str, t, tf};
 
 use crate::a11y::{DragRow, FocusList, focusable};
 use crate::graph::{AppGraph, on_core};
+use crate::playlist_download::PlaylistDownload;
 use crate::spinner::Spinner;
 use crate::tab_row::tab_row;
 
@@ -60,7 +61,7 @@ impl FeedSource {
         }
     }
 
-    async fn load(
+    pub(crate) async fn load(
         self,
         engine: Arc<DynamicEngine>,
         history: Arc<ym_history::PlayHistory>,
@@ -360,6 +361,19 @@ impl FeedView {
         .detach();
     }
 
+    /// The playlist download page (or, `local`, the local playlist from downloads); false while
+    /// the page has no videos yet.
+    pub fn open_playlist_dialog(&mut self, local: bool, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.videos().is_empty() {
+            return false;
+        }
+        let title = self.page.page_header.as_ref().and_then(|header| header.title.clone());
+        let title = title.or_else(|| self.title.as_ref().map(|title| title.to_string())).unwrap_or_default();
+        let _ = local;
+        PlaylistDownload::open(self.source.clone(), title, &self.page, window, cx);
+        true
+    }
+
     pub fn set_top(&mut self, top: Option<AnyView>) {
         self.top = top;
     }
@@ -607,6 +621,17 @@ impl FeedView {
                         window.push_notification(t(Str::LinkCopied), cx);
                     }
                 }),
+        );
+        actions = actions.child(
+            Button::new("playlist-download")
+                .ghost()
+                .icon(Lucide::Download)
+                .disabled(!has_videos)
+                .accessibility_label(t(Str::CdDownload))
+                .tooltip(t(Str::CdDownload))
+                .on_click(cx.listener(|view, _, window, cx| {
+                    view.open_playlist_dialog(false, window, cx);
+                })),
         );
         actions = actions.child(div().flex_1()).child(
             focusable(div().id("playlist-shuffle").role(Role::Button).aria_label(t(Str::ShuffleAll)), cx)
