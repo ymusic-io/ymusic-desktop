@@ -2,6 +2,10 @@
 //! is the one event of a failed job (tagged with its trail and error code, carrying the newest
 //! unsent app-log lines), and panics are reported by the SDK.
 
+mod feedback;
+
+pub use feedback::{FeedbackError, FeedbackReport, send_feedback};
+
 use std::error::Error;
 use std::sync::Arc;
 

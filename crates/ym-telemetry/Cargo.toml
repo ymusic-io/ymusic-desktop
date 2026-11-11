@@ -8,6 +8,8 @@ publish.workspace = true
 [dependencies]
 ym-common = { path = "../ym-common" }
 ym-logstore = { path = "../ym-logstore" }
+serde_json.workspace = true
+thiserror.workspace = true
 sentry = { version = "0.49", default-features = false, features = ["backtrace", "contexts", "panic", "reqwest", "rustls"] }
 
 [lints]

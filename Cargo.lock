@@ -9753,6 +9753,8 @@ name = "ym-telemetry"
 version = "0.1.0"
 dependencies = [
  "sentry",
+ "serde_json",
+ "thiserror 2.0.21",
  "ym-common",
  "ym-logstore",
 ]
