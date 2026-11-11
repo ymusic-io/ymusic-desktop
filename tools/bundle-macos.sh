@@ -2,26 +2,40 @@
 # Builds the release ymusic and assembles YMusic.app around it: Info.plist (ymusic:// links, media
 # files under Open With at rank Alternate), the icon, the libav dylibs in Contents/Frameworks and the
 # packed ffmpeg next to the executable (where downloads look for it), relinked to load only from
-# inside the bundle, then signed.
+# inside the bundle, then signed. --dmg also packs it into the disk image the JVM app's updater
+# installs (MacDmgInstaller: the one .app at the image root, copied out and swapped in).
 #
-# usage: tools/bundle-macos.sh [--no-build] [--out <dir>]
-# env:   YMUSIC_V4_DIR      YMusicV4 checkout (default ../YMusicV4): icon sources
+# usage: tools/bundle-macos.sh [--no-build] [--debug] [--dmg] [--release] [--out <dir>]
+#   --debug    bundle target/debug/ymusic (local update tests; dev hooks stay on)
+#   --release  the shipped identity: the JVM app's bundle id (its Keychain item and updater carry
+#              over), a DMG, a real signing identity, notarized when the Apple ID inputs are set
+# env:   YMUSIC_V4_DIR      YMusicV4 checkout (default ../YMusicV4): icon sources, the version line
 #        FFMPEG_ROOT        ffmpeg build (default <YMusicV4>/../ffmpeg-build/out/macos-<arch>)
-#        CODESIGN_IDENTITY  default "-" (ad-hoc); a real identity also gets the hardened runtime
+#        CODESIGN_IDENTITY  default "-" (ad-hoc); a real identity also gets the hardened runtime.
+#                           The JVM updater swaps in only a bundle signed by the installed app's team.
+#        YMUSIC_VERSION_NAME, YMUSIC_VERSION_CODE  as for the build (crates/ymusic/build.rs)
+#        YMUSIC_MAC_APPLE_ID, YMUSIC_MAC_APPLE_PASSWORD, YMUSIC_MAC_TEAM_ID  notarization (--release)
 #        CARGO_TARGET_DIR   default <workspace>/target
 set -euo pipefail
 
-BUNDLE_ID=io.ymusic.desktop.rust
+DEV_BUNDLE_ID=io.ymusic.desktop.rust
+RELEASE_BUNDLE_ID=io.ymusic.desktop
 APP_NAME=YMusic
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 build=1
+profile=release
+dmg=0
+release=0
 out=""
 while [[ $# -gt 0 ]]; do
     case $1 in
         --no-build) build=0 ;;
+        --debug) profile=debug ;;
+        --dmg) dmg=1 ;;
+        --release) release=1; dmg=1 ;;
         --out) out=$2; shift ;;
-        *) echo "usage: $0 [--no-build] [--out <dir>]" >&2; exit 2 ;;
+        *) echo "usage: $0 [--no-build] [--debug] [--dmg] [--release] [--out <dir>]" >&2; exit 2 ;;
     esac
     shift
 done
@@ -32,17 +46,26 @@ ffmpeg_root=${FFMPEG_ROOT:-$(cd "$v4/.." && pwd)/ffmpeg-build/out/macos-$arch}
 target_dir=${CARGO_TARGET_DIR:-$root/target}
 out=${out:-$target_dir/bundle}
 identity=${CODESIGN_IDENTITY:--}
+bundle_id=$DEV_BUNDLE_ID
+[[ $release == 1 ]] && bundle_id=$RELEASE_BUNDLE_ID
 
 die() { echo "bundle-macos: $*" >&2; exit 1; }
 [[ -f $ffmpeg_root/pack/ffmpeg ]] || die "no packed ffmpeg at $ffmpeg_root/pack/ffmpeg (set FFMPEG_ROOT)"
 [[ -f $v4/desktopApp/ymusic.icns ]] || die "no icon at $v4/desktopApp/ymusic.icns (set YMUSIC_V4_DIR)"
+[[ $release == 1 && $identity == - ]] && die "--release needs CODESIGN_IDENTITY (the JVM app's Developer ID)"
+[[ $release == 1 && $profile == debug ]] && die "--release ships the release profile, not --debug"
 
 if [[ $build == 1 ]]; then
-    (cd "$root" && YMUSIC_V4_DIR=$v4 FFMPEG_ROOT=$ffmpeg_root cargo build --release -p ymusic)
+    cargo_profile=()
+    [[ $profile == release ]] && cargo_profile=(--release)
+    (cd "$root" && YMUSIC_V4_DIR=$v4 FFMPEG_ROOT=$ffmpeg_root cargo build ${cargo_profile[@]+"${cargo_profile[@]}"} -p ymusic)
 fi
-binary=$target_dir/release/ymusic
-[[ -f $binary ]] || die "no release binary at $binary"
-version=$(cd "$root" && cargo pkgid -p ymusic | sed 's/.*[#@]//')
+binary=$target_dir/$profile/ymusic
+[[ -f $binary ]] || die "no $profile binary at $binary"
+# The version line the binary reports (crates/ymusic/build.rs reads the same inputs).
+version=${YMUSIC_VERSION_NAME:-$(sed -n 's/^ymusic\.versionName=//p' "$v4/gradle.properties" | tr -d '[:space:]')}
+version_code=${YMUSIC_VERSION_CODE:-$(sed -n 's/^val desktopVersionCode = \([0-9]*\).*/\1/p' "$v4/desktopApp/build.gradle.kts")}
+[[ -n $version && -n $version_code ]] || die "no version in $v4 (gradle.properties / desktopApp/build.gradle.kts)"
 
 app=$out/$APP_NAME.app
 contents=$app/Contents
@@ -109,7 +132,7 @@ cat > "$contents/Info.plist" <<PLIST
     <key>CFBundleExecutable</key>
     <string>ymusic</string>
     <key>CFBundleIdentifier</key>
-    <string>$BUNDLE_ID</string>
+    <string>$bundle_id</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
@@ -140,7 +163,7 @@ cat > "$contents/Info.plist" <<PLIST
     <array>
         <dict>
             <key>CFBundleURLName</key>
-            <string>$BUNDLE_ID</string>
+            <string>$bundle_id</string>
             <key>CFBundleURLSchemes</key>
             <array><string>ymusic</string></array>
         </dict>
@@ -196,8 +219,33 @@ fi
 for dylib in "$frameworks"/*.dylib; do
     codesign "${sign_flags[@]}" "$dylib"
 done
-codesign "${sign_flags[@]}" --identifier "$BUNDLE_ID.ffmpeg" "$contents/MacOS/ffmpeg"
+codesign "${sign_flags[@]}" --identifier "$bundle_id.ffmpeg" "$contents/MacOS/ffmpeg"
 codesign "${sign_flags[@]}" "$app"
 codesign --verify --deep --strict "$app"
 
-echo "$app ($version, macOS $min_os+): $(du -sh "$app" | cut -f1)"
+echo "$app ($version / $version_code, $bundle_id, macOS $min_os+): $(du -sh "$app" | cut -f1)"
+
+[[ $dmg == 1 ]] || exit 0
+# The release asset name (YMusicV4 release.yml): macos-arm64 / macos-intel.
+dmg_arch=intel
+[[ $arch == arm64 ]] && dmg_arch=arm64
+dmg_file=$out/$APP_NAME-$version-macos-$dmg_arch.dmg
+staging=$(mktemp -d "${TMPDIR:-/tmp}/ymusic-dmg.XXXXXX")
+trap 'rm -rf "$staging"' EXIT
+# One .app at the image root: the JVM updater copies out the first one it finds.
+ditto "$app" "$staging/$APP_NAME.app"
+ln -s /Applications "$staging/Applications"
+rm -f "$dmg_file"
+hdiutil create -quiet -volname "$APP_NAME" -srcfolder "$staging" -fs HFS+ -format UDZO -ov "$dmg_file"
+if [[ $identity != - ]]; then
+    codesign --force --sign "$identity" --timestamp "$dmg_file"
+fi
+if [[ $release == 1 && -n ${YMUSIC_MAC_APPLE_ID:-} && -n ${YMUSIC_MAC_APPLE_PASSWORD:-} && -n ${YMUSIC_MAC_TEAM_ID:-} ]]; then
+    xcrun notarytool submit "$dmg_file" --apple-id "$YMUSIC_MAC_APPLE_ID" --password "$YMUSIC_MAC_APPLE_PASSWORD" \
+        --team-id "$YMUSIC_MAC_TEAM_ID" --wait
+    xcrun stapler staple "$dmg_file"
+    xcrun stapler validate "$dmg_file"
+elif [[ $release == 1 ]]; then
+    echo "bundle-macos: not notarized (no YMUSIC_MAC_APPLE_ID / _PASSWORD / _TEAM_ID)" >&2
+fi
+echo "$dmg_file: $(du -sh "$dmg_file" | cut -f1)"
