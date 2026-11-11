@@ -27,6 +27,7 @@ pub const THEME_KEY: &str = "app.theme";
 pub const LANGUAGE_KEY: &str = "app.uiLanguage";
 const CRASH_REPORTS_KEY: &str = "telemetry.crashReports";
 const STATS_KEY: &str = "telemetry.stats";
+const AUTO_UPDATE_KEY: &str = "update.autoDownload";
 pub const SHOW_FPS_KEY: &str = "debug.showFps";
 const SOURCE_CODE_URL: &str = "https://github.com/ymusic-io/YMusicV4";
 const TERMS_URL: &str = "https://github.com/ymusic-io/YMusicV4/blob/master/TERMS.md";
@@ -437,6 +438,7 @@ impl Render for SettingsView {
         let changelog_url = link(graph, "changelogUrl", CHANGELOG_URL);
         let source_url = link(graph, "sourceCodeUrl", SOURCE_CODE_URL);
         let terms_url = link(graph, "termsUrl", TERMS_URL);
+        let can_update = graph.updates.is_some();
 
         let theme_label = t(match theme_choice.as_str() {
             "light" => Str::SettingsThemeLight,
@@ -618,8 +620,18 @@ impl Render for SettingsView {
             ),
             self.toggle("stats", STATS_KEY, t(Str::SettingsStats), t(Str::SettingsStatsHint), cx),
         ];
-        let about = vec![
-            row(t(Str::SettingsVersions), Some(versions), div(), cx),
+        let mut about = vec![row(t(Str::SettingsVersions), Some(versions), div(), cx)];
+        // Installing still waits for a tap.
+        if can_update {
+            about.push(self.toggle(
+                "auto-update",
+                AUTO_UPDATE_KEY,
+                t(Str::SettingsAutoUpdate),
+                t(Str::SettingsAutoUpdateHint),
+                cx,
+            ));
+        }
+        about.extend([
             link_row("changelog", t(Str::SettingsChangelog), changelog_url, cx),
             link_row("source", t(Str::SettingsSourceCode), source_url, cx),
             link_row("terms", t(Str::SettingsTerms), terms_url, cx),
@@ -634,7 +646,7 @@ impl Render for SettingsView {
                     .on_click(|_, window, cx| Licenses::open(window, cx)),
                 cx,
             ),
-        ];
+        ]);
         let debug = vec![self.toggle_with(
             "show-fps",
             SHOW_FPS_KEY,

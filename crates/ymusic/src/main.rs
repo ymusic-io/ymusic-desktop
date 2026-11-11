@@ -1,6 +1,7 @@
 mod a11y;
 mod accent;
 mod account_view;
+mod app_update;
 mod assets;
 mod audio_effects;
 mod caption_style;

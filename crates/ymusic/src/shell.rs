@@ -442,6 +442,7 @@ impl Shell {
         .detach();
         let tray_state = cx.observe(&playback, |shell, _, cx| shell.update_tray(cx));
         Self::listen_incoming(window, cx);
+        crate::app_update::start(window, cx);
         crate::video_layer::forward_accessibility_focus(window);
         window.on_next_frame(|window, _| crate::video_layer::sync_accessibility_focus(window));
         // A window minimized to the tray can come back from the dock too.
@@ -827,6 +828,7 @@ impl Shell {
                 });
             }
             _ if route == "shortcuts" => window.defer(cx, crate::shortcuts_help::ShortcutsHelp::open),
+            _ if route == "checkupdate" => window.defer(cx, crate::app_update::CheckUpdateDialog::open),
             _ if route == "feedback" => self.section = Section::Feedback,
             Some(("feedback", spec)) => {
                 self.section = Section::Feedback;
@@ -1733,6 +1735,10 @@ impl Shell {
                 .child("ymusic.io")
                 .on_click(|_, _, cx| cx.open_url(WEBSITE))
         });
+        let check_update = expanded
+            .then(|| crate::app_update::check_link("rail-check-update", cx))
+            .flatten()
+            .map(|link| div().ml(px(RAIL_ICON_START - 4.)).child(link));
         v_flex()
             .id("rail")
             .role(Role::Navigation)
@@ -1751,7 +1757,8 @@ impl Shell {
                     .when(!expanded, |list| list.px_2())
                     .py_1()
                     .child(self.section_groups(expanded, RAIL_ICON_START, cx))
-                    .children(website),
+                    .children(website)
+                    .children(check_update),
             )
             .into_any_element()
     }
@@ -1767,7 +1774,15 @@ impl Shell {
             .border_r_1()
             .border_color(theme.border)
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .child(div().pl(px(18.)).pr(px(18.)).pt_4().pb(px(13.)).child(self.brand(46., cx)))
+            .child(
+                div()
+                    .pl(px(18.))
+                    .pr(px(18.))
+                    .pt_4()
+                    .pb(px(13.))
+                    .child(self.brand(46., cx))
+                    .children(crate::app_update::check_link("drawer-check-update", cx)),
+            )
             .child(div().h(px(1.)).w_full().bg(theme.border))
             .child(div().id("drawer-scroll").flex_1().overflow_y_scroll().py_2().child(self.section_groups(
                 true,
@@ -1956,6 +1971,7 @@ impl Render for Shell {
             });
             self._subscriptions.push(navigate);
         }
+        crate::app_update::sync_prompt(window, cx);
         let viewport = window.viewport_size();
         let (width, height) = (f32::from(viewport.width), f32::from(viewport.height));
         let rail_mode = width >= 750. && height >= 480.;

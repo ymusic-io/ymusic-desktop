@@ -35,6 +35,7 @@ ym-telemetry = { path = "../ym-telemetry" }
 ym-download = { path = "../ym-download" }
 ym-ytmedia = { path = "../ym-ytmedia" }
 ym-history = { path = "../ym-history" }
+ym-update = { path = "../ym-update" }
 qrcode = { version = "0.14", default-features = false }
 rand = "0.9"
 uuid = { version = "1", features = ["v4"] }

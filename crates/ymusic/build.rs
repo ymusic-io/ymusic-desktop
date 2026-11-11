@@ -48,7 +48,13 @@ fn main() {
     }
     // Private release inputs; empty leaves the app on its embedded bundles and defaults. The
     // environment wins over the gitignored secret.properties at the workspace root.
-    for variable in ["YMUSIC_REMOTE_CONFIG_URL", "YMUSIC_BUNDLE_PUBLIC_KEY", "YMUSIC_API_KEY", "YMUSIC_SENTRY_DSN"] {
+    for variable in [
+        "YMUSIC_REMOTE_CONFIG_URL",
+        "YMUSIC_BUNDLE_PUBLIC_KEY",
+        "YMUSIC_UPDATE_PUBLIC_KEY",
+        "YMUSIC_API_KEY",
+        "YMUSIC_SENTRY_DSN",
+    ] {
         println!("cargo:rerun-if-env-changed={variable}");
     }
     let secrets = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap()).join("../../secret.properties");
@@ -57,6 +63,7 @@ fn main() {
     for (key, variable) in [
         ("remote.config.url", "YMUSIC_REMOTE_CONFIG_URL"),
         ("bundle.signing.public.key", "YMUSIC_BUNDLE_PUBLIC_KEY"),
+        ("update.public.key", "YMUSIC_UPDATE_PUBLIC_KEY"),
         ("api.key", "YMUSIC_API_KEY"),
         ("sentry.dsn", "YMUSIC_SENTRY_DSN"),
     ] {

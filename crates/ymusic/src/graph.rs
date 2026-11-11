@@ -56,6 +56,8 @@ pub struct AppGraph {
     pub downloads: DownloadService,
     pub history: Arc<ym_history::PlayHistory>,
     pub sponsor_block: Arc<ym_history::sponsor::SponsorBlockStore>,
+    /// The self-updater; `None` in a build without the update key.
+    pub updates: Option<Arc<ym_update::UpdateService>>,
 }
 
 impl Global for AppGraph {}
@@ -98,12 +100,18 @@ impl AppGraph {
             .map_err(|error| boot_error("R90010", "media store")(error.to_string()))?
             .map_err(|error| boot_error("R90010", "media store")(error.to_string()))?;
 
-        let identity = option_env!("YMUSIC_REMOTE_CONFIG_URL").map(|base_url| ApiIdentity {
-            base_url: base_url.to_owned(),
+        // Debug: `YMUSIC_DEV_REMOTE_CONFIG_URL` points the config service (and the update feed) at a
+        // test server.
+        let base_url = cfg!(debug_assertions)
+            .then(|| std::env::var("YMUSIC_DEV_REMOTE_CONFIG_URL").ok())
+            .flatten()
+            .or_else(|| option_env!("YMUSIC_REMOTE_CONFIG_URL").map(str::to_owned));
+        let identity = base_url.map(|base_url| ApiIdentity {
+            base_url,
             api_key: option_env!("YMUSIC_API_KEY").map(str::to_owned),
-            os: std::env::consts::OS.to_owned(),
+            os: ym_update::os_key().to_owned(),
             os_version: String::new(),
-            arch: if cfg!(target_arch = "aarch64") { "arm64".into() } else { "x64".into() },
+            arch: ym_update::arch_key().to_owned(),
             app_version_code: APP_VERSION,
             app_version_name: APP_VERSION_NAME.to_owned(),
             device_id,
@@ -194,6 +202,21 @@ impl AppGraph {
                 .map_err(|error| boot_error("R90018", "sponsorblock store")(error.to_string()))?,
         );
 
+        let updates = ym_update::UpdateService::start(
+            ym_update::UpdateConfig {
+                client: http.following.clone(),
+                public_key: option_env!("YMUSIC_UPDATE_PUBLIC_KEY").unwrap_or_default().to_owned(),
+                current_version_code: APP_VERSION,
+                platform: ym_update::platform_key(),
+                download_dir: data_dir.join("update"),
+                installer: ym_update::installer_for_current(crate::app_update::relaunch_env()),
+                prefs: crate::app_update::prefs(settings.clone(), log.fork("update")),
+                log: log.clone(),
+            },
+            remote.subscribe(),
+            tokio.clone(),
+        );
+
         let graph = Self {
             engines,
             tokio,
@@ -212,6 +235,7 @@ impl AppGraph {
             downloads,
             history,
             sponsor_block,
+            updates,
         };
         graph.follow_published_bundles(engine_source);
         Ok(graph)
