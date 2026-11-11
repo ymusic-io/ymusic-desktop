@@ -2,6 +2,7 @@
 //! field or an open dialog gets keys first.
 
 use gpui_kit::{App, KeyBinding, actions};
+use ym_i18n::Str;
 
 pub const CONTEXT: &str = "Shell";
 
@@ -26,6 +27,7 @@ actions!(
         SelectTab4,
         SelectTab5,
         SelectTab6,
+        ShowShortcuts,
         /// Open the sign-in screen (dispatched by the sign-in buttons, no key).
         OpenSignIn,
     ]
@@ -45,6 +47,40 @@ macro_rules! secondary {
     };
 }
 
+/// One row of the shortcuts help: alternative keystroke sequences (space-separated keystrokes),
+/// or with `range` the first and last of a run, and what they do.
+pub struct HelpRow {
+    pub keys: &'static [&'static str],
+    pub range: bool,
+    pub label: Str,
+}
+
+const fn row(keys: &'static [&'static str], label: Str) -> HelpRow {
+    HelpRow { keys, range: false, label }
+}
+
+/// The bindings below, as the shortcuts help lists them.
+pub const HELP: &[HelpRow] = &[
+    row(&["f8"], Str::ShortcutsPlayPause),
+    row(&[secondary!("left")], Str::CdPrevious),
+    row(&[secondary!("right")], Str::CdNext),
+    row(&[secondary!("shift-left"), "f7"], Str::CdRewind10),
+    row(&[secondary!("shift-right"), "f9"], Str::CdForward10),
+    row(&[secondary!("up")], Str::ShortcutsVolumeUp),
+    row(&[secondary!("down")], Str::ShortcutsVolumeDown),
+    #[cfg(target_os = "macos")]
+    row(&["f11", "ctrl-cmd-f"], Str::CdFullscreen),
+    #[cfg(not(target_os = "macos"))]
+    row(&["f11"], Str::CdFullscreen),
+    row(&[secondary!("n")], Str::ShortcutsNowPlaying),
+    row(&[secondary!("m")], Str::ShortcutsNavMenu),
+    row(&[secondary!("f")], Str::CdSearch),
+    HelpRow { keys: &[secondary!("1"), secondary!("6")], range: true, label: Str::ShortcutsSwitchTabs },
+    row(&["escape"], Str::ShortcutsEscape),
+    row(&["escape escape"], Str::CdBack),
+    row(&["f1"], Str::ShortcutsHelp),
+];
+
 pub fn bind(cx: &mut App) {
     let context = Some(CONTEXT);
     cx.bind_keys([
@@ -52,6 +88,7 @@ pub fn bind(cx: &mut App) {
         KeyBinding::new("f7", SeekBackward, context),
         KeyBinding::new("f9", SeekForward, context),
         KeyBinding::new("f11", ToggleFullscreen, context),
+        KeyBinding::new("f1", ShowShortcuts, context),
         // macOS's standard full screen.
         #[cfg(target_os = "macos")]
         KeyBinding::new("ctrl-cmd-f", ToggleFullscreen, context),

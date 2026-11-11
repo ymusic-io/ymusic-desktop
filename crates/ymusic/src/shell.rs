@@ -674,6 +674,7 @@ impl Shell {
             _ if route == "playagain" => self.section = Section::PlayAgain,
             _ if route == "downloads" => self.section = Section::Downloads,
             _ if route == "settings" => self.section = Section::Settings,
+            _ if route == "shortcuts" => window.defer(cx, crate::shortcuts_help::ShortcutsHelp::open),
             _ if route == "feedback" => self.section = Section::Feedback,
             _ if route == "sound" => self.pending_sound = true,
             _ if route == "sleeptimer" => {
@@ -1666,6 +1667,9 @@ impl Shell {
             .on_action(cx.listener(|_, _: &ToggleFullscreen, window, _| window.toggle_fullscreen()))
             .on_action(cx.listener(|shell, _: &Escape, window, cx| shell.escape(window, cx)))
             .on_action(cx.listener(|shell, _: &OpenSignIn, window, cx| shell.open_sign_in(window, cx)))
+            .on_action(
+                cx.listener(|_, _: &ShowShortcuts, window, cx| crate::shortcuts_help::ShortcutsHelp::open(window, cx)),
+            )
             .on_action(cx.listener(|shell, _: &SelectTab1, _, cx| shell.select_tab(0, cx)))
             .on_action(cx.listener(|shell, _: &SelectTab2, _, cx| shell.select_tab(1, cx)))
             .on_action(cx.listener(|shell, _: &SelectTab3, _, cx| shell.select_tab(2, cx)))

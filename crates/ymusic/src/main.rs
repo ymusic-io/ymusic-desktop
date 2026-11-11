@@ -25,6 +25,7 @@ mod search_view;
 mod settings_view;
 mod shell;
 mod shortcuts;
+mod shortcuts_help;
 mod signin;
 mod signin_dialog;
 mod sleep_timer;
