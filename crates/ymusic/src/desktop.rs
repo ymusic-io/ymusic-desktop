@@ -824,20 +824,32 @@ impl Tray {
 }
 
 /// GNOME on Wayland leaves decorations to the app: a client-decorated window draws its own title
-/// bar, border, shadow and resize edges.
+/// bar, border and resize edges. No drop shadow: its blur does not fade out on every GPU (a hard
+/// dark band around the window on the NVIDIA box), and the margin it needs is dead space.
 #[cfg(target_os = "linux")]
 pub fn frame(content: AnyElement, window: &mut Window, cx: &mut App) -> AnyElement {
     use gpui_kit::component::{TitleBar, v_flex, window_border};
     if !matches!(window.window_decorations(), Decorations::Client { .. }) {
         return content;
     }
-    let title = div().flex_1().text_sm().font_weight(FontWeight::SEMIBOLD).child(t(Str::AppName));
-    let content = v_flex()
-        .size_full()
-        .bg(gpui_kit::component::ActiveTheme::theme(cx).background)
-        .child(TitleBar::new().on_close_window(|_, window, cx| close_from_title_bar(window, cx)).child(title))
-        .child(div().flex_1().min_h_0().child(content));
-    window_border().child(content).into_any_element()
+    let theme = gpui_kit::component::ActiveTheme::theme(cx).clone();
+    // Centered on the whole bar as GNOME does: the left inset balances the three window buttons.
+    let title = div()
+        .flex_1()
+        .flex()
+        .justify_center()
+        .pl(px(90.))
+        .text_sm()
+        .font_weight(FontWeight::BOLD)
+        .child(t(Str::AppName));
+    let bar = TitleBar::new()
+        .bg(theme.background)
+        .border_color(theme.border)
+        .on_close_window(|_, window, cx| close_from_title_bar(window, cx))
+        .child(title);
+    let content =
+        v_flex().size_full().bg(theme.background).child(bar).child(div().flex_1().min_h_0().child(content));
+    window_border().shadow_size(px(0.)).child(content).into_any_element()
 }
 
 #[cfg(not(target_os = "linux"))]

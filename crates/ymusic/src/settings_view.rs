@@ -79,6 +79,11 @@ fn apply_theme(choice: &str, accent: &str, cx: &mut App) {
             theme.title_bar = ground;
             theme.accordion = ground;
         }
+        // Adwaita's faint window outline. Corners stay square: gpui clips content to rectangles, so
+        // a rounded frame needs every surface touching a bottom corner rounded too.
+        if cfg!(target_os = "linux") {
+            theme.window_border = if theme.mode.is_dark() { white().opacity(0.07) } else { black().opacity(0.15) };
+        }
     });
 }
 
