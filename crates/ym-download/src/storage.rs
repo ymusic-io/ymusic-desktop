@@ -81,7 +81,8 @@ impl DownloadStorage {
 }
 
 fn sync(path: &Path) -> io::Result<()> {
-    OpenOptions::new().read(true).open(path)?.sync_all()
+    // Windows' FlushFileBuffers needs a handle with write access; fsync takes any descriptor.
+    OpenOptions::new().write(true).open(path)?.sync_all()
 }
 
 fn copy_synced(source: &Path, destination: &Path) -> io::Result<()> {
