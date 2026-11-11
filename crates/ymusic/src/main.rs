@@ -4,6 +4,7 @@
 mod a11y;
 mod accent;
 mod account_view;
+mod action_icon;
 mod app_update;
 mod assets;
 mod audio_effects;

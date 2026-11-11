@@ -5,13 +5,13 @@
 use futures::channel::mpsc::UnboundedSender;
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::base::slider::{SliderEvent, SliderState};
-use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::slider::Slider;
-use gpui_kit::component::{ActiveTheme, Disableable, Icon, Sizable, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme, Disableable, Icon, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use ym_i18n::{Str, t};
 
+use crate::action_icon::{hit_target, sized_action_icon};
 use crate::desktop::TrayCommand;
 use crate::mini_player::clock;
 use crate::playback::{PlayState, Playback};
@@ -21,6 +21,12 @@ pub const WIDTH: f32 = 340.;
 pub const HEIGHT: f32 = 132.;
 const MARGIN: f32 = 8.;
 const COVER: f32 = 44.;
+const HEADER_ICON: f32 = 16.;
+const HEADER_HIT: f32 = 30.;
+const SKIP_ICON: f32 = 20.;
+const SKIP_HIT: f32 = 32.;
+const PLAY_ICON: f32 = 26.;
+const PLAY_HIT: f32 = 36.;
 
 /// The popup closed itself (focus went elsewhere, or Esc).
 pub struct Closed;
@@ -163,21 +169,17 @@ impl Render for TrayPopup {
                         },
                     ))
                     .child(
-                        Button::new("tray-open-app")
-                            .ghost()
-                            .small()
-                            .icon(Icon::new(Lucide::ExternalLink))
-                            .accessibility_label(t(Str::CdOpenApp))
-                            .tooltip(t(Str::CdOpenApp))
-                            .on_click(cx.listener(|popup, _, _, _| popup.command(TrayCommand::Open))),
+                        sized_action_icon(
+                            "tray-open-app",
+                            Lucide::ExternalLink,
+                            t(Str::CdOpenApp),
+                            HEADER_ICON,
+                            HEADER_HIT,
+                        )
+                        .on_click(cx.listener(|popup, _, _, _| popup.command(TrayCommand::Open))),
                     )
                     .child(
-                        Button::new("tray-dismiss")
-                            .ghost()
-                            .small()
-                            .icon(Icon::new(Lucide::X))
-                            .accessibility_label(t(Str::CdStopDismiss))
-                            .tooltip(t(Str::CdStopDismiss))
+                        sized_action_icon("tray-dismiss", Lucide::X, t(Str::CdStopDismiss), HEADER_ICON, HEADER_HIT)
                             .on_click(cx.listener(|popup, _, _, _| popup.command(TrayCommand::Stop))),
                     ),
             )
@@ -205,23 +207,19 @@ impl Render for TrayPopup {
                     .items_center()
                     .gap(px(14.))
                     .child(
-                        Button::new("tray-previous")
-                            .ghost()
-                            .small()
-                            .icon(Icon::new(Lucide::SkipBack))
-                            .accessibility_label(t(Str::CdPrevious))
-                            .tooltip(t(Str::CdPrevious))
+                        sized_action_icon("tray-previous", Lucide::SkipBack, t(Str::CdPrevious), SKIP_ICON, SKIP_HIT)
                             .disabled(item.is_none())
                             .on_click(cx.listener(|popup, _, _, cx| {
                                 popup.playback.update(cx, |playback, cx| playback.previous(cx))
                             })),
                     )
                     .child(
-                        Button::new("tray-play-pause")
-                            .ghost()
+                        hit_target("tray-play-pause", PLAY_HIT)
                             .when(state == PlayState::Buffering, |button| button.child(Spinner::new().small()))
                             .when(state != PlayState::Buffering, |button| {
-                                button.icon(Icon::new(if playing { Lucide::Pause } else { Lucide::Play }))
+                                button.child(
+                                    Icon::new(if playing { Lucide::Pause } else { Lucide::Play }).size(px(PLAY_ICON)),
+                                )
                             })
                             .accessibility_label(play_label)
                             .tooltip(play_label)
@@ -231,12 +229,7 @@ impl Render for TrayPopup {
                             })),
                     )
                     .child(
-                        Button::new("tray-next")
-                            .ghost()
-                            .small()
-                            .icon(Icon::new(Lucide::SkipForward))
-                            .accessibility_label(t(Str::CdNext))
-                            .tooltip(t(Str::CdNext))
+                        sized_action_icon("tray-next", Lucide::SkipForward, t(Str::CdNext), SKIP_ICON, SKIP_HIT)
                             .disabled(!has_next)
                             .on_click(cx.listener(|popup, _, _, cx| {
                                 popup.playback.update(cx, |playback, cx| playback.next(cx))

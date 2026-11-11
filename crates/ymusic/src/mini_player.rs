@@ -2,14 +2,14 @@
 
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::base::slider::{SliderEvent, SliderState};
-use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::slider::Slider;
-use gpui_kit::component::{ActiveTheme, Disableable, Icon, Selectable, Sizable, StyledExt, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme, Disableable, Icon, Selectable, StyledExt, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use ym_i18n::{Str, t, tf};
 
 use crate::a11y::FocusList;
+use crate::action_icon::{HIT, action_icon, sized_action_icon};
 use crate::playback::{PlayState, Playback, QueueItem};
 use crate::queue_nav::LoopMode;
 use crate::spinner::Spinner;
@@ -95,16 +95,11 @@ impl MiniPlayer {
         let armed = remaining.is_some() || after_current;
         self.focus.button(
             STOP_SLEEP,
-            Button::new("sleep-timer")
-                .ghost()
-                .small()
-                .icon(Icon::new(Lucide::Timer))
-                .selected(armed)
-                .accessibility_label(t(Str::CdSleepTimer))
-                .tooltip(tooltip)
-                .on_click(cx.listener(|player, _, window, cx| {
+            action_icon("sleep-timer", Lucide::Timer, t(Str::CdSleepTimer)).selected(armed).tooltip(tooltip).on_click(
+                cx.listener(|player, _, window, cx| {
                     crate::sleep_timer::SleepTimerDialog::open(player.playback.clone(), window, cx)
-                })),
+                }),
+            ),
             cx,
         )
     }
@@ -126,6 +121,8 @@ const BAR_SIDE_MIN: f32 = 900.;
 /// The sleep timer joins the side controls from this width.
 const BAR_SLEEP_MIN: f32 = 1100.;
 const BAR_PLAY: f32 = 36.;
+const BAR_SMALL_ICON: f32 = 20.;
+const BAR_SMALL_HIT: f32 = 36.;
 
 impl MiniPlayer {
     fn now_playing_label(item: &QueueItem) -> String {
@@ -176,7 +173,9 @@ impl MiniPlayer {
             .child(if *state == PlayState::Buffering {
                 Spinner::new().small().into_any_element()
             } else {
-                Icon::new(if playing { Lucide::Pause } else { Lucide::Play }).small().into_any_element()
+                Icon::new(if playing { Lucide::Pause } else { Lucide::Play })
+                    .size(px(BAR_SMALL_ICON))
+                    .into_any_element()
             })
             .on_click(cx.listener(|player, _, _, cx| {
                 cx.stop_propagation();
@@ -242,68 +241,53 @@ impl MiniPlayer {
                     .child(
                         self.focus.button(
                             STOP_SHUFFLE,
-                            Button::new("shuffle")
-                                .ghost()
-                                .small()
-                                .icon(Icon::new(Lucide::Shuffle))
-                                .selected(shuffle)
-                                .tooltip(t(Str::CdShuffle))
-                                .accessibility_label(t(Str::CdShuffle))
-                                .on_click(cx.listener(move |player, _, _, cx| {
-                                    player.playback.update(cx, |playback, cx| playback.set_shuffle(!shuffle, cx))
-                                })),
+                            sized_action_icon(
+                                "shuffle",
+                                Lucide::Shuffle,
+                                t(Str::CdShuffle),
+                                BAR_SMALL_ICON,
+                                BAR_SMALL_HIT,
+                            )
+                            .selected(shuffle)
+                            .on_click(cx.listener(move |player, _, _, cx| {
+                                player.playback.update(cx, |playback, cx| playback.set_shuffle(!shuffle, cx))
+                            })),
                             cx,
                         ),
                     )
-                    .child(
-                        self.focus.button(
-                            STOP_PREVIOUS,
-                            Button::new("previous")
-                                .ghost()
-                                .icon(Icon::new(Lucide::SkipBack))
-                                .tooltip(t(Str::CdPrevious))
-                                .accessibility_label(t(Str::CdPrevious))
-                                .on_click(cx.listener(|player, _, _, cx| {
-                                    player.playback.update(cx, |playback, cx| playback.previous(cx))
-                                })),
-                            cx,
-                        ),
-                    )
+                    .child(self.focus.button(
+                        STOP_PREVIOUS,
+                        action_icon("previous", Lucide::SkipBack, t(Str::CdPrevious)).on_click(cx.listener(
+                            |player, _, _, cx| player.playback.update(cx, |playback, cx| playback.previous(cx)),
+                        )),
+                        cx,
+                    ))
                     .child(self.play_circle(&state, cx))
-                    .child(
-                        self.focus.button(
-                            STOP_NEXT,
-                            Button::new("next")
-                                .ghost()
-                                .icon(Icon::new(Lucide::SkipForward))
-                                .tooltip(t(Str::CdNext))
-                                .accessibility_label(t(Str::CdNext))
-                                .disabled(!has_next)
-                                .on_click(cx.listener(|player, _, _, cx| {
-                                    player.playback.update(cx, |playback, cx| playback.next(cx))
-                                })),
-                            cx,
+                    .child(self.focus.button(
+                        STOP_NEXT,
+                        action_icon("next", Lucide::SkipForward, t(Str::CdNext)).disabled(!has_next).on_click(
+                            cx.listener(|player, _, _, cx| {
+                                player.playback.update(cx, |playback, cx| playback.next(cx))
+                            }),
                         ),
-                    )
+                        cx,
+                    ))
                     .child(
                         self.focus.button(
                             STOP_REPEAT,
-                            Button::new("repeat")
-                                .ghost()
-                                .small()
-                                .icon(Icon::new(if loop_mode == LoopMode::One {
-                                    Lucide::Repeat1
-                                } else {
-                                    Lucide::Repeat
-                                }))
-                                .selected(loop_mode != LoopMode::None)
-                                .accessibility_label(repeat_label)
-                                .tooltip(repeat_label)
-                                .on_click(cx.listener(move |player, _, _, cx| {
-                                    player
-                                        .playback
-                                        .update(cx, |playback, cx| playback.set_loop_mode(loop_mode.cycled(), cx))
-                                })),
+                            sized_action_icon(
+                                "repeat",
+                                if loop_mode == LoopMode::One { Lucide::Repeat1 } else { Lucide::Repeat },
+                                repeat_label,
+                                BAR_SMALL_ICON,
+                                BAR_SMALL_HIT,
+                            )
+                            .selected(loop_mode != LoopMode::None)
+                            .on_click(cx.listener(move |player, _, _, cx| {
+                                player
+                                    .playback
+                                    .update(cx, |playback, cx| playback.set_loop_mode(loop_mode.cycled(), cx))
+                            })),
                             cx,
                         ),
                     ),
@@ -327,12 +311,7 @@ impl MiniPlayer {
                 .child(
                     self.focus.button(
                         STOP_EQUALIZER,
-                        Button::new("equalizer")
-                            .ghost()
-                            .small()
-                            .icon(Icon::new(Lucide::SlidersHorizontal))
-                            .tooltip(t(Str::SoundEq))
-                            .accessibility_label(t(Str::SoundEq))
+                        sized_action_icon("equalizer", Lucide::SlidersHorizontal, t(Str::SoundEq), BAR_SMALL_ICON, HIT)
                             .on_click(cx.listener(|player, _, window, cx| {
                                 crate::sound_panel::SoundPanel::open(player.playback.clone(), window, cx)
                             })),
@@ -342,13 +321,8 @@ impl MiniPlayer {
                 .child(
                     self.focus.button(
                         STOP_SPEED,
-                        Button::new("speed-pitch")
-                            .ghost()
-                            .small()
-                            .icon(Icon::new(Lucide::Gauge))
+                        sized_action_icon("speed-pitch", Lucide::Gauge, t(Str::MenuSpeedPitch), BAR_SMALL_ICON, HIT)
                             .selected(tuned)
-                            .tooltip(t(Str::MenuSpeedPitch))
-                            .accessibility_label(t(Str::MenuSpeedPitch))
                             .on_click(cx.listener(|player, _, window, cx| {
                                 crate::sound_panel::SoundPanel::open(player.playback.clone(), window, cx)
                             })),
@@ -365,7 +339,7 @@ impl MiniPlayer {
                         } else {
                             Lucide::Volume2
                         })
-                        .small()
+                        .size(px(BAR_SMALL_ICON))
                         .text_color(theme.muted_foreground),
                     ),
                 )
@@ -444,7 +418,7 @@ impl MiniPlayer {
                             )
                             .child(if state == PlayState::Buffering {
                                 div()
-                                    .size(px(36.))
+                                    .size(px(HIT))
                                     .flex()
                                     .items_center()
                                     .justify_center()
@@ -454,33 +428,29 @@ impl MiniPlayer {
                                 self.focus
                                     .button(
                                         STOP_PLAY,
-                                        Button::new("play-pause")
-                                            .ghost()
-                                            .icon(Icon::new(if playing { Lucide::Pause } else { Lucide::Play }))
-                                            .accessibility_label(Self::play_label(&state))
-                                            .tooltip(Self::play_label(&state))
-                                            .on_click(cx.listener(|player, _, _, cx| {
+                                        action_icon(
+                                            "play-pause",
+                                            if playing { Lucide::Pause } else { Lucide::Play },
+                                            Self::play_label(&state),
+                                        )
+                                        .on_click(cx.listener(
+                                            |player, _, _, cx| {
                                                 player.playback.update(cx, |playback, cx| playback.toggle(cx))
-                                            })),
+                                            },
+                                        )),
                                         cx,
                                     )
                                     .into_any_element()
                             })
-                            .child(
-                                self.focus.button(
-                                    STOP_NEXT,
-                                    Button::new("next")
-                                        .ghost()
-                                        .icon(Icon::new(Lucide::SkipForward))
-                                        .accessibility_label(t(Str::CdNext))
-                                        .tooltip(t(Str::CdNext))
-                                        .disabled(!has_next)
-                                        .on_click(cx.listener(|player, _, _, cx| {
-                                            player.playback.update(cx, |playback, cx| playback.next(cx))
-                                        })),
-                                    cx,
+                            .child(self.focus.button(
+                                STOP_NEXT,
+                                action_icon("next", Lucide::SkipForward, t(Str::CdNext)).disabled(!has_next).on_click(
+                                    cx.listener(|player, _, _, cx| {
+                                        player.playback.update(cx, |playback, cx| playback.next(cx))
+                                    }),
                                 ),
-                            ),
+                                cx,
+                            )),
                     ),
             )
             .into_any_element()
