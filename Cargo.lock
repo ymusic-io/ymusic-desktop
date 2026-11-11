@@ -9752,6 +9752,7 @@ version = "0.1.0"
 dependencies = [
  "rusqlite",
  "thiserror 2.0.21",
+ "tokio",
  "ym-common",
  "ym-mse",
 ]

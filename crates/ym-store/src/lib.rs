@@ -10,7 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, OptionalExtension, Row, params};
 
-pub use scan::{DescribedFile, ScanError, ScanReport, describe_file, is_media_file, scan_folder};
+pub use scan::{DescribedFile, ScanError, ScanReport, describe_file, is_media_file, scan_file, scan_folder};
 
 /// `:media-store`'s schema (SQLDelight version 6): the `.sq` files for a new file, the five
 /// `migrations/n.sqm` for an older one from the JVM app.
@@ -296,6 +296,7 @@ fn now_millis() -> i64 {
 /// Every call blocks on SQLite: call off the UI and engine threads.
 pub struct MediaStore {
     db: Mutex<Connection>,
+    changes: tokio::sync::watch::Sender<u64>,
 }
 
 impl MediaStore {
@@ -319,7 +320,23 @@ impl MediaStore {
             |db, found| ym_common::sqlite::run_migrations(db, found, &MIGRATIONS),
         )?;
         adopt_file_uris(&db)?;
-        Ok(Self { db: Mutex::new(db) })
+        Ok(Self { db: Mutex::new(db), changes: tokio::sync::watch::Sender::new(0) })
+    }
+
+    /// Ticks after every write (buckets, items, playlists), the JVM store's table-change flows.
+    pub fn changes(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.changes.subscribe()
+    }
+
+    fn changed(&self) {
+        self.changes.send_modify(|generation| *generation += 1);
+    }
+
+    /// The live bucket for the folder at `path`, excluded or not.
+    pub fn find_bucket_by_uri(&self, path: &str) -> Result<Option<Bucket>, StoreError> {
+        let db = self.db.lock().unwrap();
+        let sql = format!("SELECT {BUCKET_COLUMNS} FROM bucket WHERE uri = ?1 AND deleted = 0");
+        Ok(db.query_row(&sql, params![uri_of(path)], bucket_from_row).optional()?)
     }
 
     /// The bucket for `uri`, created (or revived from a tombstone) under `parent_id`.
@@ -334,12 +351,14 @@ impl MediaStore {
                 "UPDATE bucket SET parentId = ?1, name = ?2, deleted = 0, updatedAt = ?3 WHERE id = ?4",
                 params![parent_id, name, now, id],
             )?;
+            self.changed();
             return Ok(id);
         }
         db.execute(
             "INSERT INTO bucket(parentId, uri, name, createdAt, updatedAt) VALUES (?1, ?2, ?3, ?4, ?4)",
             params![parent_id, uri, name, now],
         )?;
+        self.changed();
         Ok(db.last_insert_rowid())
     }
 
@@ -367,6 +386,7 @@ impl MediaStore {
             "UPDATE bucket SET deleted = ?1, updatedAt = ?2 WHERE id = ?3",
             params![i64::from(deleted), now_millis(), bucket_id],
         )?;
+        self.changed();
         Ok(())
     }
 
@@ -422,6 +442,7 @@ impl MediaStore {
             ],
         )?;
         if changed > 0 {
+            self.changed();
             return Ok(db.query_row("SELECT id FROM mediaItem WHERE uri = ?1", params![uri], |row| row.get(0))?);
         }
         db.execute(
@@ -454,6 +475,7 @@ impl MediaStore {
                 item.loudness_gain_db
             ],
         )?;
+        self.changed();
         Ok(db.last_insert_rowid())
     }
 
@@ -472,6 +494,9 @@ impl MediaStore {
         let now = now_millis();
         for id in &missing {
             db.execute("UPDATE mediaItem SET deleted = 1, updatedAt = ?1 WHERE id = ?2", params![now, id])?;
+        }
+        if !missing.is_empty() {
+            self.changed();
         }
         Ok(missing.len())
     }
@@ -524,6 +549,7 @@ impl MediaStore {
         let transaction = db.transaction()?;
         soft_delete_subtree(&transaction, bucket_id, now_millis())?;
         transaction.commit()?;
+        self.changed();
         Ok(())
     }
 
@@ -545,6 +571,7 @@ impl MediaStore {
             params![i64::from(excluded), now, bucket_id],
         )?;
         transaction.commit()?;
+        self.changed();
         Ok(())
     }
 
@@ -578,12 +605,14 @@ impl MediaStore {
             params![uri, now_millis(), item_id],
         )?;
         transaction.commit()?;
+        self.changed();
         Ok(())
     }
 
     /// Drops the item row for good (its file is gone).
     pub fn delete_item(&self, item_id: i64) -> Result<(), StoreError> {
         self.db.lock().unwrap().execute("DELETE FROM mediaItem WHERE id = ?1", params![item_id])?;
+        self.changed();
         Ok(())
     }
 
@@ -591,6 +620,7 @@ impl MediaStore {
         let db = self.db.lock().unwrap();
         let now = now_millis();
         db.execute("INSERT INTO playlist(name, createdAt, updatedAt) VALUES (?1, ?2, ?2)", params![name, now])?;
+        self.changed();
         Ok(Playlist { id: db.last_insert_rowid(), name: name.to_owned(), created_at: now })
     }
 
@@ -600,12 +630,14 @@ impl MediaStore {
             "UPDATE playlist SET name = ?1, updatedAt = ?2 WHERE id = ?3",
             params![name, now_millis(), playlist_id],
         )?;
+        self.changed();
         Ok(())
     }
 
     /// Its membership rows go with it; the songs stay in the library.
     pub fn delete_playlist(&self, playlist_id: i64) -> Result<(), StoreError> {
         self.db.lock().unwrap().execute("DELETE FROM playlist WHERE id = ?1", params![playlist_id])?;
+        self.changed();
         Ok(())
     }
 
@@ -637,12 +669,14 @@ impl MediaStore {
             )?;
         }
         transaction.commit()?;
+        self.changed();
         Ok(())
     }
 
     pub fn remove_from_playlist(&self, playlist_id: i64, code: &str) -> Result<(), StoreError> {
         let db = self.db.lock().unwrap();
         db.execute("DELETE FROM playlistItem WHERE playlistId = ?1 AND code = ?2", params![playlist_id, code])?;
+        self.changed();
         Ok(())
     }
 
@@ -657,6 +691,7 @@ impl MediaStore {
             )?;
         }
         transaction.commit()?;
+        self.changed();
         Ok(())
     }
 

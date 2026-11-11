@@ -134,7 +134,9 @@ pub fn scan_folder(store: &MediaStore, root: &Path, cancel: &AtomicBool) -> Resu
     let mut report = ScanReport::default();
     let root_name =
         root.file_name().map_or_else(|| root.to_string_lossy().into_owned(), |n| n.to_string_lossy().into_owned());
-    let root_id = store.upsert_bucket(&root.to_string_lossy(), &root_name, None)?;
+    let root_path = root.to_string_lossy();
+    let root_parent = store.find_bucket_by_uri(&root_path)?.and_then(|bucket| bucket.parent_id);
+    let root_id = store.upsert_bucket(&root_path, &root_name, root_parent)?;
     report.root_bucket = Some(root_id);
     let excluded = store.excluded_bucket_uris()?;
     let mut pending = vec![(root.to_path_buf(), root_id)];
@@ -173,45 +175,71 @@ pub fn scan_folder(store: &MediaStore, root: &Path, cancel: &AtomicBool) -> Resu
             if !is_media_file(&path) {
                 continue;
             }
-            let uri = path.to_string_lossy().into_owned();
-            present.push(uri.clone());
-            let size = metadata.len() as i64;
-            let modified = metadata
-                .modified()
-                .ok()
-                .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
-                .map_or(0, |elapsed| elapsed.as_millis() as i64);
-            let existing = store.find_item_by_uri(&uri)?;
-            if let Some((item, deleted)) = &existing
-                && !deleted
-                && item.file_size == size
-                && item.last_modified == modified
-                && item.bucket_id == Some(bucket_id)
-            {
-                report.unchanged += 1;
-                continue;
-            }
-            match ym_mse::probe(&path) {
-                Ok(probe) if probe.has_audio || probe.video_codec.is_some() => {
-                    store.save_item(&MediaItem {
-                        bucket_id: Some(bucket_id),
-                        file_size: size,
-                        last_modified: modified,
-                        ..item_from_probe(&path, uri, probe)
-                    })?;
-                    if existing.is_some() {
-                        report.updated += 1;
-                    } else {
-                        report.added += 1;
-                    }
-                }
-                Ok(_) => report.errors.push(ScanError { path, message: "no audio or video stream".into() }),
-                Err(code) => report.errors.push(ScanError { path, message: format!("libav error {code}") }),
-            }
+            present.push(path.to_string_lossy().into_owned());
+            index_file(store, path, &metadata, bucket_id, &mut report)?;
         }
         report.removed += store.delete_missing_items(bucket_id, &present)?;
     }
     Ok(report)
+}
+
+/// Blocking: indexes the one media file at `path` into the folder bucket `bucket_id` (a finished
+/// download landing in its Library folder), without walking the rest of the folder.
+pub fn scan_file(store: &MediaStore, path: &Path, bucket_id: i64) -> Result<ScanReport, StoreError> {
+    let mut report = ScanReport { root_bucket: Some(bucket_id), ..ScanReport::default() };
+    match std::fs::metadata(path) {
+        Ok(metadata) if metadata.is_file() && metadata.len() > 0 && is_media_file(path) => {
+            index_file(store, path.to_path_buf(), &metadata, bucket_id, &mut report)?
+        }
+        Ok(_) => report.errors.push(ScanError { path: path.to_path_buf(), message: "not a media file".into() }),
+        Err(error) => report.errors.push(ScanError { path: path.to_path_buf(), message: error.to_string() }),
+    }
+    Ok(report)
+}
+
+/// Unchanged files (same size, mtime and folder) are not probed again.
+fn index_file(
+    store: &MediaStore,
+    path: PathBuf,
+    metadata: &std::fs::Metadata,
+    bucket_id: i64,
+    report: &mut ScanReport,
+) -> Result<(), StoreError> {
+    let uri = path.to_string_lossy().into_owned();
+    let size = metadata.len() as i64;
+    let modified = metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+        .map_or(0, |elapsed| elapsed.as_millis() as i64);
+    let existing = store.find_item_by_uri(&uri)?;
+    if let Some((item, deleted)) = &existing
+        && !deleted
+        && item.file_size == size
+        && item.last_modified == modified
+        && item.bucket_id == Some(bucket_id)
+    {
+        report.unchanged += 1;
+        return Ok(());
+    }
+    match ym_mse::probe(&path) {
+        Ok(probe) if probe.has_audio || probe.video_codec.is_some() => {
+            store.save_item(&MediaItem {
+                bucket_id: Some(bucket_id),
+                file_size: size,
+                last_modified: modified,
+                ..item_from_probe(&path, uri, probe)
+            })?;
+            if existing.is_some() {
+                report.updated += 1;
+            } else {
+                report.added += 1;
+            }
+        }
+        Ok(_) => report.errors.push(ScanError { path, message: "no audio or video stream".into() }),
+        Err(code) => report.errors.push(ScanError { path, message: format!("libav error {code}") }),
+    }
+    Ok(())
 }
 
 fn is_video_id(text: &str) -> bool {
