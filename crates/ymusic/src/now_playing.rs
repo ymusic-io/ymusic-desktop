@@ -12,7 +12,7 @@ use gpui_kit::base::slider::{SliderEvent, SliderState};
 use gpui_kit::component::button::{Button, ButtonCustomVariant, ButtonVariants};
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::component::slider::Slider;
-use gpui_kit::component::{ActiveTheme, Icon, IconName, Selectable, Sizable, StyledExt, WindowExt, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme, Icon, IconName, Sizable, StyledExt, WindowExt, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use ym_i18n::{Str, t, tf};
@@ -46,7 +46,11 @@ const STOP_SHUFFLE: usize = 7;
 const STOP_CHANNEL: usize = 8;
 const STOP_CHANNEL_OVERLAY: usize = 9;
 const MENU_CAPTIONS: u8 = 1;
+/// `ActionIcon`'s glyph and hit target.
+const ICON: f32 = 24.;
+const HIT: f32 = 40.;
 const PLAY_BUTTON: f32 = 58.;
+const PLAY_ICON: f32 = 26.;
 /// Fixed: the top bar is a cached view, laid out without measuring its content.
 const TOP_BAR: f32 = 40.;
 
@@ -252,8 +256,35 @@ fn on_video(button: Button, cx: &App) -> Button {
     )
 }
 
-fn icon_button(id: impl Into<ElementId>, icon: impl Into<Icon>, label: &'static str) -> Button {
-    Button::new(id).ghost().icon(icon).accessibility_label(label).tooltip(label)
+/// The JVM app's `ActionIcon`: a `glyph` px icon centered in a round `hit` px target.
+fn action_icon(
+    id: impl Into<ElementId>,
+    icon: impl Into<Icon>,
+    label: impl Into<SharedString>,
+    glyph: f32,
+    hit: f32,
+) -> Button {
+    let label = label.into();
+    Button::new(id)
+        .ghost()
+        .icon(icon)
+        // gpui-kit draws an icon button's glyph at 3/4 of the button's size.
+        .with_size(px(glyph / 0.75))
+        .size(px(hit))
+        .rounded(px(hit / 2.))
+        .accessibility_label(label.clone())
+        .tooltip(label)
+}
+
+/// How much the video overlay's chrome grows with the video box: 1× up to a 400 px short side, then
+/// up to 1.3×.
+fn overlay_scale((width, height): (i32, i32)) -> f32 {
+    (width.min(height) as f32 / 400.).clamp(1., 1.3)
+}
+
+/// Rounds to an even pixel count, so centered boxes split their difference exactly.
+fn even(size: f32) -> f32 {
+    (size / 2.).round() * 2.
 }
 
 impl NowPlaying {
@@ -451,7 +482,13 @@ impl NowPlaying {
         }
     }
 
-    fn render_play_button(&self, playing: bool, buffering: bool, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_play_button(
+        &self,
+        playing: bool,
+        buffering: bool,
+        scale: f32,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let theme = cx.theme();
         let label = t(if playing { Str::CdPause } else { Str::CdPlay });
         div()
@@ -459,7 +496,7 @@ impl NowPlaying {
             .role(Role::Button)
             .aria_label(label)
             .keyboard_focusable(theme.ring)
-            .size(px(PLAY_BUTTON))
+            .size(px(even(PLAY_BUTTON * scale)))
             .flex_shrink_0()
             .rounded_full()
             .flex()
@@ -469,7 +506,7 @@ impl NowPlaying {
             .bg(white())
             .text_color(black())
             .opacity(if buffering { 0.6 } else { 1. })
-            .child(Icon::new(if playing { Lucide::Pause } else { Lucide::Play }).large())
+            .child(Icon::new(if playing { Lucide::Pause } else { Lucide::Play }).with_size(px(even(PLAY_ICON * scale))))
             .on_click(cx.listener(|view, _, _, cx| view.playback.update(cx, |playback, cx| playback.toggle(cx))))
     }
 
@@ -494,24 +531,29 @@ impl NowPlaying {
         let controls = self.controls_visible(cx);
         self.controls_were_visible = controls;
         let fullscreen = self.fullscreen;
+        let scale = overlay_scale(self.video_box.get());
+        let (glyph, hit) = (ICON * scale, HIT * scale);
+        let transport_icon = |id: &'static str, icon: Lucide, label: &'static str, cx: &App| {
+            on_video(action_icon(id, icon, label, even(glyph), even(hit)), cx)
+        };
 
         let transport = h_flex()
             .gap_6()
             .items_center()
-            .child(on_video(icon_button("np-rewind", Lucide::RotateCcw, t(Str::CdRewind10)), cx).on_click(
+            .child(transport_icon("np-rewind", Lucide::RotateCcw, t(Str::CdRewind10), cx).on_click(
                 cx.listener(|view, _, _, cx| view.playback.update(cx, |playback, cx| playback.seek_by(-SKIP_MS, cx))),
             ))
             .child(
-                on_video(icon_button("np-previous", Lucide::SkipBack, t(Str::CdPrevious)), cx).on_click(
+                transport_icon("np-previous", Lucide::SkipBack, t(Str::CdPrevious), cx).on_click(
                     cx.listener(|view, _, _, cx| view.playback.update(cx, |playback, cx| playback.previous(cx))),
                 ),
             )
-            .child(self.render_play_button(playing, buffering, cx))
+            .child(self.render_play_button(playing, buffering, scale, cx))
             .child(
-                on_video(icon_button("np-next", Lucide::SkipForward, t(Str::CdNext)), cx)
+                transport_icon("np-next", Lucide::SkipForward, t(Str::CdNext), cx)
                     .on_click(cx.listener(|view, _, _, cx| view.playback.update(cx, |playback, cx| playback.next(cx)))),
             )
-            .child(on_video(icon_button("np-forward", Lucide::RotateCw, t(Str::CdForward10)), cx).on_click(
+            .child(transport_icon("np-forward", Lucide::RotateCw, t(Str::CdForward10), cx).on_click(
                 cx.listener(|view, _, _, cx| view.playback.update(cx, |playback, cx| playback.seek_by(SKIP_MS, cx))),
             ));
         let bottom = v_flex()
@@ -524,13 +566,15 @@ impl NowPlaying {
                     .items_center()
                     .child(div().text_sm().child(format!("{} / {}", clock(position), clock(duration))))
                     .child(div().flex_1())
-                    .when_some(self.caption_button(cx), |row, button| row.child(button))
+                    .when_some(self.caption_button(glyph, hit, cx), |row, button| row.child(button))
                     .child(
                         on_video(
-                            icon_button(
+                            action_icon(
                                 "np-fullscreen",
                                 if fullscreen { Lucide::Minimize } else { Lucide::Maximize },
                                 t(if fullscreen { Str::CdExitFullscreen } else { Str::CdFullscreen }),
+                                glyph,
+                                hit,
                             ),
                             cx,
                         )
@@ -596,7 +640,7 @@ impl NowPlaying {
 
     /// The CC control, absent when the video has no caption tracks: Off, each track, and YouTube's
     /// auto-translations in a submenu; a pick turns captions on.
-    fn caption_button(&self, cx: &App) -> Option<AnyElement> {
+    fn caption_button(&self, glyph: f32, hit: f32, cx: &App) -> Option<AnyElement> {
         let playback = self.playback.read(cx);
         if playback.caption_tracks.is_empty() {
             return None;
@@ -612,12 +656,9 @@ impl NowPlaying {
         let label = format!("{}, {state}", t(Str::CdCaptions));
         let target = self.playback.clone();
         Some(
-            on_video(Button::new("np-captions"), cx)
+            on_video(action_icon("np-captions", Lucide::Captions, label, glyph, hit), cx)
                 .track_focus(&self.caption_focus)
-                .icon(Lucide::Captions)
                 .when(visible, |button| button.text_color(cx.theme().primary))
-                .accessibility_label(label.clone())
-                .tooltip(label)
                 .dropdown_menu_with_anchor(Anchor::BottomRight, move |mut menu, window, cx| {
                     let off = target.clone();
                     menu = menu.item(
@@ -801,13 +842,12 @@ impl NowPlaying {
             None if sleep_after_current => t(Str::SleepPausingAfterTrack).to_owned(),
             None => t(Str::CdSleepTimer).to_owned(),
         };
+        let accent = cx.theme().primary;
         let sleep = self.bar_focus.button(
             STOP_SLEEP,
-            Button::new("np-sleep")
-                .ghost()
-                .icon(Lucide::Timer)
-                .selected(sleep_armed)
-                .accessibility_label(t(Str::CdSleepTimer))
+            action_icon("np-sleep", Lucide::Timer, t(Str::CdSleepTimer), ICON, HIT)
+                .toggled(sleep_armed)
+                .when(sleep_armed, |button| button.text_color(accent))
                 .tooltip(sleep_tooltip)
                 .on_click(cx.listener(|view, _, window, cx| {
                     crate::sleep_timer::SleepTimerDialog::open(view.playback.clone(), window, cx)
@@ -865,7 +905,7 @@ impl NowPlaying {
         let view = cx.entity().downgrade();
         let more_target = target.clone();
         let queue_playback = self.playback.clone();
-        let more = icon_button("np-more", IconName::EllipsisVertical, t(Str::CdMore))
+        let more = action_icon("np-more", IconName::EllipsisVertical, t(Str::CdMore), ICON, HIT)
             .track_focus(&self.bar_focus.handle(STOP_MORE, cx))
             .dropdown_menu_with_anchor(Anchor::TopRight, move |mut menu, _, _| {
                 if let Some(target) = &more_target {
@@ -919,7 +959,7 @@ impl NowPlaying {
             .child(
                 self.bar_focus.button(
                     STOP_CLOSE,
-                    icon_button("np-close", IconName::ChevronDown, t(Str::CdMinimize))
+                    action_icon("np-close", IconName::ChevronDown, t(Str::CdMinimize), ICON, HIT)
                         .on_click(cx.listener(|_, _, _, cx| cx.emit(NowPlayingEvent::Close))),
                     cx,
                 ),
@@ -929,7 +969,7 @@ impl NowPlaying {
                 bar.child(
                     self.bar_focus.button(
                         STOP_DOWNLOAD,
-                        icon_button("np-download", Lucide::Download, t(Str::CdDownload)).on_click(
+                        action_icon("np-download", Lucide::Download, t(Str::CdDownload), ICON, HIT).on_click(
                             cx.listener(move |_, _, _, cx| cx.emit(NowPlayingEvent::Download(target.clone()))),
                         ),
                         cx,
@@ -938,17 +978,15 @@ impl NowPlaying {
             })
             .when_some(sponsor_whitelisted, |bar, whitelisted| {
                 let state = t(if whitelisted { Str::SponsorBlockExcluded } else { Str::SponsorBlockIncluded });
+                let mark = Icon::empty().path(crate::assets::SPONSOR_BLOCK_ICON).text_color(if whitelisted {
+                    cx.theme().muted_foreground
+                } else {
+                    accent
+                });
                 bar.child(
                     self.bar_focus.button(
                         STOP_SPONSOR_BLOCK,
-                        Button::new("np-sponsorblock")
-                            .ghost()
-                            .icon(Icon::empty().path(crate::assets::SPONSOR_BLOCK_ICON).text_color(if whitelisted {
-                                cx.theme().muted_foreground
-                            } else {
-                                cx.theme().primary
-                            }))
-                            .accessibility_label(t(Str::SettingsSponsorBlock))
+                        action_icon("np-sponsorblock", mark, t(Str::SettingsSponsorBlock), ICON, HIT)
                             .tooltip(state)
                             .on_click(cx.listener(move |view, _, _, cx| {
                                 view.sponsor_block.update(cx, |sponsor, cx| sponsor.set_whitelisted(!whitelisted, cx))
@@ -969,6 +1007,7 @@ impl NowPlaying {
         let (loop_mode, shuffle) = (playback.nav.loop_mode, playback.nav.shuffle);
         let position = tf(Str::A11yXOfY, &[&(playback.index + 1), &playback.queue.len()]);
         let theme = cx.theme();
+        let (accent, repeating) = (theme.primary, loop_mode != LoopMode::None);
         h_flex()
             .px(px(20.))
             .py(px(6.))
@@ -982,7 +1021,7 @@ impl NowPlaying {
             .child(
                 self.bar_focus.button(
                     STOP_REPEAT,
-                    icon_button(
+                    action_icon(
                         "np-repeat",
                         if loop_mode == LoopMode::One { Lucide::Repeat1 } else { Lucide::Repeat },
                         t(match loop_mode {
@@ -990,21 +1029,29 @@ impl NowPlaying {
                             LoopMode::All => Str::CdRepeatAll,
                             LoopMode::One => Str::CdRepeatOne,
                         }),
+                        ICON,
+                        HIT,
                     )
-                    .selected(loop_mode != LoopMode::None)
+                    .toggled(repeating)
+                    .when(repeating, |button| button.text_color(accent))
                     .on_click(cx.listener(move |view, _, _, cx| {
                         view.playback.update(cx, |playback, cx| playback.set_loop_mode(loop_mode.cycled(), cx))
                     })),
                     cx,
                 ),
             )
-            .child(self.bar_focus.button(
-                STOP_SHUFFLE,
-                icon_button("np-shuffle", Lucide::Shuffle, t(Str::CdShuffle)).selected(shuffle).on_click(cx.listener(
-                    move |view, _, _, cx| view.playback.update(cx, |playback, cx| playback.set_shuffle(!shuffle, cx)),
-                )),
-                cx,
-            ))
+            .child(
+                self.bar_focus.button(
+                    STOP_SHUFFLE,
+                    action_icon("np-shuffle", Lucide::Shuffle, t(Str::CdShuffle), ICON, HIT)
+                        .toggled(shuffle)
+                        .when(shuffle, |button| button.text_color(accent))
+                        .on_click(cx.listener(move |view, _, _, cx| {
+                            view.playback.update(cx, |playback, cx| playback.set_shuffle(!shuffle, cx))
+                        })),
+                    cx,
+                ),
+            )
             .into_any_element()
     }
 
@@ -1017,8 +1064,8 @@ impl NowPlaying {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let (playback, view, item) = (self.playback.clone(), cx.entity().downgrade(), item.clone());
-        icon_button(("np-queue-more", position), IconName::EllipsisVertical, t(Str::CdMore))
-            .small()
+        action_icon(("np-queue-more", position), IconName::EllipsisVertical, t(Str::CdMore), ICON, HIT)
+            .text_color(cx.theme().muted_foreground)
             .dropdown_menu_with_anchor(Anchor::TopRight, move |mut menu, _, _| {
                 let video_id = item.video_id().map(str::to_owned);
                 if video_id.is_some() {
