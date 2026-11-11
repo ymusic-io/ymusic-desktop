@@ -115,6 +115,7 @@ fn main() {
     let http = HttpClients::new().expect("HTTP client");
     let local_art = std::sync::Arc::new(crate::local_art::LocalArt::new(data_dir.join("art-cache"), log.fork("art")));
     let app_db = graph::open_app_db(&data_dir).unwrap_or_else(|error| boot_failed(&log, &error));
+    crate::data_files::import_legacy_files(&app_db, &data_dir, &log);
     let opened = crate::cookie_session::open(app_db.clone(), &data_dir, &log).unwrap_or_else(|error| {
         boot_failed(&log, &ym_engine::EngineError::site("R98000", format!("cookie store: {error}")))
     });

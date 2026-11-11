@@ -74,6 +74,25 @@ impl AppDb {
 }
 
 impl AppDb {
+    /// The JVM app's one-time import of its loose files: one transaction, and every row already
+    /// here wins (a crash between the commit and removing the files imports again). Blocking.
+    pub fn import_absent(&self, settings: &[(String, String)], secrets: &[(String, Vec<u8>)]) -> rusqlite::Result<()> {
+        let mut db = self.db.lock().unwrap();
+        let transaction = db.transaction()?;
+        for (key, value) in settings {
+            transaction.execute("INSERT OR IGNORE INTO setting(key, value) VALUES (?1, ?2)", params![key, value])?;
+        }
+        for (name, value) in secrets {
+            transaction.execute("INSERT OR IGNORE INTO secret(name, value) VALUES (?1, ?2)", params![name, value])?;
+        }
+        transaction.commit()?;
+        let mut cached = self.settings.lock().unwrap();
+        for (key, value) in settings {
+            cached.entry(key.clone()).or_insert_with(|| value.clone());
+        }
+        Ok(())
+    }
+
     /// Blocking.
     pub fn delete_setting(&self, key: &str) -> rusqlite::Result<()> {
         self.db.lock().unwrap().execute("DELETE FROM setting WHERE key = ?1", params![key])?;

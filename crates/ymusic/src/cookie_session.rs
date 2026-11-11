@@ -11,7 +11,7 @@ use ym_settings::AppDb;
 use ym_signin::{CookieVault, PasswordSeal, VaultError};
 
 /// The sealed jar's row: the JVM app's name for it.
-const COOKIE_JAR_SECRET: &str = "api-cookies.json";
+pub(crate) const COOKIE_JAR_SECRET: &str = "api-cookies.json";
 /// Where builds before the vault kept the jar in the clear; removed at boot.
 const PLAIN_COOKIES_SECRET: &str = "cookies";
 /// The JVM app's key item (`UserScopeKey.kt`): the Keychain item, the Secret Service attributes, the
@@ -19,7 +19,7 @@ const PLAIN_COOKIES_SECRET: &str = "cookies";
 const KEYCHAIN_SERVICE: &str = "io.ymusic.desktop";
 const KEYCHAIN_ACCOUNT: &str = "cookie-key";
 /// Where the key lives when no OS key store holds it (the JVM app's Linux fallback name).
-const FALLBACK_KEY_SECRET: &str = "cookie-key.bin";
+pub(crate) const FALLBACK_KEY_SECRET: &str = "cookie-key.bin";
 /// The JVM app's Windows row: the key as a user-scope DPAPI blob.
 #[cfg(windows)]
 const DPAPI_KEY_SECRET: &str = "cookie-key.dpapi";
