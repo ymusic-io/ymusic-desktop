@@ -1,28 +1,37 @@
-//! One app process per data dir: the first launch holds `instance.lock` and listens on a loopback
-//! port; a later launch hands its request (files, links, a player command) over and exits. The
-//! port file carries a random token, so only a process that can read the data dir is listened to.
+//! One app process per data dir, shared with the JVM app (`SingleInstance.kt`): the first launch
+//! holds `instance.lock` and listens on a loopback port; a later launch hands its request (files,
+//! links, a player command) over and exits. The port file carries a random token, so only a process
+//! that can read the data dir is listened to. The lock and the wire are the JVM app's, so whichever
+//! of the two apps starts second defers to the running one.
 
 use std::ffi::OsString;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender};
 use gpui_kit::Global;
-use serde_json::{Value, json};
+use ym_common::file_uri::to_file_uri;
 use ym_common::log::Logger;
 
 /// ~9 s: outlasts a quitting instance's wind-down, which holds the lock but takes nothing.
 const HANDOFF_ATTEMPTS: u32 = 60;
 const HANDOFF_RETRY: Duration = Duration::from_millis(150);
 const HANDOFF_TIMEOUT: Duration = Duration::from_secs(2);
+const WAKE_TIMEOUT: Duration = Duration::from_millis(500);
 const MAX_REQUEST_BYTES: u64 = 1 << 20;
-const ACK: &[u8] = b"ok\n";
+/// Not a JVM command: the JVM app reads the request and drops it, so it never takes links as files.
+const LINKS_COMMAND: &str = "Links";
 
 static ACCEPTING: AtomicBool = AtomicBool::new(true);
+/// Held until the process exits. A POSIX record lock goes with the first descriptor of the file this
+/// process closes, so nothing else may open `instance.lock`.
+static HELD_LOCK: OnceLock<File> = OnceLock::new();
+static LISTENER: OnceLock<(u16, Logger)> = OnceLock::new();
 
 /// What a launch asks of the app: bring the window back, or a player task (the Windows Jump List).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,15 +43,24 @@ pub enum Command {
 }
 
 impl Command {
-    const ALL: [(Command, &'static str); 4] =
-        [(Command::Show, "show"), (Command::TogglePlay, "toggle"), (Command::Stop, "stop"), (Command::Quit, "quit")];
+    /// `(command, --player= argument, the JVM's InstanceCommand name on the wire)`.
+    const ALL: [(Command, &'static str, &'static str); 4] = [
+        (Command::Show, "show", "Show"),
+        (Command::TogglePlay, "toggle", "TogglePlay"),
+        (Command::Stop, "stop", "Stop"),
+        (Command::Quit, "quit", "Quit"),
+    ];
 
-    fn name(self) -> &'static str {
-        Self::ALL.iter().find(|(command, _)| *command == self).map_or("show", |(_, name)| name)
+    fn from_arg(arg: &str) -> Option<Self> {
+        Self::ALL.iter().find(|(_, known, _)| *known == arg).map(|(command, _, _)| *command)
     }
 
-    fn from_name(name: &str) -> Option<Self> {
-        Self::ALL.iter().find(|(_, known)| *known == name).map(|(command, _)| *command)
+    fn wire_name(self) -> &'static str {
+        Self::ALL.iter().find(|(command, _, _)| *command == self).map_or("Show", |(_, _, name)| name)
+    }
+
+    fn from_wire_name(name: &str) -> Option<Self> {
+        Self::ALL.iter().find(|(_, _, known)| *known == name).map(|(command, _, _)| *command)
     }
 }
 
@@ -62,7 +80,7 @@ impl Request {
         for arg in args {
             let arg = arg.to_string_lossy().into_owned();
             if let Some(name) = arg.strip_prefix("--player=") {
-                if let Some(command) = Command::from_name(name) {
+                if let Some(command) = Command::from_arg(name) {
                     request.command = command;
                 }
             } else if arg.starts_with('-') {
@@ -103,28 +121,35 @@ impl Request {
         self.command == Command::Show && self.files.is_empty() && self.links.is_empty()
     }
 
-    fn to_wire(&self, token: &str) -> Vec<u8> {
-        let files: Vec<String> = self.files.iter().map(|path| path.to_string_lossy().into_owned()).collect();
-        let wire = json!({ "token": token, "command": self.command.name(), "files": files, "links": self.links });
-        wire.to_string().into_bytes()
+    /// The JVM app's request: the token, the command, then one `file://` URI per line in the JVM
+    /// encoding (the JVM app matches them against its Library byte for byte).
+    fn to_wire(&self, token: &str) -> Vec<String> {
+        let files = self.files.iter().map(|path| to_file_uri(&path.to_string_lossy()));
+        [token.to_owned(), self.command.wire_name().to_owned()].into_iter().chain(files).collect()
     }
 
-    fn from_wire(bytes: &[u8], token: &str) -> Option<Self> {
-        let wire: Value = serde_json::from_slice(bytes).ok()?;
-        if wire.get("token")?.as_str()? != token {
+    fn links_to_wire(&self, token: &str) -> Option<Vec<String>> {
+        (!self.links.is_empty()).then(|| {
+            [token.to_owned(), LINKS_COMMAND.to_owned()].into_iter().chain(self.links.iter().cloned()).collect()
+        })
+    }
+
+    fn from_wire(text: &str, token: &str) -> Option<Self> {
+        let mut lines = text.lines();
+        if lines.next()? != token {
             return None;
         }
-        let strings = |key: &str| -> Vec<String> {
-            wire.get(key)
-                .and_then(Value::as_array)
-                .map(|values| values.iter().filter_map(Value::as_str).map(str::to_owned).collect())
-                .unwrap_or_default()
-        };
-        Some(Self {
-            command: Command::from_name(wire.get("command")?.as_str()?)?,
-            files: strings("files").into_iter().map(PathBuf::from).collect(),
-            links: strings("links"),
-        })
+        let name = lines.next()?;
+        let mut request = Self { command: Command::Show, files: Vec::new(), links: Vec::new() };
+        if name == LINKS_COMMAND {
+            request.links.extend(lines.filter(|line| is_link(line)).map(str::to_owned));
+        } else {
+            request.command = Command::from_wire_name(name)?;
+            for line in lines {
+                request.add_url(line.to_owned());
+            }
+        }
+        Some(request)
     }
 }
 
@@ -170,19 +195,16 @@ pub fn claim(
         }
         let lock =
             OpenOptions::new().create(true).truncate(false).write(true).open(&lock_path).map_err(ClaimError::Setup)?;
-        match lock.try_lock() {
-            Ok(()) => {
-                listen(lock, &port_path, sender, log.clone()).map_err(ClaimError::Setup)?;
-                return Ok(Claim::Owner);
-            }
-            Err(std::fs::TryLockError::WouldBlock) => {}
-            Err(std::fs::TryLockError::Error(error)) => return Err(ClaimError::Setup(error)),
+        if try_lock(&lock).map_err(ClaimError::Setup)? {
+            let _ = HELD_LOCK.set(lock);
+            listen(&port_path, sender, log.clone()).map_err(ClaimError::Setup)?;
+            return Ok(Claim::Owner);
         }
         drop(lock);
         if attempt == 0 && request.command == Command::Show {
             share_foreground(log);
         }
-        match hand_off(&port_path, request) {
+        match hand_off(&port_path, request, log) {
             Ok(()) => return Ok(Claim::HandedOver),
             Err(error) => last_error = Some(error),
         }
@@ -190,22 +212,64 @@ pub fn claim(
     Err(ClaimError::NoAnswer(last_error))
 }
 
-/// Stops taking requests while the lock stays held until exit: a launch during the quit wind-down
-/// gets no answer and retries until this process is gone, instead of being dropped.
-pub fn stop_accepting() {
-    ACCEPTING.store(false, Ordering::SeqCst);
+/// The JVM's `FileChannel.tryLock()`: an exclusive POSIX record lock over the whole file. Linux keeps
+/// `flock(2)` locks apart from these, so `File::try_lock` would not see the JVM app's lock there.
+#[cfg(unix)]
+fn try_lock(file: &File) -> std::io::Result<bool> {
+    use std::os::fd::AsRawFd;
+    // SAFETY: a zeroed `flock` is a valid value; the fields set below select the whole file.
+    let mut region: libc::flock = unsafe { std::mem::zeroed() };
+    region.l_type = libc::F_WRLCK as _;
+    region.l_whence = libc::SEEK_SET as _;
+    region.l_start = 0;
+    region.l_len = 0;
+    // SAFETY: a live descriptor and a pointer to an initialized `flock` for the call's duration.
+    if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_SETLK, &region) } == 0 {
+        return Ok(true);
+    }
+    let error = std::io::Error::last_os_error();
+    match error.raw_os_error() {
+        Some(libc::EAGAIN | libc::EACCES) => Ok(false),
+        _ => Err(error),
+    }
 }
 
-fn listen(lock: File, port_path: &Path, sender: UnboundedSender<Request>, log: Logger) -> std::io::Result<()> {
+/// `LockFileEx` over the whole file, which overlaps the JVM's `tryLock()` range.
+#[cfg(windows)]
+fn try_lock(file: &File) -> std::io::Result<bool> {
+    match file.try_lock() {
+        Ok(()) => Ok(true),
+        Err(std::fs::TryLockError::WouldBlock) => Ok(false),
+        Err(std::fs::TryLockError::Error(error)) => Err(error),
+    }
+}
+
+/// Stops taking requests while the lock stays held until exit: the listener closes, so a launch
+/// during the quit wind-down finds nobody listening and retries until this process is gone.
+pub fn stop_accepting() {
+    if !ACCEPTING.swap(false, Ordering::SeqCst) {
+        return;
+    }
+    let Some((port, log)) = LISTENER.get() else { return };
+    // The accept loop wakes on this connection, sees the flag and drops the listener.
+    if let Err(error) = TcpStream::connect_timeout(&SocketAddr::from((Ipv4Addr::LOCALHOST, *port)), WAKE_TIMEOUT) {
+        log.warn("instance hand-off: the listener could not be woken to close", Some(&error));
+    }
+}
+
+fn listen(port_path: &Path, sender: UnboundedSender<Request>, log: Logger) -> std::io::Result<()> {
     let listener = TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))?;
+    let port = listener.local_addr()?.port();
     let token: String = rand::random::<[u8; 16]>().iter().map(|byte| format!("{byte:02x}")).collect();
     let staged = port_path.with_extension("port.tmp");
-    std::fs::write(&staged, format!("{} {token}", listener.local_addr()?.port()))?;
+    std::fs::write(&staged, format!("{port} {token}"))?;
     std::fs::rename(&staged, port_path)?;
+    let _ = LISTENER.set((port, log.clone()));
     std::thread::Builder::new().name("single-instance".into()).spawn(move || {
-        // The lock lives as long as the listener: until the process exits.
-        let _lock = lock;
         for stream in listener.incoming() {
+            if !ACCEPTING.load(Ordering::SeqCst) {
+                return;
+            }
             let stream = match stream {
                 Ok(stream) => stream,
                 Err(error) => {
@@ -213,9 +277,6 @@ fn listen(lock: File, port_path: &Path, sender: UnboundedSender<Request>, log: L
                     continue;
                 }
             };
-            if !ACCEPTING.load(Ordering::SeqCst) {
-                continue;
-            }
             match receive(stream, &token) {
                 Ok(Some(request)) => {
                     if sender.unbounded_send(request).is_err() {
@@ -230,33 +291,40 @@ fn listen(lock: File, port_path: &Path, sender: UnboundedSender<Request>, log: L
     Ok(())
 }
 
+/// Reads to the sender's end of stream and answers with an orderly close, as the JVM app does.
 fn receive(mut stream: TcpStream, token: &str) -> std::io::Result<Option<Request>> {
     stream.set_read_timeout(Some(HANDOFF_TIMEOUT))?;
-    stream.set_write_timeout(Some(HANDOFF_TIMEOUT))?;
     let mut bytes = Vec::new();
     (&mut stream).take(MAX_REQUEST_BYTES).read_to_end(&mut bytes)?;
-    let Some(request) = Request::from_wire(&bytes, token) else { return Ok(None) };
-    stream.write_all(ACK)?;
-    Ok(Some(request))
+    Ok(Request::from_wire(&String::from_utf8_lossy(&bytes), token))
 }
 
-fn hand_off(port_path: &Path, request: &Request) -> std::io::Result<()> {
+/// The JVM app's request first (command and files), then the links in a request of their own.
+fn hand_off(port_path: &Path, request: &Request, log: &Logger) -> std::io::Result<()> {
     let invalid = || std::io::Error::new(std::io::ErrorKind::InvalidData, "bad instance.port");
     let contents = std::fs::read_to_string(port_path)?;
     let (port, token) = contents.trim().split_once(' ').ok_or_else(invalid)?;
     let port: u16 = port.parse().map_err(|_| invalid())?;
+    send_lines(port, &request.to_wire(token))?;
+    if let Some(links) = request.links_to_wire(token)
+        && let Err(error) = send_lines(port, &links)
+    {
+        log.warn("instance hand-off: the links did not reach the running instance", Some(&error));
+    }
+    Ok(())
+}
+
+/// The receiver closes once it has read everything; a reset instead (a listener closing with the
+/// request still queued) is an error, so the launch retries.
+fn send_lines(port: u16, lines: &[String]) -> std::io::Result<()> {
     let mut stream = TcpStream::connect_timeout(&SocketAddr::from((Ipv4Addr::LOCALHOST, port)), HANDOFF_TIMEOUT)?;
     stream.set_read_timeout(Some(HANDOFF_TIMEOUT))?;
-    stream.write_all(&request.to_wire(token))?;
+    let mut wire = lines.join("\n");
+    wire.push('\n');
+    stream.write_all(wire.as_bytes())?;
     stream.shutdown(std::net::Shutdown::Write)?;
-    let mut ack = Vec::new();
-    stream.take(ACK.len() as u64).read_to_end(&mut ack)?;
-    if ack != ACK {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::ConnectionAborted,
-            "the instance did not take the request",
-        ));
-    }
+    let mut rest = Vec::new();
+    stream.take(MAX_REQUEST_BYTES).read_to_end(&mut rest)?;
     Ok(())
 }
 
