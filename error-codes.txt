@@ -112,3 +112,8 @@ R95000 - now playing: a local queue item could not be looked up in the library t
 R96000 - single instance: another process holds the data dir's instance lock but took no request
 R96001 - single instance: the lock, loopback listener or port file could not be set up
 R96002 - open with: none of the files the OS asked the app to open could be read
+R99010 - rename file: another file in the folder already has the new name
+R99011 - rename file: the file could not be renamed on disk
+R99012 - rename file: the Library row could not be moved to the new path (media store)
+R99013 - rename file: the finished download could not be moved to the new path (downloads.db)
+R99014 - rename file: the core runtime stopped before the rename finished

@@ -10,6 +10,7 @@ mod downloads;
 mod downloads_view;
 mod feed;
 mod feedback_view;
+mod file_rename;
 mod fps_badge;
 mod graph;
 mod http_client;

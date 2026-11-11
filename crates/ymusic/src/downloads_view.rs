@@ -18,6 +18,7 @@ use ym_i18n::{Str, t, tf};
 use crate::a11y::{DragRow, FocusList};
 use crate::download_dialog::{DownloadPicker, DownloadTarget};
 use crate::downloads::pick_download_folder;
+use crate::file_rename::RenameFileDialog;
 use crate::graph::{AppGraph, on_core};
 use crate::library::PlayLocal;
 use crate::library_playlist::AddToLocalPlaylist;
@@ -259,7 +260,7 @@ impl DownloadsView {
         );
     }
 
-    /// Debug routes: `retry`, `reveal`, `format` or `addto` the newest task of `video_id`.
+    /// Debug routes: `retry`, `reveal`, `format`, `addto` or `rename` the newest task of `video_id`.
     pub fn dev_action(&mut self, action: &str, video_id: &str, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let Some(task) = self.tasks.iter().find(|task| task.video_id == video_id).cloned() else { return false };
         match action {
@@ -271,6 +272,11 @@ impl DownloadsView {
             }
             "format" => Self::other_format(&task, window, cx),
             "addto" => AddToLocalPlaylist::open(vec![task.video_id.clone()], None, window, cx),
+            "rename" => {
+                if let Some(file) = file_path(&task) {
+                    RenameFileDialog::open(file, None, window, cx);
+                }
+            }
             _ => {}
         }
         true
@@ -524,7 +530,7 @@ impl DownloadsView {
                             }))
                             .item(other_format());
                         if let Some(path) = file_path(&task) {
-                            let (library_view, file) = (view.clone(), path.clone());
+                            let (library_view, file, renamed) = (view.clone(), path.clone(), path.clone());
                             menu = menu
                                 .item(PopupMenuItem::new(t(Str::DownloadsActionRevealLibrary)).on_click(
                                     move |_, _, cx| {
@@ -535,7 +541,10 @@ impl DownloadsView {
                                 .item(
                                     PopupMenuItem::new(crate::library::reveal_label())
                                         .on_click(move |_, _, cx| cx.reveal_path(&path)),
-                                );
+                                )
+                                .item(PopupMenuItem::new(t(Str::MenuRename)).on_click(move |_, window, cx| {
+                                    RenameFileDialog::open(renamed.clone(), None, window, cx)
+                                }));
                         }
                         let (disk_view, disk_task) = (view.clone(), task.clone());
                         menu = menu.separator().item(act(t(Str::MenuRemove), DownloadService::remove)).item(
