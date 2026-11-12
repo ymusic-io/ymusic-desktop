@@ -723,11 +723,17 @@ impl Render for SettingsView {
 
         let appearance = vec![theme_row, accent_row, language_row];
         let content = vec![region_row];
-        let sound_row =
-            button_row("sound", t(Str::SettingsSound), Some(t(Str::SettingsSoundHint).to_owned()), chevron(cx), cx)
-                .accessibility_label(t(Str::SettingsSound))
+        let speed_row =
+            button_row("speed-pitch", t(Str::SoundSpeed), Some(t(Str::SettingsSpeedHint).to_owned()), chevron(cx), cx)
+                .accessibility_label(t(Str::SoundSpeed))
                 .on_click(cx.listener(|view, _, window, cx| {
-                    crate::sound_panel::SoundPanel::open(view.playback.clone(), window, cx)
+                    crate::speed_pitch::SpeedPitchDialog::open(view.playback.clone(), window, cx)
+                }));
+        let equalizer_row =
+            button_row("equalizer", t(Str::SoundEq), Some(t(Str::SettingsEqHint).to_owned()), chevron(cx), cx)
+                .accessibility_label(t(Str::SoundEq))
+                .on_click(cx.listener(|view, _, window, cx| {
+                    crate::equalizer::EqualizerDialog::open(view.playback.clone(), window, cx)
                 }));
         let caption_row = button_row(
             "caption-style",
@@ -739,7 +745,8 @@ impl Render for SettingsView {
         .accessibility_label(t(Str::SettingsCaptionStyle))
         .on_click(|_, window, cx| CaptionStyleDialog::open(window, cx));
         let mut playback = vec![
-            self.wide(self.focus.row_button(next(), sound_row, cx)),
+            self.wide(self.focus.row_button(next(), speed_row, cx)),
+            self.wide(self.focus.row_button(next(), equalizer_row, cx)),
             self.wide(self.focus.row_button(next(), caption_row, cx)),
             self.toggle(next(), SPONSOR_BLOCK_KEY, t(Str::SettingsSponsorBlock), t(Str::SettingsSponsorBlockHint), cx),
         ];

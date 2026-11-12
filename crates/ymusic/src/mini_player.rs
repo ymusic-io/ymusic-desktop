@@ -381,7 +381,7 @@ impl MiniPlayer {
                         STOP_EQUALIZER,
                         sized_action_icon("equalizer", Lucide::SlidersHorizontal, t(Str::SoundEq), BAR_SMALL_ICON, HIT)
                             .on_click(cx.listener(|player, _, window, cx| {
-                                crate::sound_panel::SoundPanel::open(player.playback.clone(), window, cx)
+                                crate::equalizer::EqualizerDialog::open(player.playback.clone(), window, cx)
                             })),
                         cx,
                     ),
@@ -393,7 +393,7 @@ impl MiniPlayer {
                             .toggled(tuned)
                             .when(tuned, |button| button.text_color(cx.theme().primary))
                             .on_click(cx.listener(|player, _, window, cx| {
-                                crate::sound_panel::SoundPanel::open(player.playback.clone(), window, cx)
+                                crate::speed_pitch::SpeedPitchDialog::open(player.playback.clone(), window, cx)
                             })),
                         cx,
                     ),

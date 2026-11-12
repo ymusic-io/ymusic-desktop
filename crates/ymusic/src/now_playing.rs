@@ -79,7 +79,8 @@ const TOP_BAR: f32 = 40.;
 pub enum NowPlayingEvent {
     Close,
     Download(DownloadTarget),
-    OpenSound,
+    OpenSpeedPitch,
+    OpenEqualizer,
     /// A playback failure wants a signed-in viewer.
     SignIn,
     /// Open the video's details and comments.
@@ -292,6 +293,20 @@ fn on_video_menu(button: Button, cx: &App) -> Button {
             .hover(white().opacity(0.15))
             .active(white().opacity(0.25)),
     )
+}
+
+/// A menu row with its current `value` at the end, in the secondary ink.
+fn menu_value_item(label: &'static str, value: String) -> PopupMenuItem {
+    PopupMenuItem::element(move |_, cx| {
+        h_flex().w_full().gap_4().items_center().child(div().flex_1().min_w_0().child(label)).child(
+            div()
+                .max_w(px(96.))
+                .truncate()
+                .text_size(px(13.))
+                .text_color(cx.theme().muted_foreground)
+                .child(value.clone()),
+        )
+    })
 }
 
 /// How much the video overlay's chrome grows with the video box: 1× up to a 400 px short side, then
@@ -1068,7 +1083,7 @@ impl NowPlaying {
             None => t(Str::MenuSpeedPitch).to_owned(),
         };
         let speed = on_video(sized_action_icon("np-speed", Lucide::Gauge, label, glyph, hit), cx)
-            .on_click(cx.listener(|_, _, _, cx| cx.emit(NowPlayingEvent::OpenSound)));
+            .on_click(cx.listener(|_, _, _, cx| cx.emit(NowPlayingEvent::OpenSpeedPitch)));
         actions.push(self.overlay_focus.button(OVERLAY_SPEED, speed, cx).into_any_element());
         if let Some(value) = speed_value {
             actions.push(
@@ -1122,7 +1137,7 @@ impl NowPlaying {
         let queue_playback = self.playback.clone();
         let more = sized_action_icon("np-more", IconName::EllipsisVertical, t(Str::CdMore), ICON, HIT)
             .track_focus(&self.bar_focus.handle(STOP_MORE, cx))
-            .dropdown_menu_with_anchor(Anchor::TopRight, move |mut menu, _, _| {
+            .dropdown_menu_with_anchor(Anchor::TopRight, move |mut menu, _, cx| {
                 if let Some(target) = &more_target {
                     let (details, video_id) = (view.clone(), target.video_id.clone());
                     menu = menu.item(PopupMenuItem::new(t(Str::MenuDetailsComments)).on_click(move |_, _, cx| {
@@ -1154,9 +1169,16 @@ impl NowPlaying {
                         crate::yt_playlist::CreatePlaylist::open(video_ids, true, window, cx);
                     }
                 }));
-                let sound = view.clone();
-                menu = menu.item(PopupMenuItem::new(t(Str::MenuSpeedPitch)).on_click(move |_, _, cx| {
-                    sound.update(cx, |_, cx| cx.emit(NowPlayingEvent::OpenSound)).ok();
+                let effects = queue_playback.read(cx).effects;
+                let speed = format!("{}×", crate::speed_pitch::trimmed(effects.speed));
+                let speed_pitch = view.clone();
+                menu = menu.item(menu_value_item(t(Str::MenuSpeedPitch), speed).on_click(move |_, _, cx| {
+                    speed_pitch.update(cx, |_, cx| cx.emit(NowPlayingEvent::OpenSpeedPitch)).ok();
+                }));
+                let preset = crate::audio_effects::preset_name(&effects.tone.eq_db).to_owned();
+                let equalizer = view.clone();
+                menu = menu.item(menu_value_item(t(Str::SoundEq), preset).on_click(move |_, _, cx| {
+                    equalizer.update(cx, |_, cx| cx.emit(NowPlayingEvent::OpenEqualizer)).ok();
                 }));
                 let reload = queue_playback.clone();
                 menu.separator().item(

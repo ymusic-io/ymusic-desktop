@@ -325,6 +325,13 @@ pub fn dev_keys(window: &mut Window, cx: &mut App) {
         .detach();
 }
 
+/// A sound dialog to open on the next frame (opening needs the window).
+#[derive(Clone, Copy)]
+enum SoundDialog {
+    SpeedPitch,
+    Equalizer,
+}
+
 /// A surface pushed over a section's root; each draws its own back bar.
 enum Layer {
     Feed { view: Entity<FeedView>, title: SharedString },
@@ -386,8 +393,8 @@ pub struct Shell {
     pending_search: bool,
     /// The graph's guest launch: no sign-in, account or YouTube play history surfaces.
     guest: bool,
-    /// Debug: open the Sound panel on the next frame.
-    pending_sound: bool,
+    /// A sound dialog to open on the next frame.
+    pending_sound: Option<SoundDialog>,
     /// A download dialog to open on the next frame (opening needs the window).
     pending_download: Option<DownloadTarget>,
     /// The video whose details dialog opens on the next frame.
@@ -428,7 +435,8 @@ impl Shell {
             match event {
                 NowPlayingEvent::Close => shell.now_playing_open = false,
                 NowPlayingEvent::Download(target) => shell.pending_download = Some(target.clone()),
-                NowPlayingEvent::OpenSound => shell.pending_sound = true,
+                NowPlayingEvent::OpenSpeedPitch => shell.pending_sound = Some(SoundDialog::SpeedPitch),
+                NowPlayingEvent::OpenEqualizer => shell.pending_sound = Some(SoundDialog::Equalizer),
                 NowPlayingEvent::Details(video_id) => shell.pending_details = Some(video_id.clone()),
                 NowPlayingEvent::OpenChannel { url, title } => {
                     let source = FeedSource::from_link(url).unwrap_or_else(|| FeedSource::Channel(url.clone()));
@@ -548,7 +556,7 @@ impl Shell {
             pending_signin: false,
             pending_search: false,
             guest,
-            pending_sound: false,
+            pending_sound: None,
             pending_download: None,
             pending_details: None,
             _media_session: media_session,
@@ -916,7 +924,8 @@ impl Shell {
                     view.update(cx, |view, cx| view.dev_message(text, send, window, cx));
                 });
             }
-            _ if route == "sound" => self.pending_sound = true,
+            _ if route == "speedpitch" => self.pending_sound = Some(SoundDialog::SpeedPitch),
+            _ if route == "equalizer" => self.pending_sound = Some(SoundDialog::Equalizer),
             _ if route == "sleeptimer" => {
                 let playback = self.playback.clone();
                 window.defer(cx, move |window, cx| crate::sleep_timer::SleepTimerDialog::open(playback, window, cx));
@@ -1041,7 +1050,8 @@ impl Shell {
     }
 
     /// Debug: `speed=2,pitch=1,preset=1,loop=One,shuffle=1,sleep=<seconds>,video=0,boot=1` applied at start;
-    /// `seek=<after s>@<to s>` (repeatable) seeks once that many seconds have passed.
+    /// `seek=<after s>@<to s>` (repeatable) seeks once that many seconds have passed;
+    /// `speedpitch=<s>` / `equalizer=<s>` open that dialog after `s` seconds.
     fn dev_player(&mut self, spec: &str, cx: &mut Context<Self>) {
         let mut effects = self.playback.read(cx).effects;
         for (key, value) in spec.split(',').filter_map(|pair| pair.split_once('=')) {
@@ -1062,14 +1072,15 @@ impl Shell {
                 }
                 "shuffle" => self.playback.update(cx, |playback, cx| playback.set_shuffle(value == "1", cx)),
                 "video" => self.playback.update(cx, |playback, cx| playback.set_video(value != "0", cx)),
-                "sound" => {
+                "speedpitch" | "equalizer" => {
+                    let dialog = if key == "equalizer" { SoundDialog::Equalizer } else { SoundDialog::SpeedPitch };
                     let seconds = value.parse().unwrap_or(0);
                     let executor = cx.background_executor().clone();
                     cx.spawn(async move |shell, cx| {
                         executor.timer(std::time::Duration::from_secs(seconds)).await;
                         shell
                             .update(cx, |shell, cx| {
-                                shell.pending_sound = true;
+                                shell.pending_sound = Some(dialog);
                                 cx.notify();
                             })
                             .ok();
@@ -2111,8 +2122,12 @@ impl Render for Shell {
         if let Some(target) = self.pending_download.take() {
             DownloadPicker::open(target, window, cx);
         }
-        if std::mem::take(&mut self.pending_sound) {
-            crate::sound_panel::SoundPanel::open(self.playback.clone(), window, cx);
+        match self.pending_sound.take() {
+            Some(SoundDialog::SpeedPitch) => {
+                crate::speed_pitch::SpeedPitchDialog::open(self.playback.clone(), window, cx)
+            }
+            Some(SoundDialog::Equalizer) => crate::equalizer::EqualizerDialog::open(self.playback.clone(), window, cx),
+            None => {}
         }
         if std::mem::take(&mut self.pending_signin) {
             self.open_sign_in(window, cx);

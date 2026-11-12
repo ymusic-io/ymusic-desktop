@@ -1,7 +1,7 @@
 //! Speed, pitch and tone (EQ, bass, virtualizer, preamp), kept in settings under the JVM app's keys
 //! and applied to whichever engine plays.
 
-use ym_i18n::Str;
+use ym_i18n::{Str, t};
 use ym_mse::Tone;
 use ym_settings::SettingsStore;
 
@@ -12,7 +12,9 @@ const EQ_KEY: &str = "player.eq";
 
 pub const SPEED_RANGE: (f32, f32) = (0.25, 4.0);
 pub const PITCH_RANGE: (f32, f32) = (0.5, 2.0);
-pub const PREAMP_RANGE: (f32, f32) = (-12.0, 12.0);
+/// Band, bass and preamp gain, dB.
+pub const GAIN_RANGE: (f32, f32) = (-12.0, 12.0);
+pub const VIRTUALIZER_RANGE: (f32, f32) = (0.5, 2.0);
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct AudioEffects {
@@ -45,12 +47,15 @@ impl AudioEffects {
             .split(',')
             .filter_map(|value| value.trim().parse().ok())
             .collect();
+        let gain = |db: f32| db.clamp(GAIN_RANGE.0, GAIN_RANGE.1);
         if saved.len() >= 12 {
-            effects.tone.bass_db = saved[0];
-            effects.tone.virtualizer = saved[1];
-            effects.tone.eq_db.copy_from_slice(&saved[2..12]);
+            effects.tone.bass_db = gain(saved[0]);
+            effects.tone.virtualizer = saved[1].clamp(VIRTUALIZER_RANGE.0, VIRTUALIZER_RANGE.1);
+            for (band, db) in effects.tone.eq_db.iter_mut().zip(&saved[2..12]) {
+                *band = gain(*db);
+            }
             if let Some(preamp) = saved.get(12) {
-                effects.tone.preamp_db = preamp.clamp(PREAMP_RANGE.0, PREAMP_RANGE.1);
+                effects.tone.preamp_db = gain(*preamp);
             }
         }
         effects
@@ -67,6 +72,16 @@ impl AudioEffects {
             (EQ_KEY, format!("{},{},{bands},{}", float(tone.bass_db), float(tone.virtualizer), float(tone.preamp_db))),
         ]
     }
+}
+
+/// The preset whose curve `bands` are (within a fifth of a dB of each band), if any.
+pub fn preset_of(bands: &[f32; 10]) -> Option<usize> {
+    EQ_PRESETS.iter().position(|(_, curve)| curve.iter().zip(bands).all(|(preset, band)| (preset - band).abs() < 0.2))
+}
+
+/// The name of `bands`' preset, or Custom.
+pub fn preset_name(bands: &[f32; 10]) -> &'static str {
+    preset_of(bands).map(|index| t(EQ_PRESETS[index].0)).unwrap_or(t(Str::SoundPresetCustom))
 }
 
 /// The equalizer's named curves.
