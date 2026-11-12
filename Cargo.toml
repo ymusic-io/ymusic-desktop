@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
 members = ["crates/*"]
+exclude = ["vendor"]
 
 [workspace.package]
 edition = "2024"
@@ -18,6 +19,9 @@ bytes = "1"
 futures = "0.3"
 url = "2"
 rusqlite = { version = "0.41", features = ["bundled"] }
+
+[patch.crates-io]
+gpui-pre-windows = { path = "vendor/gpui-pre-windows" }
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
