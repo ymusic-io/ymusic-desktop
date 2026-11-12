@@ -199,6 +199,13 @@ fn main() {
             async {}
         })
         .detach();
+        cx.on_app_quit(|cx| {
+            if let Some(graph) = cx.try_global::<AppGraph>() {
+                graph.youtube.clone().close_for_quit(&graph.tokio);
+            }
+            async {}
+        })
+        .detach();
         crate::settings_view::apply_saved_theme(app_db.as_ref(), cx);
         cx.set_global(crate::desktop::WindowPrefs(window_prefs.clone()));
         crate::desktop::set_dock_icon(&log);

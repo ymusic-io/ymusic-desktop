@@ -2,7 +2,9 @@
 //! playback or a download and kept for the app's lifetime.
 
 use std::sync::Arc;
+use std::time::Duration;
 
+use tokio::runtime::Handle;
 use ym_common::log::{Level, Logger};
 use ym_engine::{DynamicEngine, EngineConfig, EngineError};
 use ym_mse::MseHost;
@@ -15,6 +17,9 @@ pub struct YoutubeSession {
 }
 
 pub type CandidateSource = Arc<dyn Fn() -> Vec<(String, Option<VerifiedBundle>)> + Send + Sync>;
+
+/// How long quit waits for the player engine to free its JS heap.
+const QUIT_CLOSE_WAIT: Duration = Duration::from_secs(2);
 
 pub struct YoutubeSessions {
     session: tokio::sync::Mutex<Option<Arc<YoutubeSession>>>,
@@ -44,6 +49,23 @@ impl YoutubeSessions {
         let session = Arc::new(self.boot().await?);
         *slot = Some(session.clone());
         Ok(session)
+    }
+
+    /// For app quit, from the UI thread: stops the session's JS, waiting up to [`QUIT_CLOSE_WAIT`],
+    /// so the host the app drops next takes its decoders down before the process exits.
+    pub fn close_for_quit(self: Arc<Self>, tokio: &Handle) {
+        let (done, closed) = std::sync::mpsc::channel();
+        let sessions = self.clone();
+        tokio.spawn(async move {
+            let session = sessions.session.lock().await.clone();
+            if let Some(session) = session {
+                session.engine.close().await;
+            }
+            let _ = done.send(());
+        });
+        if closed.recv_timeout(QUIT_CLOSE_WAIT).is_err() {
+            self.log.warn("the player engine did not close in time at quit", None);
+        }
     }
 
     async fn boot(&self) -> Result<YoutubeSession, EngineError> {
