@@ -10,7 +10,7 @@ use gpui_kit::component::{ActiveTheme, Sizable, WindowExt, h_flex, v_flex};
 use gpui_kit::*;
 use ym_i18n::{Str, t, tf};
 
-use crate::a11y::FocusList;
+use crate::a11y::{FocusList, SliderStop};
 
 pub const ACCENT_KEY: &str = "theme.accent";
 const DEFAULT_ACCENT: Rgb = Rgb::hex(0xE8732A);
@@ -271,7 +271,13 @@ impl Render for AccentPicker {
             v_flex()
                 .gap_4()
                 .child(swatches)
-                .child(v_flex().gap_2().child(hue_bar).child(Slider::new(&self.hue_slider).accessibility_label(name)))
+                .child(v_flex().gap_2().child(hue_bar).child(self.focus.slider(
+                    stops + 2,
+                    &self.hue_slider,
+                    SliderStop::new("accent-hue", name),
+                    Slider::new(&self.hue_slider).accessibility_label(name),
+                    cx,
+                )))
                 .child(
                     h_flex()
                         .gap_3()

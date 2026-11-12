@@ -17,7 +17,7 @@ use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use ym_i18n::{Str, t, tf};
 
-use crate::a11y::FocusList;
+use crate::a11y::{FocusList, SliderStop};
 use crate::action_icon::{HIT, glyph_action_icon, lucide_size, sized_action_icon};
 use crate::audio_only::AudioOnlyArt;
 use crate::download_dialog::DownloadTarget;
@@ -60,6 +60,7 @@ const OVERLAY_DETAILS: usize = 6;
 const OVERLAY_SPEED: usize = 7;
 const OVERLAY_CAPTIONS: usize = 8;
 const OVERLAY_FULLSCREEN: usize = 9;
+const OVERLAY_SEEK: usize = 10;
 const MENU_CAPTIONS: u8 = 1;
 const MENU_QUALITY: u8 = 2;
 const MENU_MORE: u8 = 4;
@@ -719,9 +720,24 @@ impl NowPlaying {
                     cx,
                 ),
             );
-        let seek = div()
-            .block_mouse_except_scroll()
-            .child(Slider::new(&self.seek).h(px(20.)).accessibility_label(t(Str::A11yPlaybackPosition)));
+        let playback = self.playback.clone();
+        let seek_stop = SliderStop {
+            value_text: Some(format!("{} / {}", clock(position), clock(duration)).into()),
+            on_step: Some(Rc::new(move |delta, _, cx| {
+                playback.update(cx, |playback, cx| playback.seek_by(delta as i64 * SKIP_MS, cx))
+            })),
+            ..SliderStop::new("np-seek", t(Str::A11yPlaybackPosition))
+        };
+        let seek = self
+            .overlay_focus
+            .slider(
+                OVERLAY_SEEK,
+                &self.seek,
+                seek_stop,
+                Slider::new(&self.seek).h(px(20.)).accessibility_label(t(Str::A11yPlaybackPosition)),
+                cx,
+            )
+            .block_mouse_except_scroll();
 
         let artist = self.artist_line(STOP_CHANNEL_OVERLAY, current, cx);
         let title = v_flex()
@@ -1489,6 +1505,7 @@ impl NowPlaying {
         let thumb = if large { 60. } else { 48. };
         let dragging = self.drag.index.get();
         self.drag.rows.borrow_mut().resize(queue.len(), Bounds::default());
+        self.queue_focus.set_entry((index < queue.len()).then_some(index), cx);
         let mut list = v_flex();
         for (position, item) in queue.iter().enumerate() {
             let active = position == index;

@@ -1,5 +1,7 @@
 //! The persistent mini-player bar: what's playing, transport controls, seek and volume.
 
+use std::rc::Rc;
+
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::base::slider::{SliderEvent, SliderState};
 use gpui_kit::component::slider::Slider;
@@ -8,7 +10,7 @@ use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use ym_i18n::{Str, t, tf};
 
-use crate::a11y::FocusList;
+use crate::a11y::{FocusList, SliderStop};
 use crate::action_icon::{HIT, action_icon, lucide_size, sized_action_icon};
 use crate::playback::{PlayState, Playback, QueueItem};
 use crate::queue_nav::LoopMode;
@@ -128,6 +130,11 @@ const STOP_REPEAT: usize = 5;
 const STOP_EQUALIZER: usize = 6;
 const STOP_SPEED: usize = 7;
 const STOP_SLEEP: usize = 8;
+const STOP_SEEK: usize = 9;
+const STOP_VOLUME: usize = 10;
+/// One arrow press on the bar's seek slider and volume.
+const SEEK_STEP_MS: i64 = 10_000;
+const VOLUME_STEP: f32 = 0.05;
 
 impl MiniPlayer {
     fn sleep_button(&self, remaining: Option<std::time::Duration>, after_current: bool, cx: &mut Context<Self>) -> Div {
@@ -343,9 +350,18 @@ impl MiniPlayer {
                     .gap_2()
                     .items_center()
                     .child(div().text_xs().font_semibold().text_color(theme.muted_foreground).child(clock(position)))
-                    .child(
-                        div().flex_1().child(Slider::new(&self.seek).accessibility_label(t(Str::A11yPlaybackPosition))),
-                    )
+                    .child({
+                        let playback = self.playback.clone();
+                        let stop = SliderStop {
+                            value_text: Some(format!("{} / {}", clock(position), clock(duration)).into()),
+                            on_step: Some(Rc::new(move |delta, _, cx| {
+                                playback.update(cx, |playback, cx| playback.seek_by(delta as i64 * SEEK_STEP_MS, cx))
+                            })),
+                            ..SliderStop::new("bar-seek", t(Str::A11yPlaybackPosition))
+                        };
+                        let slider = Slider::new(&self.seek).accessibility_label(t(Str::A11yPlaybackPosition));
+                        self.focus.slider(STOP_SEEK, &self.seek, stop, slider, cx).flex_1()
+                    })
                     .child(div().text_xs().font_semibold().text_color(theme.muted_foreground).child(clock(duration))),
             );
         let side_controls = side.then(|| {
@@ -387,9 +403,12 @@ impl MiniPlayer {
                         .text_color(theme.muted_foreground),
                     ),
                 )
-                .child(div().w(px(BAR_VOLUME_WIDTH)).child(
-                    Slider::new(&self.volume).accessibility_label(tf(Str::SoundVolume, &[&((volume * 100.0) as i32)])),
-                ))
+                .child({
+                    let label = tf(Str::SoundVolume, &[&((volume * 100.0) as i32)]);
+                    let stop = SliderStop { step: Some(VOLUME_STEP), ..SliderStop::new("bar-volume", label.clone()) };
+                    let slider = Slider::new(&self.volume).accessibility_label(label);
+                    self.focus.slider(STOP_VOLUME, &self.volume, stop, slider, cx).w(px(BAR_VOLUME_WIDTH))
+                })
         });
         h_flex()
             .id("player-bar")

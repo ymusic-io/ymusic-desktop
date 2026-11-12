@@ -11,7 +11,7 @@ use gpui_kit::*;
 use ym_i18n::{Str, t};
 use ym_settings::SettingsStore;
 
-use crate::a11y::FocusList;
+use crate::a11y::{FocusList, OnStep, SliderStop};
 use crate::accent::Rgb;
 use crate::settings_view::save_setting;
 
@@ -83,6 +83,18 @@ impl CaptionLook {
 }
 
 /// `value` snapped to `1 / steps_per_unit`, written the way Kotlin's `Float.toString` reads back.
+/// An arrow press on a caption slider: one step, saved at once (a drag saves on release).
+fn saved_step(state: &Entity<SliderState>, key: &'static str, steps_per_unit: f32) -> OnStep {
+    let state = state.clone();
+    std::rc::Rc::new(move |delta, window, cx| {
+        state.update(cx, |slider, cx| {
+            let step = slider.accessibility_step();
+            slider.step_thumb(false, delta * step, window, cx);
+        });
+        save_setting(key, float_text(state.read(cx).value().end(), steps_per_unit).1, cx);
+    })
+}
+
 fn float_text(value: f32, steps_per_unit: f32) -> (f32, String) {
     let snapped = (value * steps_per_unit).round() / steps_per_unit;
     let text = snapped.to_string();
@@ -282,7 +294,19 @@ impl Render for CaptionStyleDialog {
                     .gap_4()
                     .items_center()
                     .child(
-                        div().flex_1().child(Slider::new(&self.scale).accessibility_label(t(Str::SettingsCaptionSize))),
+                        self.focus
+                            .slider(
+                                button_stops + 2,
+                                &self.scale,
+                                SliderStop {
+                                    value_text: Some(scale_label(self.saved.scale).into()),
+                                    on_step: Some(saved_step(&self.scale, SCALE_KEY, 10.)),
+                                    ..SliderStop::new("caption-scale", t(Str::SettingsCaptionSize))
+                                },
+                                Slider::new(&self.scale).accessibility_label(t(Str::SettingsCaptionSize)),
+                                cx,
+                            )
+                            .flex_1(),
                     )
                     .child(value_label(scale_label(self.saved.scale))),
             )
@@ -296,9 +320,19 @@ impl Render for CaptionStyleDialog {
                     .gap_4()
                     .items_center()
                     .child(
-                        div()
-                            .flex_1()
-                            .child(Slider::new(&self.opacity).accessibility_label(t(Str::CaptionBackgroundOpacity))),
+                        self.focus
+                            .slider(
+                                button_stops + 3,
+                                &self.opacity,
+                                SliderStop {
+                                    value_text: Some(opacity_label(self.saved.opacity).into()),
+                                    on_step: Some(saved_step(&self.opacity, BACKGROUND_OPACITY_KEY, 20.)),
+                                    ..SliderStop::new("caption-opacity", t(Str::CaptionBackgroundOpacity))
+                                },
+                                Slider::new(&self.opacity).accessibility_label(t(Str::CaptionBackgroundOpacity)),
+                                cx,
+                            )
+                            .flex_1(),
                     )
                     .child(value_label(opacity_label(self.saved.opacity))),
             )

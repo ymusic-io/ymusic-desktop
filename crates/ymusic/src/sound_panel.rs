@@ -10,6 +10,7 @@ use gpui_kit::*;
 use ym_i18n::{Str, t, tf};
 use ym_mse::Tone;
 
+use crate::a11y::{FocusList, SliderStop};
 use crate::audio_effects::{AudioEffects, EQ_PRESETS, PITCH_RANGE, PREAMP_RANGE};
 use crate::playback::Playback;
 
@@ -56,6 +57,7 @@ pub struct SoundPanel {
     bass: Entity<SliderState>,
     virtualizer: Entity<SliderState>,
     preamp: Entity<SliderState>,
+    focus: FocusList,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -92,7 +94,8 @@ impl SoundPanel {
         watch(&bass, Control::Bass, cx);
         watch(&virtualizer, Control::Virtualizer, cx);
         watch(&preamp, Control::Preamp, cx);
-        Self { playback, speed, pitch, bands, bass, virtualizer, preamp, _subscriptions: subscriptions }
+        let focus = FocusList::modal(None, cx);
+        Self { playback, speed, pitch, bands, bass, virtualizer, preamp, focus, _subscriptions: subscriptions }
     }
 
     fn apply(&mut self, control: Control, value: f32, cx: &mut Context<Self>) {
@@ -139,31 +142,40 @@ impl Render for SoundPanel {
             .map(|(label, _)| t(*label))
             .unwrap_or_else(|| t(Str::SoundPresetCustom));
         let label = |text: String| div().w(px(110.)).text_sm().child(text);
-        let slider_row = |name: String, state: &Entity<SliderState>, value: String| {
+        let slider_row = |index: usize, name: String, state: &Entity<SliderState>, value: String, cx: &App| {
+            let stop = SliderStop {
+                value_text: Some(value.clone().into()),
+                ..SliderStop::new(("sound-slider", index), name.clone())
+            };
             h_flex()
                 .gap_3()
                 .items_center()
-                .child(label(name))
-                .child(div().flex_1().child(Slider::new(state)))
+                .child(label(name.clone()))
+                .child(self.focus.slider(index, state, stop, Slider::new(state).accessibility_label(name), cx).flex_1())
                 .child(div().w(px(56.)).text_xs().text_color(theme.muted_foreground).child(value))
         };
+        let bands = self.bands.len();
+        let (preset_stop, bass_stop) = (2, 3 + bands);
 
         let panel = cx.entity().downgrade();
-        let presets = Button::new("preset").small().label(preset).dropdown_menu(move |mut menu, _, _| {
-            for (label, bands) in EQ_PRESETS {
-                let panel = panel.clone();
-                menu = menu.item(PopupMenuItem::new(t(label)).on_click(move |_, window, cx| {
-                    panel
-                        .update(cx, |panel, cx| {
-                            let mut effects = panel.playback.read(cx).effects;
-                            effects.tone.eq_db = bands;
-                            panel.load(effects, window, cx);
-                        })
-                        .ok();
-                }));
-            }
-            menu
-        });
+        let presets =
+            Button::new("preset").small().label(preset).track_focus(&self.focus.handle(preset_stop, cx)).dropdown_menu(
+                move |mut menu, _, _| {
+                    for (label, bands) in EQ_PRESETS {
+                        let panel = panel.clone();
+                        menu = menu.item(PopupMenuItem::new(t(label)).on_click(move |_, window, cx| {
+                            panel
+                                .update(cx, |panel, cx| {
+                                    let mut effects = panel.playback.read(cx).effects;
+                                    effects.tone.eq_db = bands;
+                                    panel.load(effects, window, cx);
+                                })
+                                .ok();
+                        }));
+                    }
+                    menu
+                },
+            );
 
         let mut faders = h_flex().gap_2().justify_between().h(px(180.));
         for (index, band) in self.bands.iter().enumerate() {
@@ -177,7 +189,16 @@ impl Render for SoundPanel {
                             .text_color(theme.muted_foreground)
                             .child(format!("{:+}", effects.tone.eq_db[index] as i32)),
                     )
-                    .child(div().flex_1().child(Slider::new(band).vertical()))
+                    .child({
+                        let name = format!("{}, {}", t(Str::SoundEq), BAND_LABELS[index]);
+                        let stop = SliderStop {
+                            value_text: Some(tf(Str::SoundDb, &[&effects.tone.eq_db[index]]).into()),
+                            vertical: true,
+                            ..SliderStop::new(("eq-band", index), name.clone())
+                        };
+                        let slider = Slider::new(band).vertical().accessibility_label(name);
+                        self.focus.slider(3 + index, band, stop, slider, cx).flex_1()
+                    })
                     .child(div().text_xs().child(BAND_LABELS[index])),
             );
         }
@@ -185,33 +206,45 @@ impl Render for SoundPanel {
         v_flex()
             .gap_3()
             .child(div().text_sm().font_semibold().child(t(Str::SoundPlayback)))
-            .child(slider_row(t(Str::SoundSpeed).to_owned(), &self.speed, rate(effects.speed)))
-            .child(slider_row(tf(Str::SoundPitch, &[&""]).trim().to_owned(), &self.pitch, rate(effects.pitch)))
+            .child(slider_row(0, t(Str::SoundSpeed).to_owned(), &self.speed, rate(effects.speed), cx))
+            .child(slider_row(1, tf(Str::SoundPitch, &[&""]).trim().to_owned(), &self.pitch, rate(effects.pitch), cx))
             .child(
                 h_flex()
                     .justify_between()
                     .items_center()
                     .child(div().text_sm().font_semibold().child(t(Str::SoundEq)))
-                    .child(presets),
+                    .child(self.focus.wrap(preset_stop, presets, cx)),
             )
             .child(faders)
-            .child(slider_row(t(Str::SoundBass).to_owned(), &self.bass, tf(Str::SoundDb, &[&effects.tone.bass_db])))
             .child(slider_row(
+                bass_stop,
+                t(Str::SoundBass).to_owned(),
+                &self.bass,
+                tf(Str::SoundDb, &[&effects.tone.bass_db]),
+                cx,
+            ))
+            .child(slider_row(
+                bass_stop + 1,
                 t(Str::SoundVirtualizerTitle).to_owned(),
                 &self.virtualizer,
                 rate(effects.tone.virtualizer),
+                cx,
             ))
             .child(slider_row(
+                bass_stop + 2,
                 t(Str::A11yEqPreamp).to_owned(),
                 &self.preamp,
                 tf(Str::SoundDb, &[&effects.tone.preamp_db]),
+                cx,
             ))
-            .child(h_flex().justify_end().child(Button::new("reset").small().label(t(Str::SoundReset)).on_click(
-                cx.listener(|panel, _, window, cx| {
+            .child(h_flex().justify_end().child(self.focus.button(
+                bass_stop + 3,
+                Button::new("reset").small().label(t(Str::SoundReset)).on_click(cx.listener(|panel, _, window, cx| {
                     let speed_pitch = panel.playback.read(cx).effects;
                     let defaults = AudioEffects { tone: Tone::default(), ..speed_pitch };
                     panel.load(AudioEffects { speed: 1.0, pitch: 1.0, ..defaults }, window, cx);
-                }),
+                })),
+                cx,
             )))
     }
 }

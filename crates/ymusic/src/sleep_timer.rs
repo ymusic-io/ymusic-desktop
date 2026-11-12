@@ -13,7 +13,7 @@ use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use ym_i18n::{Str, t, tf};
 
-use crate::a11y::FocusList;
+use crate::a11y::{FocusList, SliderStop};
 use crate::graph::AppGraph;
 use crate::mini_player::clock;
 use crate::playback::Playback;
@@ -280,14 +280,19 @@ impl Render for SleepTimerDialog {
             .child(
                 v_flex()
                     .items_center()
-                    .child(div().text_size(px(34.)).font_semibold().child(title))
+                    .child(div().text_size(px(34.)).font_semibold().child(title.clone()))
                     .child(div().text_sm().text_color(theme.muted_foreground).child(subtitle)),
             )
-            .child(
-                div()
-                    .when(end_of_track, |frame| frame.opacity(0.5))
-                    .child(Slider::new(&self.slider).accessibility_label(t(Str::CdSleepTimer))),
-            )
+            .child(div().when(end_of_track, |frame| frame.opacity(0.5)).child(self.focus.slider(
+                STOP_START + 1,
+                &self.slider,
+                SliderStop {
+                    value_text: Some(title.clone().into()),
+                    ..SliderStop::new("sleep-minutes", t(Str::CdSleepTimer))
+                },
+                Slider::new(&self.slider).accessibility_label(t(Str::CdSleepTimer)),
+                cx,
+            )))
             .child(chips)
             .child(
                 h_flex()

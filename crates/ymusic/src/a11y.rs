@@ -8,8 +8,10 @@ use std::cell::{Cell, RefCell};
 use std::ops::Range;
 use std::rc::{Rc, Weak};
 
+use gpui_kit::base::slider::SliderState;
 use gpui_kit::component::ActiveTheme;
 use gpui_kit::component::button::Button;
+use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 
 const RING: f32 = 2.;
@@ -23,6 +25,8 @@ struct Slot {
     handle: FocusHandle,
     /// Arrows move between stops of one group: 0 is the window, a dialog has its own.
     group: u64,
+    /// The list the stop belongs to, whose entry stop an arrow coming from elsewhere lands on.
+    entry: Rc<RefCell<Option<FocusHandle>>>,
     was_focused: Cell<bool>,
     /// Window bounds as last painted, and the frame that painted it.
     bounds: Cell<Bounds<Pixels>>,
@@ -165,7 +169,13 @@ fn step(direction: Direction, window: &mut Window, cx: &mut App) -> bool {
         .filter_map(|slot| rank(from, slot.bounds.get(), direction).map(|rank| (rank, slot)))
         .min_by(|(left, _), (right, _)| left.partial_cmp(right).unwrap_or(std::cmp::Ordering::Equal));
     let Some((_, target)) = best else { return false };
-    let handle = target.handle.clone();
+    let mut handle = target.handle.clone();
+    if !Rc::ptr_eq(&target.entry, &current.entry) {
+        let entry = target.entry.borrow().clone();
+        if let Some(entry) = entry.filter(|entry| slots.iter().any(|slot| slot.handle == *entry)) {
+            handle = entry;
+        }
+    }
     window.focus(&handle, cx);
     true
 }
@@ -232,19 +242,20 @@ pub struct FocusList {
     slots: RefCell<Vec<Rc<Slot>>>,
     scroll: Option<ScrollHandle>,
     group: u64,
+    entry: Rc<RefCell<Option<FocusHandle>>>,
 }
 
 impl FocusList {
     /// `scroll` is the scroll container the items live in, to reveal a focused item.
     pub fn new(scroll: Option<ScrollHandle>) -> Self {
-        Self { slots: RefCell::default(), scroll, group: 0 }
+        Self { slots: RefCell::default(), scroll, group: 0, entry: Rc::default() }
     }
 
     /// A dialog's stops: arrows stay among them, never reaching the window behind.
     pub fn modal(scroll: Option<ScrollHandle>, cx: &App) -> Self {
         let items = cx.global::<RovingItems>();
         items.last_group.set(items.last_group.get() + 1);
-        Self { slots: RefCell::default(), scroll, group: items.last_group.get() }
+        Self { slots: RefCell::default(), scroll, group: items.last_group.get(), entry: Rc::default() }
     }
 
     fn slot(&self, index: usize, cx: &App) -> Rc<Slot> {
@@ -253,6 +264,7 @@ impl FocusList {
             let slot = Rc::new(Slot {
                 handle: cx.focus_handle().tab_stop(true),
                 group: self.group,
+                entry: self.entry.clone(),
                 was_focused: Cell::new(false),
                 bounds: Cell::new(Bounds::default()),
                 painted: Cell::new(0),
@@ -272,6 +284,7 @@ impl FocusList {
         let slot = Rc::new(Slot {
             handle: handle.clone(),
             group: self.group,
+            entry: self.entry.clone(),
             was_focused: Cell::new(false),
             bounds: Cell::new(Bounds::default()),
             painted: Cell::new(0),
@@ -279,6 +292,13 @@ impl FocusList {
         RovingItems::register(cx, &slot);
         self.slots.borrow_mut()[index] = slot.clone();
         slot
+    }
+
+    /// An arrow coming into the list from another lands on the `index`th stop (the playing item),
+    /// not the nearest one.
+    pub fn set_entry(&self, index: Option<usize>, cx: &App) {
+        let handle = index.map(|index| self.handle(index, cx));
+        *self.entry.borrow_mut() = handle;
     }
 
     pub fn handle(&self, index: usize, cx: &App) -> FocusHandle {
@@ -405,6 +425,69 @@ impl FocusList {
         arrows(div().relative().child(element).child(self.tracker(slot, None)), false)
     }
 
+    /// Makes `slider`, driven by `state`, the list's `index`th stop as one control: the arrows along it
+    /// (and Home, End) step it, the arrows across it move on. `keys` says how it steps.
+    pub fn slider(
+        &self,
+        index: usize,
+        state: &Entity<SliderState>,
+        spec: SliderStop,
+        slider: impl IntoElement,
+        cx: &App,
+    ) -> Stateful<Div> {
+        let slot = self.slot(index, cx);
+        let model = state.read(cx);
+        let (value, min, max) = (model.value().end(), model.min_value(), model.max_value());
+        let step = spec.step.unwrap_or_else(|| model.accessibility_step());
+        let vertical = spec.vertical;
+        let act = move |delta: f32, state: &Entity<SliderState>, window: &mut Window, cx: &mut App| {
+            state.update(cx, |state, cx| state.step_thumb(false, delta, window, cx));
+        };
+        let on_step = spec.on_step.clone();
+        let key_state = state.clone();
+        let element = div()
+            .id(spec.id)
+            .role(Role::Slider)
+            .aria_label(spec.label)
+            .aria_numeric_value(value as f64)
+            .aria_min_numeric_value(min as f64)
+            .aria_max_numeric_value(max as f64)
+            .aria_numeric_value_step(step as f64)
+            .when_some(spec.value_text, |element, text| element.aria_value(text))
+            .aria_orientation(if vertical { Orientation::Vertical } else { Orientation::Horizontal })
+            .on_key_down(move |event: &KeyDownEvent, window, cx| {
+                let modifiers = &event.keystroke.modifiers;
+                if modifiers.platform || modifiers.control || modifiers.alt || modifiers.shift {
+                    return;
+                }
+                let delta = match (event.keystroke.key.as_str(), vertical) {
+                    ("right", false) | ("up", true) => 1.,
+                    ("left", false) | ("down", true) => -1.,
+                    ("home", _) if on_step.is_none() => min - max,
+                    ("end", _) if on_step.is_none() => max - min,
+                    _ => return,
+                };
+                match &on_step {
+                    Some(on_step) => on_step(delta, window, cx),
+                    None => act(if delta.abs() == 1. { delta * step } else { delta }, &key_state, window, cx),
+                }
+                cx.stop_propagation();
+            });
+        let (increment, decrement) = (spec.on_step.clone(), spec.on_step);
+        let (up_state, down_state) = (state.clone(), state.clone());
+        let element = element
+            .on_a11y_action(AccessibleAction::Increment, move |_, window, cx| match &increment {
+                Some(on_step) => on_step(1., window, cx),
+                None => act(step, &up_state, window, cx),
+            })
+            .on_a11y_action(AccessibleAction::Decrement, move |_, window, cx| match &decrement {
+                Some(on_step) => on_step(-1., window, cx),
+                None => act(-step, &down_state, window, cx),
+            })
+            .child(slider);
+        self.ringed(slot, element, None, cx)
+    }
+
     /// Home and End over the stops in `items`.
     pub fn container<E: InteractiveElement>(&self, element: E, items: Range<usize>, cx: &App) -> E {
         let handles: Vec<FocusHandle> = items.map(|index| self.handle(index, cx)).collect();
@@ -422,6 +505,29 @@ impl FocusList {
                 cx.stop_propagation();
             }
         })
+    }
+}
+
+/// A slider's arrow press, called with -1 or 1.
+pub type OnStep = Rc<dyn Fn(f32, &mut Window, &mut App)>;
+
+/// How a [`FocusList::slider`] reads and steps.
+pub struct SliderStop {
+    pub id: ElementId,
+    pub label: SharedString,
+    /// What the value means to a listener ("1:05 / 3:20"); the number alone when `None`.
+    pub value_text: Option<SharedString>,
+    /// One press of an arrow along it; the slider's own step when `None`.
+    pub step: Option<f32>,
+    pub vertical: bool,
+    /// Called with -1 or 1 per press in place of stepping the value: a seek bar, which acts only
+    /// when a drag ends.
+    pub on_step: Option<OnStep>,
+}
+
+impl SliderStop {
+    pub fn new(id: impl Into<ElementId>, label: impl Into<SharedString>) -> Self {
+        Self { id: id.into(), label: label.into(), value_text: None, step: None, vertical: false, on_step: None }
     }
 }
 
