@@ -541,15 +541,15 @@ unsafe extern "system" fn pin_subclass(
     message: u32,
     wparam: windows::Win32::Foundation::WPARAM,
     lparam: windows::Win32::Foundation::LPARAM,
-    _subclass: usize,
+    subclass: usize,
     _data: usize,
 ) -> windows::Win32::Foundation::LRESULT {
     use windows::Win32::Foundation::LRESULT;
-    use windows::Win32::UI::Shell::DefSubclassProc;
-    use windows::Win32::UI::WindowsAndMessaging::WM_SYSCOMMAND;
-    // SAFETY: called by Windows on the window's thread with its live HWND.
-    unsafe {
-        if message == WM_SYSCOMMAND && (wparam.0 as u32 & 0xFFF0) == PIN_COMMAND {
+    use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass};
+    use windows::Win32::UI::WindowsAndMessaging::{WM_NCDESTROY, WM_SYSCOMMAND};
+    if message == WM_SYSCOMMAND && (wparam.0 as u32 & 0xFFF0) == PIN_COMMAND {
+        // A panic must not unwind into Windows: the panic hook has reported it, the click is lost.
+        let _ = std::panic::catch_unwind(|| {
             apply_always_on_top(hwnd, !is_topmost(hwnd));
             PIN.with(|pin| {
                 if let Some(pin) = pin.borrow().as_ref() {
@@ -557,10 +557,16 @@ unsafe extern "system" fn pin_subclass(
                     let _ = pin.changes.unbounded_send(());
                 }
             });
-            return LRESULT(0);
-        }
-        DefSubclassProc(hwnd, message, wparam, lparam)
+        });
+        return LRESULT(0);
     }
+    if message == WM_NCDESTROY {
+        // SAFETY: the window's last message, on its thread: this subclass comes off before it goes.
+        // Fire-and-forget: the window is going away either way.
+        let _ = unsafe { RemoveWindowSubclass(hwnd, Some(pin_subclass), subclass) };
+    }
+    // SAFETY: hands the window's message on, with the arguments Windows gave this subclass.
+    unsafe { DefSubclassProc(hwnd, message, wparam, lparam) }
 }
 
 gpui_kit::actions!(ymusic_dock, [DockTogglePlay, DockStop]);
