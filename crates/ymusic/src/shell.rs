@@ -480,6 +480,8 @@ impl Shell {
             .unwrap_or(DiscoverTab::Home);
         let focus = cx.focus_handle();
         crate::a11y::track_root(&focus, cx);
+        // Focus on a control that left the screen would leave shortcuts, Tab and the arrows nowhere to go.
+        let focus_lost = cx.on_focus_lost(window, |shell, window, cx| shell.focus.focus(window, cx));
         Self {
             playback,
             mini_player,
@@ -525,7 +527,7 @@ impl Shell {
             tray_popup_closed_at: None,
             hidden_to_tray: false,
             _save_bounds: None,
-            _subscriptions: vec![toggle, now_playing_events, visibility, activation, bounds, tray_state],
+            _subscriptions: vec![toggle, now_playing_events, visibility, activation, bounds, tray_state, focus_lost],
         }
     }
 
@@ -1987,7 +1989,7 @@ impl Shell {
 
     fn shortcut_listeners(&self, root: Div, cx: &mut Context<Self>) -> Div {
         use crate::shortcuts::*;
-        root.track_focus(&self.focus)
+        crate::a11y::root_arrows(root.track_focus(&self.focus), self.focus.clone())
             .key_context(CONTEXT)
             .on_action(cx.listener(|shell, _: &TogglePlay, _, cx| shell.playback.update(cx, |p, cx| p.toggle(cx))))
             .on_action(cx.listener(|shell, _: &SeekBackward, _, cx| {

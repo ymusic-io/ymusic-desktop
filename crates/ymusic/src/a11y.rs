@@ -17,6 +17,7 @@ const RING: f32 = 2.;
 const REVEAL_MARGIN: f32 = 12.;
 /// FocusFinder's weight of the distance along the arrow against the sideways offset.
 const MAJOR_WEIGHT: f32 = 13.;
+const READING_ROW: f32 = 24.;
 
 struct Slot {
     handle: FocusHandle,
@@ -189,6 +190,38 @@ fn arrows<E: InteractiveElement>(element: E, sideways: bool) -> E {
             _ => return,
         };
         if step(direction, window, cx) {
+            cx.stop_propagation();
+        }
+    })
+}
+
+/// Arrow keys while `root` itself holds focus (nothing on screen does) move it to the first stop on
+/// screen, or the last for Up and Left.
+pub fn root_arrows<E: InteractiveElement>(element: E, root: FocusHandle) -> E {
+    element.on_key_down(move |event: &KeyDownEvent, window, cx| {
+        let modifiers = &event.keystroke.modifiers;
+        if !root.is_focused(window) || modifiers.platform || modifiers.control || modifiers.alt || modifiers.shift {
+            return;
+        }
+        let forward = match event.keystroke.key.as_str() {
+            "down" | "right" => true,
+            "up" | "left" => false,
+            _ => return,
+        };
+        let slots = RovingItems::on_screen(window, cx);
+        // Reading order, in rows of `READING_ROW`: a stop a few pixels higher is still on the same line.
+        let reading = |slot: &&Rc<Slot>| {
+            let bounds = slot.bounds.get();
+            ((f32::from(bounds.top()) / READING_ROW).floor(), f32::from(bounds.left()))
+        };
+        let order = |left: &&Rc<Slot>, right: &&Rc<Slot>| {
+            reading(left).partial_cmp(&reading(right)).unwrap_or(std::cmp::Ordering::Equal)
+        };
+        let visible = slots.iter().filter(|slot| slot.group == 0 && !slot.bounds.get().size.is_zero());
+        let target = if forward { visible.min_by(order) } else { visible.max_by(order) };
+        if let Some(target) = target {
+            let handle = target.handle.clone();
+            window.focus(&handle, cx);
             cx.stop_propagation();
         }
     })
