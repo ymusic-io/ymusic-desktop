@@ -1407,32 +1407,30 @@ impl LibraryView {
         }
     }
 
-    /// A grid card: square art, the title (2 lines) and a subtitle; `grid` false draws a list row.
-    /// `marked` adds the download-location badge.
+    /// A grid card: square art, the title (2 lines) and the subtitle when there is one; `grid` false
+    /// draws a list row. `kind` is spoken after the title, not drawn. `marked` adds the
+    /// download-location badge: on the art in a grid, in place of the subtitle in a list.
     #[allow(clippy::too_many_arguments)]
     fn card(
         id: ElementId,
         icon: Lucide,
         art: Option<SharedString>,
         title: String,
-        subtitle: String,
+        subtitle: Option<String>,
+        kind: Option<&str>,
         grid: bool,
         dimmed: bool,
         marked: bool,
         cx: &App,
     ) -> Stateful<Div> {
         let theme = cx.theme();
-        let label = if marked {
-            format!("{title}, {subtitle}, {}", t(Str::MenuDownloadLocation))
-        } else {
-            format!("{title}, {subtitle}")
-        };
-        let subtitle_row = h_flex()
-            .gap_1()
-            .items_center()
-            .min_w_0()
-            .when(marked, |row| row.child(Icon::new(Lucide::Download).size(px(14.)).text_color(theme.primary)))
-            .child(div().text_xs().text_color(theme.muted_foreground).truncate().child(subtitle));
+        let label = [Some(title.as_str()), subtitle.as_deref(), kind, marked.then(|| t(Str::MenuDownloadLocation))]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join(", ");
+        let subtitle =
+            subtitle.map(|subtitle| div().text_xs().text_color(theme.muted_foreground).truncate().child(subtitle));
         let base = div()
             .id(id)
             .role(Role::ListItem)
@@ -1447,6 +1445,7 @@ impl LibraryView {
                 .p(px(6.))
                 .child(
                     div()
+                        .relative()
                         .w_full()
                         .aspect_ratio(1.)
                         .rounded(px(10.))
@@ -1455,17 +1454,44 @@ impl LibraryView {
                         .flex()
                         .items_center()
                         .justify_center()
-                        .child(art_or_icon(icon, art, px(40.), cx)),
+                        .child(art_or_icon(icon, art, px(40.), cx))
+                        .when(marked, |tile| {
+                            tile.child(
+                                div()
+                                    .absolute()
+                                    .top(px(6.))
+                                    .left(px(6.))
+                                    .child(Icon::new(Lucide::Download).size(px(18.)).text_color(theme.primary)),
+                            )
+                        }),
                 )
                 .child(div().pt(px(7.)).text_sm().line_clamp(2).child(title))
-                .child(div().pt(px(3.)).child(subtitle_row))
+                .when_some(subtitle, |card, subtitle| card.child(div().pt(px(3.)).child(subtitle)))
         } else {
+            let second_line = if marked {
+                Some(
+                    h_flex()
+                        .gap_1()
+                        .items_center()
+                        .min_w_0()
+                        .child(Icon::new(Lucide::Download).size(px(14.)).text_color(theme.primary))
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(theme.muted_foreground)
+                                .truncate()
+                                .child(t(Str::MenuDownloadLocation)),
+                        ),
+                )
+            } else {
+                subtitle
+            };
             base.flex().px_4().py_2().gap_4().items_start().child(Self::thumb(icon, art, None, cx)).child(
                 v_flex()
                     .flex_1()
                     .min_w_0()
                     .child(div().text_sm().line_clamp(2).child(title))
-                    .child(div().pt_1().child(subtitle_row)),
+                    .when_some(second_line, |text, line| text.child(div().pt_1().child(line))),
             )
         }
     }
@@ -1753,7 +1779,8 @@ impl LibraryView {
                 Lucide::Folder,
                 None,
                 bucket.display_name().to_owned(),
-                t(Str::LibraryFolder).to_owned(),
+                (!grid).then(|| t(Str::LibraryFolder).to_owned()),
+                grid.then(|| t(Str::LibraryFolder)),
                 grid,
                 bucket.excluded,
                 marked,
@@ -1781,7 +1808,8 @@ impl LibraryView {
                 icon,
                 None,
                 open.title(),
-                t(description).to_owned(),
+                Some(t(description).to_owned()),
+                None,
                 grid,
                 false,
                 false,
@@ -1819,7 +1847,8 @@ impl LibraryView {
                 Lucide::ListMusic,
                 art,
                 playlist.name.clone(),
-                subtitle,
+                Some(subtitle),
+                None,
                 grid,
                 false,
                 false,
@@ -1848,12 +1877,12 @@ impl LibraryView {
             let art = art_item.and_then(|item| crate::local_art::art_url(&item, art_px));
             let subtitle = ym_i18n::plural(ym_i18n::Plural::NSongs, count as i64, &[&count]);
             let open = name.clone();
-            let card = Self::card(("group", index).into(), icon, art, name, subtitle, grid, false, false, cx).on_click(
-                cx.listener(move |view, _, _, cx| {
-                    view.group = Some(open.clone());
-                    cx.notify();
-                }),
-            );
+            let card =
+                Self::card(("group", index).into(), icon, art, name, Some(subtitle), None, grid, false, false, cx)
+                    .on_click(cx.listener(move |view, _, _, cx| {
+                        view.group = Some(open.clone());
+                        cx.notify();
+                    }));
             cards.push(self.card_focus.item(index, card, cx).into_any_element());
         }
         cards
