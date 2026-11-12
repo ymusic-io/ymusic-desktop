@@ -17,7 +17,7 @@ use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use ym_i18n::{Str, t, tf};
 
-use crate::a11y::{FocusList, KeyboardFocusable};
+use crate::a11y::FocusList;
 use crate::action_icon::{HIT, glyph_action_icon, lucide_size, sized_action_icon};
 use crate::audio_only::AudioOnlyArt;
 use crate::download_dialog::DownloadTarget;
@@ -49,6 +49,17 @@ const STOP_REPEAT: usize = 6;
 const STOP_SHUFFLE: usize = 7;
 const STOP_CHANNEL: usize = 8;
 const STOP_CHANNEL_OVERLAY: usize = 9;
+/// The video controls, as arrow stops of their own list.
+const OVERLAY_REWIND: usize = 0;
+const OVERLAY_PREVIOUS: usize = 1;
+const OVERLAY_PLAY: usize = 2;
+const OVERLAY_NEXT: usize = 3;
+const OVERLAY_FORWARD: usize = 4;
+const OVERLAY_QUALITY: usize = 5;
+const OVERLAY_DETAILS: usize = 6;
+const OVERLAY_SPEED: usize = 7;
+const OVERLAY_CAPTIONS: usize = 8;
+const OVERLAY_FULLSCREEN: usize = 9;
 const MENU_CAPTIONS: u8 = 1;
 const MENU_QUALITY: u8 = 2;
 const MENU_MORE: u8 = 4;
@@ -135,6 +146,9 @@ pub struct NowPlaying {
     picture_pressed: bool,
     caption_focus: FocusHandle,
     play_focus: FocusHandle,
+    overlay_focus: FocusList,
+    /// A video control held keyboard focus at the last render: the controls stay up meanwhile.
+    keyboard_in_controls: Cell<bool>,
     fullscreen: bool,
     _subscriptions: Vec<Subscription>,
     _controls_timer: Task<()>,
@@ -361,6 +375,8 @@ impl NowPlaying {
             picture_pressed: false,
             caption_focus: cx.focus_handle(),
             play_focus: cx.focus_handle(),
+            overlay_focus: FocusList::new(None),
+            keyboard_in_controls: Cell::new(false),
             fullscreen: false,
             _subscriptions: subscriptions,
             _controls_timer: controls_timer,
@@ -474,6 +490,12 @@ impl NowPlaying {
         cx.notify();
     }
 
+    /// Shows the controls and puts keyboard focus on Play, as Now Playing opens.
+    pub fn take_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.show_controls(cx);
+        window.focus(&self.play_focus, cx);
+    }
+
     /// A click on the bare picture: hides the controls when they show, else shows them.
     fn toggle_controls(&mut self, cx: &mut Context<Self>) {
         if self.controls_shown {
@@ -491,6 +513,7 @@ impl NowPlaying {
             && self.playback.read(cx).is_playing()
             && !self.dragging_seek
             && self.held_menus.get() == 0
+            && !self.keyboard_in_controls.get()
             && self.shown_at.get().elapsed() >= CONTROLS_HIDE_AFTER
         {
             self.controls_shown = false;
@@ -525,14 +548,10 @@ impl NowPlaying {
         scale: f32,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let theme = cx.theme();
         let label = t(if playing { Str::CdPause } else { Str::CdPlay });
-        div()
-            .id("np-play")
-            .role(Role::Button)
-            .aria_label(label)
-            .track_focus(&self.play_focus)
-            .keyboard_focusable(theme.ring)
+        let button = div().id("np-play").role(Role::Button).aria_label(label);
+        self.overlay_focus
+            .item_for(OVERLAY_PLAY, &self.play_focus, button, cx)
             .block_mouse_except_scroll()
             .size(px(even(PLAY_BUTTON * scale)))
             .flex_shrink_0()
@@ -634,29 +653,43 @@ impl NowPlaying {
         let transport_icon = |id: &'static str, icon: Lucide, label: &'static str, cx: &App| {
             on_video(sized_action_icon(id, icon, label, glyph, even(hit)), cx)
         };
-        let transport = h_flex()
-            .w_full()
-            .max_w(px(480. * scale))
-            .px(px(20.))
-            .py(px(14.))
-            .justify_evenly()
-            .items_center()
-            .child(transport_icon("np-rewind", Lucide::Rewind, t(Str::CdRewind10), cx).on_click(
-                cx.listener(|view, _, _, cx| view.playback.update(cx, |playback, cx| playback.seek_by(-SKIP_MS, cx))),
-            ))
-            .child(
-                transport_icon("np-previous", Lucide::SkipBack, t(Str::CdPrevious), cx).on_click(
-                    cx.listener(|view, _, _, cx| view.playback.update(cx, |playback, cx| playback.previous(cx))),
-                ),
-            )
-            .child(self.render_play_button(playing, buffering, scale, cx))
-            .child(
-                transport_icon("np-next", Lucide::SkipForward, t(Str::CdNext), cx)
-                    .on_click(cx.listener(|view, _, _, cx| view.playback.update(cx, |playback, cx| playback.next(cx)))),
-            )
-            .child(transport_icon("np-forward", Lucide::FastForward, t(Str::CdForward10), cx).on_click(
-                cx.listener(|view, _, _, cx| view.playback.update(cx, |playback, cx| playback.seek_by(SKIP_MS, cx))),
-            ));
+        let transport =
+            h_flex()
+                .w_full()
+                .max_w(px(480. * scale))
+                .px(px(20.))
+                .py(px(14.))
+                .justify_evenly()
+                .items_center()
+                .child(self.overlay_focus.button(
+                    OVERLAY_REWIND,
+                    transport_icon("np-rewind", Lucide::Rewind, t(Str::CdRewind10), cx).on_click(cx.listener(
+                        |view, _, _, cx| view.playback.update(cx, |playback, cx| playback.seek_by(-SKIP_MS, cx)),
+                    )),
+                    cx,
+                ))
+                .child(self.overlay_focus.button(
+                    OVERLAY_PREVIOUS,
+                    transport_icon("np-previous", Lucide::SkipBack, t(Str::CdPrevious), cx).on_click(
+                        cx.listener(|view, _, _, cx| view.playback.update(cx, |playback, cx| playback.previous(cx))),
+                    ),
+                    cx,
+                ))
+                .child(self.render_play_button(playing, buffering, scale, cx))
+                .child(self.overlay_focus.button(
+                    OVERLAY_NEXT,
+                    transport_icon("np-next", Lucide::SkipForward, t(Str::CdNext), cx).on_click(
+                        cx.listener(|view, _, _, cx| view.playback.update(cx, |playback, cx| playback.next(cx))),
+                    ),
+                    cx,
+                ))
+                .child(self.overlay_focus.button(
+                    OVERLAY_FORWARD,
+                    transport_icon("np-forward", Lucide::FastForward, t(Str::CdForward10), cx).on_click(cx.listener(
+                        |view, _, _, cx| view.playback.update(cx, |playback, cx| playback.seek_by(SKIP_MS, cx)),
+                    )),
+                    cx,
+                ));
 
         let actions = if fullscreen { self.overlay_player_actions(current, scale, cx) } else { Vec::new() };
         let time = format!("{} / {}", clock(position), clock(duration));
@@ -666,19 +699,25 @@ impl NowPlaying {
             .child(div().text_size(px(10. * scale)).font_bold().text_color(rgb(OVERLAY_INK)).child(time))
             .child(div().flex_1())
             .children(actions)
-            .when_some(self.caption_button(glyph, hit, cx), |row, button| row.child(button))
+            .when_some(self.caption_button(glyph, hit, cx), |row, button| {
+                row.child(self.overlay_focus.wrap_for(OVERLAY_CAPTIONS, &self.caption_focus, button, cx))
+            })
             .child(
-                on_video(
-                    sized_action_icon(
-                        "np-fullscreen",
-                        if fullscreen { Lucide::Minimize } else { Lucide::Maximize },
-                        t(if fullscreen { Str::CdExitFullscreen } else { Str::CdFullscreen }),
-                        glyph,
-                        hit,
-                    ),
+                self.overlay_focus.button(
+                    OVERLAY_FULLSCREEN,
+                    on_video(
+                        sized_action_icon(
+                            "np-fullscreen",
+                            if fullscreen { Lucide::Minimize } else { Lucide::Maximize },
+                            t(if fullscreen { Str::CdExitFullscreen } else { Str::CdFullscreen }),
+                            glyph,
+                            hit,
+                        ),
+                        cx,
+                    )
+                    .on_click(cx.listener(|view, _, window, cx| view.toggle_fullscreen(window, cx))),
                     cx,
-                )
-                .on_click(cx.listener(|view, _, window, cx| view.toggle_fullscreen(window, cx))),
+                ),
             );
         let seek = div()
             .block_mouse_except_scroll()
@@ -989,13 +1028,13 @@ impl NowPlaying {
     /// Full screen has no top bar, so its quality chip, details and speed come onto the controls.
     fn overlay_player_actions(&self, current: &QueueItem, scale: f32, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let (glyph, hit) = (ICON * scale, HIT * scale);
-        let mut actions = vec![self.quality_chip(None, Some(scale), cx)];
+        let quality = self.quality_chip(Some(self.overlay_focus.handle(OVERLAY_QUALITY, cx)), Some(scale), cx);
+        let mut actions = vec![self.overlay_focus.wrap(OVERLAY_QUALITY, quality, cx).into_any_element()];
         if let Some(video_id) = current.video_id().map(str::to_owned) {
-            actions.push(
+            let details =
                 on_video(sized_action_icon("np-details", Lucide::Info, t(Str::MenuDetailsComments), glyph, hit), cx)
-                    .on_click(cx.listener(move |_, _, _, cx| cx.emit(NowPlayingEvent::Details(video_id.clone()))))
-                    .into_any_element(),
-            );
+                    .on_click(cx.listener(move |_, _, _, cx| cx.emit(NowPlayingEvent::Details(video_id.clone()))));
+            actions.push(self.overlay_focus.button(OVERLAY_DETAILS, details, cx).into_any_element());
         }
         let speed = self.playback.read(cx).effects.speed;
         let speed_value = (speed != 1.).then(|| format!("{}×", (speed * 100.).round() / 100.));
@@ -1003,11 +1042,9 @@ impl NowPlaying {
             Some(value) => format!("{}, {value}", t(Str::MenuSpeedPitch)),
             None => t(Str::MenuSpeedPitch).to_owned(),
         };
-        actions.push(
-            on_video(sized_action_icon("np-speed", Lucide::Gauge, label, glyph, hit), cx)
-                .on_click(cx.listener(|_, _, _, cx| cx.emit(NowPlayingEvent::OpenSound)))
-                .into_any_element(),
-        );
+        let speed = on_video(sized_action_icon("np-speed", Lucide::Gauge, label, glyph, hit), cx)
+            .on_click(cx.listener(|_, _, _, cx| cx.emit(NowPlayingEvent::OpenSound)));
+        actions.push(self.overlay_focus.button(OVERLAY_SPEED, speed, cx).into_any_element());
         if let Some(value) = speed_value {
             actions.push(
                 div()
@@ -1595,6 +1632,7 @@ impl Render for NowPlaying {
             self.reported_box = painted;
             self.playback.update(cx, |playback, cx| playback.set_viewport(painted.0, painted.1, cx));
         }
+        self.keyboard_in_controls.set(window.last_input_was_keyboard() && self.overlay_focus.has_focus(window));
         let Some(current) = self.playback.read(cx).current().cloned() else { return div().into_any_element() };
         if self.fullscreen && !window.is_fullscreen() {
             self.fullscreen = false;

@@ -326,6 +326,9 @@ pub struct Shell {
     mini_player: Entity<MiniPlayer>,
     now_playing: Entity<NowPlaying>,
     now_playing_open: bool,
+    /// Now Playing as last drawn, and what held focus when it opened, which gets it back on close.
+    now_playing_shown: bool,
+    now_playing_opener: Option<WeakFocusHandle>,
     library: Option<Entity<LibraryView>>,
     account: Option<Entity<AccountView>>,
     music_library: Option<Entity<AccountView>>,
@@ -487,6 +490,8 @@ impl Shell {
             mini_player,
             now_playing,
             now_playing_open: false,
+            now_playing_shown: false,
+            now_playing_opener: None,
             library: None,
             account: None,
             music_library: None,
@@ -2092,6 +2097,15 @@ impl Render for Shell {
         let now_playing = self.now_playing_open && self.playback.read(cx).current().is_some();
         if !now_playing {
             self.now_playing.read(cx).hide_video();
+        }
+        if now_playing != self.now_playing_shown {
+            self.now_playing_shown = now_playing;
+            if now_playing {
+                self.now_playing_opener = window.focused(cx).map(|opener| opener.downgrade());
+                self.now_playing.update(cx, |view, cx| view.take_focus(window, cx));
+            } else if let Some(opener) = self.now_playing_opener.take().and_then(|opener| opener.upgrade()) {
+                window.focus(&opener, cx);
+            }
         }
         self.playback.update(cx, |playback, cx| playback.set_video_hidden(!now_playing, cx));
         // Sign-in covers the whole window, rail and player bar included.

@@ -316,7 +316,15 @@ impl FocusList {
 
     /// [`Self::item`] inside a horizontally scrolling row, `row`.
     pub fn item_in(&self, index: usize, element: Stateful<Div>, row: Option<ScrollHandle>, cx: &App) -> Stateful<Div> {
-        let slot = self.slot(index, cx);
+        self.ringed(self.slot(index, cx), element, row, cx)
+    }
+
+    /// [`Self::item`] focused through `handle`, one the view holds to focus it by.
+    pub fn item_for(&self, index: usize, handle: &FocusHandle, element: Stateful<Div>, cx: &App) -> Stateful<Div> {
+        self.ringed(self.slot_for(index, handle, cx), element, None, cx)
+    }
+
+    fn ringed(&self, slot: Rc<Slot>, element: Stateful<Div>, row: Option<ScrollHandle>, cx: &App) -> Stateful<Div> {
         let ring = cx.theme().ring;
         on_arrows(
             element
@@ -351,6 +359,17 @@ impl FocusList {
     pub fn wrap(&self, index: usize, element: impl IntoElement, cx: &App) -> Div {
         let slot = self.slot(index, cx);
         on_arrows(div().relative().flex_shrink_0().child(element).child(self.tracker(slot, None)))
+    }
+
+    /// [`Self::wrap`] for `element` already tracking `handle`, one the view holds to focus it by.
+    pub fn wrap_for(&self, index: usize, handle: &FocusHandle, element: impl IntoElement, cx: &App) -> Div {
+        let slot = self.slot_for(index, handle, cx);
+        on_arrows(div().relative().flex_shrink_0().child(element).child(self.tracker(slot, None)))
+    }
+
+    /// Whether one of the list's stops holds focus.
+    pub fn has_focus(&self, window: &Window) -> bool {
+        self.slots.borrow().iter().any(|slot| slot.handle.is_focused(window))
     }
 
     /// Makes `element`, a full-width row already tracking [`Self::handle`]`(index)`, the list's `index`th
