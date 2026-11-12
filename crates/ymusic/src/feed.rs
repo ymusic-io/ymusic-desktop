@@ -24,7 +24,7 @@ use crate::local_playlist::LocalPlaylistFromDownloads;
 use crate::offline::{OfflineMarks, offline_mark};
 use crate::playlist_download::PlaylistDownload;
 use crate::quick_download::saved_preset;
-use crate::spinner::{BusyButton, Spinner};
+use crate::spinner::{BusyButton, LoadingLine, Spinner};
 use crate::tab_row::tab_row;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -238,6 +238,8 @@ pub struct FeedView {
     more_failed: Option<EngineError>,
     /// The chip or sort option whose page is loading; the current page stays up until it lands.
     refiltering: Option<Refilter>,
+    /// An F5 reload is in flight; the page stays up under the loading line until it lands.
+    refreshing: bool,
     generation: u64,
     scroll: ScrollHandle,
     /// Collapsible sections the user expanded, by index.
@@ -294,6 +296,7 @@ impl FeedView {
             loading_more: false,
             more_failed: None,
             refiltering: None,
+            refreshing: false,
             generation: 0,
             scroll: scroll.clone(),
             expanded: std::collections::HashSet::new(),
@@ -477,12 +480,15 @@ impl FeedView {
     }
 
     /// F5 / Ctrl+R (the JVM app's `pager.reload()`): the page again from the top, without a chip
-    /// filter, the current list staying up until the new one lands; a failure keeps it and says why.
+    /// filter, the current list staying up under the loading line until the new one lands; a
+    /// failure keeps it and says why.
     pub fn refresh(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !matches!(self.phase, Phase::Ready) {
             return self.reload(cx);
         }
         self.generation += 1;
+        self.refreshing = true;
+        cx.notify();
         let generation = self.generation;
         let load = self.load_reloaded(cx);
         cx.spawn_in(window, async move |this, cx| {
@@ -491,6 +497,7 @@ impl FeedView {
                 if view.generation != generation {
                     return;
                 }
+                view.refreshing = false;
                 view.refiltering = None;
                 view.loading_more = false;
                 match result {
@@ -510,7 +517,7 @@ impl FeedView {
 
     fn load_more(&mut self, cx: &mut Context<Self>) {
         let Some(continuation) = self.page.continuation.clone() else { return };
-        if self.loading_more || self.more_failed.is_some() {
+        if self.loading_more || self.more_failed.is_some() || self.refreshing {
             return;
         }
         self.loading_more = true;
@@ -524,6 +531,7 @@ impl FeedView {
             return;
         }
         self.refiltering = Some(target);
+        self.refreshing = false;
         self.generation += 1;
         let generation = self.generation;
         let load = self.load(Some(token), cx);
@@ -582,6 +590,7 @@ impl FeedView {
 
     fn fetch(&mut self, continuation: Option<String>, append: bool, cx: &mut Context<Self>) {
         self.generation += 1;
+        self.refreshing = false;
         if !append {
             self.refiltering = None;
         }
@@ -1810,10 +1819,21 @@ impl Render for FeedView {
         }
         v_flex()
             .size_full()
+            .relative()
             .children(tab_row)
             .child(
                 div().id("feed-scroll").flex_1().min_h_0().overflow_y_scroll().track_scroll(&self.scroll).child(column),
             )
+            .when(self.refreshing, |feed| {
+                feed.child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .right_0()
+                        .child(LoadingLine::new("feed-refreshing", t(Str::A11yRefreshing))),
+                )
+            })
             .into_any_element()
     }
 }
