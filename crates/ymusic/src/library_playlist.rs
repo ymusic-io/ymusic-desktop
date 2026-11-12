@@ -20,6 +20,7 @@ use crate::elevated_dialog::{
     scroll_body, text_button, title_bar, title_bar_with,
 };
 use crate::graph::{AppGraph, on_core};
+use crate::reorder::{Reorder, ReorderEvent};
 use crate::settings_view::HOVER_ALPHA;
 use crate::spinner::Spinner;
 
@@ -487,29 +488,6 @@ pub fn confirm_delete_from_disk(item: MediaItem, changed: Option<Changed>, windo
     });
 }
 
-#[derive(Clone)]
-struct DraggedSong {
-    index: usize,
-    title: String,
-}
-
-impl Render for DraggedSong {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme();
-        div()
-            .px_3()
-            .py_2()
-            .rounded(px(8.))
-            .bg(theme.popover)
-            .border_1()
-            .border_color(theme.border)
-            .text_sm()
-            .max_w(px(320.))
-            .truncate()
-            .child(self.title.clone())
-    }
-}
-
 /// The working copy: the first `stack` rows are the stack Move to top builds, and a move across its
 /// edge grows or shrinks it. Every edit but a stack reset can be undone.
 struct ArrangeState {
@@ -517,6 +495,8 @@ struct ArrangeState {
     items: Vec<PlaylistItemDetail>,
     stack: usize,
     history: Vec<(Vec<PlaylistItemDetail>, usize)>,
+    /// The rows and stack as a drag found them: the drop records them as one edit.
+    drag_start: Option<(Vec<PlaylistItemDetail>, usize)>,
 }
 
 impl ArrangeState {
@@ -552,10 +532,36 @@ impl ArrangeState {
         self.record();
         let item = self.items.remove(from);
         self.items.insert(to, item);
+        self.cross_stack_edge(from, to);
+    }
+
+    /// A row moved from `from` to `to` leaves the stack when it lands below its edge and joins it
+    /// when it lands above.
+    fn cross_stack_edge(&mut self, from: usize, to: usize) {
         if from < self.stack && to >= self.stack {
             self.stack -= 1;
         } else if from >= self.stack && to < self.stack {
             self.stack += 1;
+        }
+    }
+
+    fn drag_started(&mut self) {
+        self.drag_start = Some((self.items.clone(), self.stack));
+    }
+
+    fn drag_moved(&mut self, from: usize, to: usize) {
+        if from < self.items.len() && to < self.items.len() {
+            let item = self.items.remove(from);
+            self.items.insert(to, item);
+        }
+    }
+
+    /// The drop: one undoable edit, the stack judged against its size before the drag.
+    fn drag_ended(&mut self, from: usize, to: usize) {
+        let Some(start) = self.drag_start.take() else { return };
+        if from != to {
+            self.history.push(start);
+            self.cross_stack_edge(from, to);
         }
     }
 
@@ -582,6 +588,7 @@ pub struct ArrangePlaylist {
     /// The footer and stack chip at `CONTROL_*`, then per row its item, Move to top and Remove.
     focus: FocusList,
     scroll: ScrollHandle,
+    reorder: Reorder,
     focused_first: bool,
 }
 
@@ -613,10 +620,12 @@ impl ArrangePlaylist {
                     items,
                     stack: 0,
                     history: Vec::new(),
+                    drag_start: None,
                 },
                 changed,
                 busy: false,
                 focus: FocusList::modal(Some(scroll.clone()), cx),
+                reorder: Reorder::new(scroll.clone()),
                 scroll,
                 focused_first: false,
             }
@@ -652,6 +661,13 @@ impl ArrangePlaylist {
                     _ => {}
                 }
             }
+        }
+    }
+
+    fn start_drag(&mut self, index: usize, pointer_y: Pixels, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.busy {
+            self.state.drag_started();
+            self.reorder.start(index, pointer_y, window, cx);
         }
     }
 
@@ -721,7 +737,6 @@ impl ArrangePlaylist {
         let song = &item.item;
         let stacked = index < self.state.stack;
         let detail = [song.artist.clone(), song.album.clone()].into_iter().flatten().collect::<Vec<_>>().join(" · ");
-        let dragged = DraggedSong { index, title: song.title.clone() };
         let handle = div()
             .id(("arrange-handle", index))
             .size(px(40.))
@@ -732,7 +747,13 @@ impl ArrangePlaylist {
             .cursor_grab()
             .tooltip(|window, cx| gpui_kit::component::tooltip::Tooltip::new(t(Str::CdDragToReorder)).build(window, cx))
             .child(Icon::new(Lucide::GripVertical).size(px(20.)).text_color(theme.muted_foreground))
-            .on_drag(dragged, |dragged, _, _, cx| cx.new(|_| dragged.clone()));
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |view, event: &MouseDownEvent, window, cx| {
+                    cx.stop_propagation();
+                    view.start_drag(index, event.position.y, window, cx);
+                }),
+            );
         let thumb = div()
             .relative()
             .size(px(44.))
@@ -800,11 +821,7 @@ impl ArrangePlaylist {
             .py_1()
             .items_center()
             .when(stacked, |row| row.bg(theme.primary.opacity(0.08)))
-            .drag_over::<DraggedSong>(move |style, _, _, cx| style.bg(cx.theme().secondary))
-            .on_drop(cx.listener(move |view, dragged: &DraggedSong, _, cx| {
-                let from = dragged.index;
-                view.edit(cx, |state| state.move_item(from, index));
-            }))
+            .when(self.reorder.lifted() == Some(index), |row| crate::reorder::lift(row, cx))
             .on_key_down(cx.listener(move |view, event: &KeyDownEvent, window, cx| {
                 let keystroke = &event.keystroke;
                 if keystroke.modifiers.alt && matches!(keystroke.key.as_str(), "up" | "down") {
@@ -826,7 +843,7 @@ impl ArrangePlaylist {
             )
             .child(self.focus.button(stop + 1, top, cx))
             .child(self.focus.button(stop + 2, remove, cx));
-        self.focus.item(stop, row, cx).into_any_element()
+        self.reorder.row(index, self.focus.item(stop, row, cx)).into_any_element()
     }
 }
 
@@ -852,7 +869,17 @@ impl Render for ArrangePlaylist {
                 .on_click(cx.listener(|view, _, _, cx| view.edit(cx, |state| state.stack = 0)));
             self.focus.button(CONTROL_STACK, chip, cx)
         });
-        let list = v_flex().w_full().py_1().gap_1().children(rows);
+        let tracker = self.reorder.tracker(
+            items.len(),
+            cx.listener(|view, event: &ReorderEvent, _, cx| {
+                match *event {
+                    ReorderEvent::Moved { from, to } => view.state.drag_moved(from, to),
+                    ReorderEvent::Dropped { from, to } => view.state.drag_ended(from, to),
+                }
+                cx.notify();
+            }),
+        );
+        let list = v_flex().w_full().py_1().gap_1().children(rows).child(tracker);
         let can_undo = !self.busy && !self.state.history.is_empty();
         let footer = h_flex()
             .w_full()

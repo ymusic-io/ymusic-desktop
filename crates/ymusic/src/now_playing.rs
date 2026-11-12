@@ -3,7 +3,7 @@
 //! Narrow: top bar, video full width, title, then the queue.
 //! The video box is painted by `video_layer`: a native view behind the window on macOS, CPU pictures elsewhere.
 
-use std::cell::{Cell, RefCell};
+use std::cell::Cell;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -27,6 +27,7 @@ use crate::playback::{
     AUTO_TRANSLATE_KIND, CaptionTrack, PlayState, Playback, QUALITY_AUDIO_ONLY, QUALITY_AUTO, QueueItem, Source,
 };
 use crate::queue_nav::LoopMode;
+use crate::reorder::{Reorder, ReorderEvent};
 use crate::sponsor_block::SponsorBlock;
 #[cfg(not(target_os = "windows"))]
 use crate::video_layer::VideoLayer;
@@ -35,9 +36,6 @@ use crate::win_video_layer::VideoLayer;
 
 const CONTROLS_HIDE_AFTER: Duration = Duration::from_secs(3);
 const SKIP_MS: i64 = 10_000;
-/// The pointer this near the queue's top or bottom edge scrolls it while dragging a row.
-const DRAG_EDGE: f32 = 32.;
-const DRAG_SCROLL_MAX: f32 = 24.;
 
 const STOP_CLOSE: usize = 0;
 const STOP_DOWNLOAD: usize = 1;
@@ -97,28 +95,6 @@ pub enum NowPlayingEvent {
     },
 }
 
-/// A queue row being dragged by its handle; rows swap live as the pointer crosses them.
-#[derive(Default)]
-struct QueueDrag {
-    index: Cell<Option<usize>>,
-    pointer_y: Cell<Pixels>,
-    /// Each row's window bounds as last painted.
-    rows: RefCell<Vec<Bounds<Pixels>>>,
-}
-
-impl QueueDrag {
-    /// Moves the dragged row to the row under the pointer.
-    fn follow_pointer(&self, playback: &Entity<Playback>, cx: &mut App) {
-        let Some(from) = self.index.get() else { return };
-        let pointer = self.pointer_y.get();
-        let target = self.rows.borrow().iter().position(|row| pointer >= row.top() && pointer < row.bottom());
-        if let Some(to) = target.filter(|to| *to != from) {
-            playback.update(cx, |playback, cx| playback.move_item(from, to, cx));
-            self.index.set(Some(to));
-        }
-    }
-}
-
 pub struct NowPlaying {
     playback: Entity<Playback>,
     sponsor_block: Entity<SponsorBlock>,
@@ -126,8 +102,7 @@ pub struct NowPlaying {
     queue_focus: FocusList,
     /// The top bar's and queue header's buttons, for the arrow keys.
     bar_focus: FocusList,
-    drag: Rc<QueueDrag>,
-    _autoscroll: Option<Task<()>>,
+    reorder: Reorder,
     video_layer: Option<Rc<VideoLayer>>,
     /// The video box as last painted, to report viewport changes to the player.
     video_box: Rc<Cell<(i32, i32)>>,
@@ -374,10 +349,9 @@ impl NowPlaying {
             playback,
             sponsor_block,
             queue_scroll: queue_scroll.clone(),
-            queue_focus: FocusList::new(Some(queue_scroll)),
+            queue_focus: FocusList::new(Some(queue_scroll.clone())),
             bar_focus: FocusList::new(None),
-            drag: Rc::default(),
-            _autoscroll: None,
+            reorder: Reorder::new(queue_scroll),
             video_layer: None,
             video_box,
             audio_only_art,
@@ -1438,89 +1412,6 @@ impl NowPlaying {
         .detach();
     }
 
-    /// Scrolls the queue while a dragged row is held near its top or bottom edge, until the drag ends.
-    fn start_autoscroll(&mut self, cx: &mut Context<Self>) {
-        let executor = cx.background_executor().clone();
-        self._autoscroll = Some(cx.spawn(async move |this, cx| {
-            loop {
-                executor.timer(Duration::from_millis(16)).await;
-                let dragging = this.update(cx, |view, cx| view.autoscroll_step(cx));
-                if !matches!(dragging, Ok(true)) {
-                    return;
-                }
-            }
-        }));
-    }
-
-    fn autoscroll_step(&mut self, cx: &mut Context<Self>) -> bool {
-        if self.drag.index.get().is_none() {
-            return false;
-        }
-        let viewport = self.queue_scroll.bounds();
-        let pointer = f32::from(self.drag.pointer_y.get());
-        let (top, bottom) = (f32::from(viewport.top()), f32::from(viewport.bottom()));
-        let overhang = if pointer > bottom - DRAG_EDGE {
-            pointer - (bottom - DRAG_EDGE)
-        } else if pointer < top + DRAG_EDGE {
-            pointer - (top + DRAG_EDGE)
-        } else {
-            return true;
-        };
-        let step = (overhang * 0.5).clamp(-DRAG_SCROLL_MAX, DRAG_SCROLL_MAX);
-        let offset = self.queue_scroll.offset();
-        let max = self.queue_scroll.max_offset().y;
-        let scrolled = (offset.y - px(step)).clamp(-max, px(0.));
-        if scrolled == offset.y {
-            return true;
-        }
-        self.queue_scroll.set_offset(point(offset.x, scrolled));
-        for row in self.drag.rows.borrow_mut().iter_mut() {
-            row.origin.y += scrolled - offset.y;
-        }
-        self.drag.follow_pointer(&self.playback, cx);
-        cx.notify();
-        true
-    }
-
-    /// Follows the pointer while a row is dragged: its moves reorder, its release drops.
-    fn drag_tracker(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let (drag, playback, view) = (self.drag.clone(), self.playback.clone(), cx.entity().downgrade());
-        canvas(
-            |_, _, _| {},
-            move |_, _, window, _| {
-                if drag.index.get().is_none() {
-                    return;
-                }
-                let (moved, moved_playback, moved_view) = (drag.clone(), playback.clone(), view.clone());
-                window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
-                    if phase != DispatchPhase::Capture || moved.index.get().is_none() {
-                        return;
-                    }
-                    if event.pressed_button != Some(MouseButton::Left) {
-                        moved.index.set(None);
-                    } else {
-                        moved.pointer_y.set(event.position.y);
-                        moved.follow_pointer(&moved_playback, cx);
-                    }
-                    moved_view.update(cx, |_, cx| cx.notify()).ok();
-                    cx.stop_propagation();
-                });
-                let (released, released_view) = (drag.clone(), view.clone());
-                window.on_mouse_event(move |_: &MouseUpEvent, phase, _, cx| {
-                    if phase != DispatchPhase::Capture || released.index.take().is_none() {
-                        return;
-                    }
-                    released_view.update(cx, |_, cx| cx.notify()).ok();
-                    cx.stop_propagation();
-                });
-            },
-        )
-        .absolute()
-        .top_0()
-        .left_0()
-        .size_0()
-    }
-
     fn cached_part(&mut self, part: PanePart, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let slot = match part {
             PanePart::TopBar => 0,
@@ -1566,8 +1457,7 @@ impl NowPlaying {
         let (queue, index) = (playback.queue.clone(), playback.index);
         let theme = cx.theme().clone();
         let thumb = if large { 60. } else { 48. };
-        let dragging = self.drag.index.get();
-        self.drag.rows.borrow_mut().resize(queue.len(), Bounds::default());
+        let lifted = self.reorder.lifted();
         self.queue_focus.set_entry((index < queue.len()).then_some(index), cx);
         let mut list = v_flex();
         for (position, item) in queue.iter().enumerate() {
@@ -1582,19 +1472,6 @@ impl NowPlaying {
                 .flatten()
                 .collect::<Vec<_>>()
                 .join(" · ");
-            let rows = self.drag.clone();
-            let bounds = canvas(
-                |_, _, _| {},
-                move |bounds, _, _, _| {
-                    if let Some(row) = rows.rows.borrow_mut().get_mut(position) {
-                        *row = bounds;
-                    }
-                },
-            )
-            .absolute()
-            .top_0()
-            .left_0()
-            .size_full();
             let handle = div()
                 .id(("np-queue-handle", position))
                 .flex_shrink_0()
@@ -1603,18 +1480,16 @@ impl NowPlaying {
                 .child(Icon::new(Lucide::GripVertical).small())
                 .on_mouse_down(
                     MouseButton::Left,
-                    cx.listener(move |view, event: &MouseDownEvent, _, cx| {
+                    cx.listener(move |view, event: &MouseDownEvent, window, cx| {
                         cx.stop_propagation();
-                        view.drag.index.set(Some(position));
-                        view.drag.pointer_y.set(event.position.y);
-                        view.start_autoscroll(cx);
-                        cx.notify();
+                        view.reorder.start(position, event.position.y, window, cx);
                     }),
                 );
             let row =
                 h_flex().id(("np-queue-item", position)).role(Role::ListItem).aria_label(label).aria_selected(active);
             let queue_len = queue.len();
-            list = list.child(
+            let row = self.reorder.row(
+                position,
                 self.queue_focus
                     .item(position, row, cx)
                     .pl_2()
@@ -1624,17 +1499,13 @@ impl NowPlaying {
                     .items_center()
                     .cursor_pointer()
                     .when(active, |row| row.bg(theme.primary.opacity(0.1)))
-                    .hover(|style| style.bg(theme.primary.opacity(crate::settings_view::HOVER_ALPHA)))
-                    .when(dragging == Some(position), |row| {
-                        row.bg(theme.popover).shadow(vec![BoxShadow {
-                            color: black().opacity(0.25),
-                            offset: point(px(0.), px(2.)),
-                            blur_radius: px(8.),
-                            spread_radius: px(0.),
-                            inset: false,
-                        }])
+                    .map(|row| {
+                        if lifted == Some(position) {
+                            crate::reorder::lift(row, cx)
+                        } else {
+                            row.hover(|style| style.bg(theme.primary.opacity(crate::settings_view::HOVER_ALPHA)))
+                        }
                     })
-                    .child(bounds)
                     .child(handle)
                     .child(
                         div()
@@ -1684,8 +1555,17 @@ impl NowPlaying {
                         view.playback.update(cx, |playback, cx| playback.jump_to(position, cx))
                     })),
             );
+            list = list.child(row);
         }
         let list = self.queue_focus.container(list, 0..queue.len(), cx);
+        let tracker = self.reorder.tracker(
+            queue.len(),
+            cx.listener(|view, event: &ReorderEvent, _, cx| {
+                if let ReorderEvent::Moved { from, to } = *event {
+                    view.playback.update(cx, |playback, cx| playback.move_item(from, to, cx));
+                }
+            }),
+        );
         div()
             .id("np-queue")
             .flex_1()
@@ -1693,7 +1573,7 @@ impl NowPlaying {
             .overflow_y_scroll()
             .track_scroll(&self.queue_scroll)
             .child(list)
-            .child(self.drag_tracker(cx))
+            .child(tracker)
             .into_any_element()
     }
 }

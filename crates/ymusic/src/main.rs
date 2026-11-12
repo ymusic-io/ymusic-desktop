@@ -48,6 +48,7 @@ mod playlist_download;
 mod playlist_transfer;
 mod queue_nav;
 mod quick_download;
+mod reorder;
 mod search_filter;
 mod search_view;
 mod settings_lists;
