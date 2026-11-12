@@ -656,7 +656,7 @@ impl ArrangePlaylist {
             row_control => {
                 let index = (row_control - CONTROL_ROWS) / 3;
                 match (row_control - CONTROL_ROWS) % 3 {
-                    1 => self.edit(cx, |state| state.move_to_top(index)),
+                    1 => self.move_to_top(index, cx),
                     2 => self.edit(cx, |state| state.remove(index)),
                     _ => {}
                 }
@@ -684,9 +684,19 @@ impl ArrangePlaylist {
         if target >= self.state.items.len() {
             return;
         }
+        if !self.busy {
+            self.reorder.moved(index, target, cx);
+        }
         self.edit(cx, |state| state.move_item(index, target));
         let handle = self.focus.handle(row_stop(target), cx);
         window.focus(&handle, cx);
+    }
+
+    fn move_to_top(&mut self, index: usize, cx: &mut Context<Self>) {
+        if !self.busy && index >= self.state.stack {
+            self.reorder.moved(index, self.state.stack, cx);
+        }
+        self.edit(cx, |state| state.move_to_top(index));
     }
 
     fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -796,7 +806,7 @@ impl ArrangePlaylist {
         let top =
             sized_action_icon(("arrange-top", index), Lucide::ArrowUpToLine, t(Str::CdMoveToTop), ARRANGE_ICON, HIT)
                 .disabled(stacked || self.busy)
-                .on_click(cx.listener(move |view, _, _, cx| view.edit(cx, |state| state.move_to_top(index))));
+                .on_click(cx.listener(move |view, _, _, cx| view.move_to_top(index, cx)));
         let remove = sized_action_icon(
             ("arrange-remove", index),
             Lucide::CircleMinus,

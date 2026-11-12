@@ -201,6 +201,9 @@ fn main() {
         cx.set_global(crate::local_art::SharedLocalArt(local_art));
         crate::shortcuts::bind(cx);
         crate::a11y::init(cx);
+        crate::reorder::SystemMotion::init(cx);
+        #[cfg(target_os = "linux")]
+        crate::reorder::SystemMotion::follow_portal(log.fork("motion"), cx);
         // No enter/exit animations anywhere: dialogs, popovers, menus and tabs change in one frame.
         cx.set_reduce_motion(true);
         // A guest's cache is fire-and-forget at quit: nothing else reads it.

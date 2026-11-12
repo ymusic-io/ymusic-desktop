@@ -1548,6 +1548,7 @@ impl NowPlaying {
                         };
                         cx.stop_propagation();
                         let Some(target) = target else { return };
+                        view.reorder.moved(position, target, cx);
                         view.playback.update(cx, |playback, cx| playback.move_item(position, target, cx));
                         window.focus(&view.queue_focus.handle(target, cx), cx);
                     }))

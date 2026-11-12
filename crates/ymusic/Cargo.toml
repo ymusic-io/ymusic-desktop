@@ -70,6 +70,7 @@ objc2-core-foundation = { version = "0.3", default-features = false, features = 
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gpui-pre-wgpu = "=0.3.12"
+ashpd = { version = "0.13", default-features = false, features = ["async-io", "settings"] }
 souvlaki = { version = "0.9", default-features = false, features = ["use_zbus"] }
 rfd = { version = "0.15", default-features = false, features = ["tokio", "xdg-portal"] }
 ksni = "=0.3.6"
