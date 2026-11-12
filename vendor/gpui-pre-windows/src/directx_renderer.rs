@@ -117,7 +117,9 @@ impl Drop for Annotation<'_> {
 
 struct DirectComposition {
     comp_device: IDCompositionDevice,
-    comp_target: IDCompositionTarget,
+    _comp_target: IDCompositionTarget,
+    /// The target's root: gpui's visual and anything placed under it.
+    root_visual: IDCompositionVisual,
     comp_visual: IDCompositionVisual,
 }
 
@@ -1015,11 +1017,17 @@ impl DirectComposition {
     pub fn new(dxgi_device: &IDXGIDevice, hwnd: HWND) -> Result<Self> {
         let comp_device = get_comp_device(dxgi_device)?;
         let comp_target = unsafe { comp_device.CreateTargetForHwnd(hwnd, false) }?;
+        let root_visual = unsafe { comp_device.CreateVisual() }?;
         let comp_visual = unsafe { comp_device.CreateVisual() }?;
+        unsafe {
+            root_visual.AddVisual(&comp_visual, true, None::<&IDCompositionVisual>)?;
+            comp_target.SetRoot(&root_visual)?;
+        }
 
         Ok(Self {
             comp_device,
-            comp_target,
+            _comp_target: comp_target,
+            root_visual,
             comp_visual,
         })
     }
@@ -1027,7 +1035,6 @@ impl DirectComposition {
     pub fn set_swap_chain(&self, swap_chain: &IDXGISwapChain1) -> Result<()> {
         unsafe {
             self.comp_visual.SetContent(swap_chain)?;
-            self.comp_target.SetRoot(&self.comp_visual)?;
             self.comp_device.Commit()?;
         }
         Ok(())
