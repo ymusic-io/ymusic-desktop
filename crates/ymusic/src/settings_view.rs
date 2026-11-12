@@ -77,6 +77,7 @@ fn apply_theme(choice: &str, accent: &str, cx: &mut App) {
         theme.sidebar_primary_foreground = on_accent;
         theme.progress_bar = accent;
         theme.slider_bar = accent;
+        theme.slider_thumb = accent;
         theme.switch_thumb = on_accent;
         let palette = Palette::for_mode(theme.mode.is_dark(), amoled);
         theme.background = palette.surface;
