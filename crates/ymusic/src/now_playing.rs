@@ -258,15 +258,20 @@ const VIDEO_RATIO: f32 = 16. / 9.;
 /// A control drawn over the video: white whatever the theme, since the picture is behind it. A
 /// press on it never reaches the picture under it, which toggles the controls.
 fn on_video(button: Button, cx: &App) -> Button {
-    button
-        .custom(
-            ButtonCustomVariant::new(cx)
-                .color(transparent_black())
-                .foreground(white())
-                .hover(white().opacity(0.15))
-                .active(white().opacity(0.25)),
-        )
-        .block_mouse_except_scroll()
+    on_video_menu(button, cx).block_mouse_except_scroll()
+}
+
+/// [`on_video`] for a dropdown's trigger, which must not block the mouse: the menu opens from a
+/// press handler behind the trigger, and that handler already stops the press from reaching the
+/// picture.
+fn on_video_menu(button: Button, cx: &App) -> Button {
+    button.custom(
+        ButtonCustomVariant::new(cx)
+            .color(transparent_black())
+            .foreground(white())
+            .hover(white().opacity(0.15))
+            .active(white().opacity(0.25)),
+    )
 }
 
 /// How much the video overlay's chrome grows with the video box: 1× up to a 400 px short side, then
@@ -727,7 +732,7 @@ impl NowPlaying {
         let label = format!("{}, {state}", t(Str::CdCaptions));
         let target = self.playback.clone();
         Some(
-            on_video(sized_action_icon("np-captions", Lucide::Captions, label, glyph, hit), cx)
+            on_video_menu(sized_action_icon("np-captions", Lucide::Captions, label, glyph, hit), cx)
                 .track_focus(&self.caption_focus)
                 .when(visible, |button| button.text_color(cx.theme().primary))
                 .dropdown_menu_with_anchor(Anchor::BottomRight, move |mut menu, window, cx| {
@@ -942,7 +947,7 @@ impl NowPlaying {
             .h_auto()
             .px(px(8.))
             .py(px(2.))
-            .when(over_video.is_some(), |chip| on_video(chip, cx).border_color(ink.opacity(0.6)).text_color(ink))
+            .when(over_video.is_some(), |chip| on_video_menu(chip, cx).border_color(ink.opacity(0.6)).text_color(ink))
             .child(div().text_size(px(11. * over_video.unwrap_or(1.))).font_bold().child(current.clone()))
             .accessibility_label(format!("{}, {current}", t(Str::DownloadQuality)))
             .dropdown_menu_with_anchor(
