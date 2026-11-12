@@ -769,6 +769,18 @@ impl LibraryView {
         self.refresh(cx);
     }
 
+    /// Steps up one level of the open tab: the open folder's parent, out of an opened playlist or
+    /// group; nothing at the tab's top level.
+    pub fn back(&mut self, cx: &mut Context<Self>) {
+        if self.tab == Tab::Folders && !self.path.is_empty() {
+            self.open_crumb(self.path.len() - 1, cx);
+        } else {
+            self.open_playlist = None;
+            self.group = None;
+        }
+        cx.notify();
+    }
+
     /// Remove (a root), Exclude / Include (a subfolder): the store cascades, then the list reloads.
     /// Including clears the flag first, then rescans the root, since scans skip excluded folders.
     fn folder_change(&mut self, bucket: Bucket, change: FolderChange, window: &mut Window, cx: &mut Context<Self>) {

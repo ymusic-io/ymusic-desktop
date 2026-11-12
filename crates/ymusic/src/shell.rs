@@ -1347,6 +1347,10 @@ impl Shell {
         }
         if self.stacks.entry(self.section).or_default().pushed.pop().is_some() {
             cx.notify();
+        } else if self.section == Section::Library
+            && let Some(library) = self.library.clone()
+        {
+            library.update(cx, |library, cx| library.back(cx));
         }
     }
 
