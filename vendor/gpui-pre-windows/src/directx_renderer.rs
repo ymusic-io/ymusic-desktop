@@ -342,7 +342,7 @@ impl DirectXRenderer {
             // and so likely do not have the textures anymore that are required for drawing
             return Ok(());
         }
-        self.render(scene, background_appearance)?;
+        self.render(scene, background_appearance, underlay.shown())?;
         let underlay_changed = match (underlay.take_change(), &mut self.direct_composition) {
             (Some((swap_chain, placement)), Some(composition)) => {
                 let devices = self.devices.as_ref().context("devices missing")?;
@@ -371,9 +371,10 @@ impl DirectXRenderer {
         &mut self,
         scene: &Scene,
         background_appearance: WindowBackgroundAppearance,
+        underlay_shown: bool,
     ) -> Result<()> {
         self.pre_draw(&match background_appearance {
-            WindowBackgroundAppearance::Opaque => [1.0f32; 4],
+            WindowBackgroundAppearance::Opaque if !underlay_shown => [1.0f32; 4],
             _ => [0.0f32; 4],
         })?;
         self.upload_scene_buffers(scene)?;
@@ -443,7 +444,7 @@ impl DirectXRenderer {
             !self.skip_draws,
             "render_to_image unavailable while recovering from a lost device"
         );
-        self.render(scene, background_appearance)?;
+        self.render(scene, background_appearance, false)?;
 
         let devices = self.devices.as_ref().context("devices missing")?;
         let device = &devices.device;

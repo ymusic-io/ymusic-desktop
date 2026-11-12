@@ -1,6 +1,6 @@
 //! Content under gpui's own DirectComposition visual, in the same window: a composition swap chain
 //! another D3D11 device presents into shows wherever gpui leaves its frame transparent, under
-//! gpui's controls and with no airspace.
+//! gpui's controls and with no airspace. While one shows, gpui clears to transparent.
 
 use std::{cell::RefCell, ffi::c_void};
 
@@ -103,6 +103,12 @@ impl UnderlayState {
             composited,
             ..Default::default()
         }))
+    }
+
+    /// Something shows under gpui this frame, so gpui must leave its box transparent.
+    pub(crate) fn shown(&self) -> bool {
+        let underlay = self.0.borrow();
+        underlay.swap_chain.is_some() && underlay.placement.visible
     }
 
     /// The request when it changed since the last call.
