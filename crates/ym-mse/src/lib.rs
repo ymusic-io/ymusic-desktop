@@ -46,6 +46,7 @@ unsafe extern "C" {
     fn mse_host_pcm_levels(host: *mut c_void, out: *mut f32, count: c_int) -> c_int;
     fn mse_host_samples_played(host: *mut c_void) -> i64;
     fn mse_host_video_quality(host: *mut c_void, total: *mut c_int, dropped: *mut c_int);
+    fn mse_host_video_decoder(host: *mut c_void, out: *mut c_char, cap: c_int);
     fn mse_host_bind_presenter(host: *mut c_void, presenter: *mut c_void);
     #[cfg(target_os = "macos")]
     fn vpresent_create_vt_layer(layer: *mut c_void, sink: *const VpSink) -> *mut c_void;
@@ -338,6 +339,16 @@ impl MseHost {
         // SAFETY: `raw` is live; both out-pointers are valid for the call.
         unsafe { mse_host_video_quality(self.raw, &mut total, &mut dropped) };
         (total, dropped)
+    }
+
+    /// The open video decoder's kind and codec (`hw h264`, `sw vp9`); `None` with none open or
+    /// while the host is busy. Never blocks.
+    pub fn video_decoder(&self) -> Option<String> {
+        let mut out = [0u8; 48];
+        // SAFETY: `raw` is live; the host writes a NUL-terminated string of at most `cap` bytes.
+        unsafe { mse_host_video_decoder(self.raw, out.as_mut_ptr().cast(), out.len() as c_int) };
+        let decoder = CStr::from_bytes_until_nul(&out).ok()?.to_string_lossy();
+        (!decoder.is_empty()).then(|| decoder.into_owned())
     }
 }
 

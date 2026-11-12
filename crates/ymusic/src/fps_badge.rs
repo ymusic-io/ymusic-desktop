@@ -1,6 +1,6 @@
 //! Settings → Show FPS: pictures shown per second over the Now Playing video, the late pictures
-//! dropped since the item started. Samples once a second, only while that video is on screen and
-//! playing.
+//! dropped since the item started and the video decoder. Samples once a second, only while that
+//! video is on screen and playing.
 
 use std::time::Duration;
 
@@ -31,7 +31,18 @@ pub fn badge(playback: &Entity<Playback>, cx: &mut App) -> Option<impl IntoEleme
     };
     let label = entity.read(cx).label.clone()?;
     // A developer readout, not localized.
-    Some(div().absolute().top_2().left_2().text_size(px(13.)).text_color(white()).child(label))
+    Some(
+        div()
+            .absolute()
+            .top_2()
+            .left_2()
+            .px(px(6.))
+            .py(px(2.))
+            .bg(black().opacity(0.55))
+            .text_size(px(13.))
+            .text_color(white())
+            .child(label),
+    )
 }
 
 /// The item a dropped count belongs to; the host's counter restarts with every load (a quality
@@ -42,6 +53,7 @@ struct Counts {
     last_shown: Option<i32>,
     last_dropped: i32,
     dropped: i32,
+    decoder: Option<String>,
 }
 
 impl FpsBadge {
@@ -64,13 +76,15 @@ impl FpsBadge {
                         counts.last_shown = None;
                         None
                     }
-                    Some((host, item, tokio, log)) => match tokio.spawn_blocking(move || host.video_quality()).await {
-                        Ok((shown, dropped)) => counts.add(item, shown, dropped),
-                        Err(error) => {
-                            log.warn("video quality read failed", Some(&error));
-                            None
+                    Some((host, item, tokio, log)) => {
+                        match tokio.spawn_blocking(move || (host.video_quality(), host.video_decoder())).await {
+                            Ok(((shown, dropped), decoder)) => counts.add(item, shown, dropped, decoder),
+                            Err(error) => {
+                                log.warn("video quality read failed", Some(&error));
+                                None
+                            }
                         }
-                    },
+                    }
                 };
                 if this
                     .update(cx, |badge, cx| {
@@ -90,9 +104,13 @@ impl FpsBadge {
 }
 
 impl Counts {
-    fn add(&mut self, item: Option<String>, shown: i32, dropped: i32) -> Option<String> {
+    fn add(&mut self, item: Option<String>, shown: i32, dropped: i32, decoder: Option<String>) -> Option<String> {
         if self.item != item {
             *self = Counts { item, last_dropped: dropped, ..Counts::default() };
+        }
+        // The host answers nothing while it is busy: the last answer stands.
+        if decoder.is_some() {
+            self.decoder = decoder;
         }
         self.dropped += if dropped >= self.last_dropped { dropped - self.last_dropped } else { dropped };
         self.last_dropped = dropped;
@@ -106,6 +124,7 @@ impl Counts {
         if self.dropped > 0 {
             parts.push(format!("{} dropped", self.dropped));
         }
+        parts.extend(self.decoder.clone());
         Some(parts.join(" - "))
     }
 }
