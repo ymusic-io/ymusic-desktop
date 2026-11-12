@@ -40,6 +40,7 @@ pub struct LibrarySearchView {
     scroll: ScrollHandle,
     focus: FocusList,
     song_focus: FocusList,
+    bar_focus: FocusList,
     _subscription: Subscription,
 }
 
@@ -67,6 +68,7 @@ impl LibrarySearchView {
             scroll: scroll.clone(),
             focus: FocusList::new(Some(scroll.clone())),
             song_focus: FocusList::new(Some(scroll)),
+            bar_focus: FocusList::new(None),
             _subscription: subscription,
         };
         view.load(cx);
@@ -216,14 +218,22 @@ impl Render for LibrarySearchView {
             .pb(px(3.))
             .border_b_1()
             .border_color(theme.border)
-            .child(action_icon("library-search-back", IconName::ArrowLeft, t(Str::CdBack)).on_click(cx.listener(
-                |view, _, _, cx| {
-                    if !view.back(cx) {
-                        cx.emit(LibrarySearchEvent::Back);
-                    }
-                },
-            )))
-            .child(div().flex_1().child(Input::new(&self.input).cleanable(true)));
+            .child(self.bar_focus.button(
+                0,
+                action_icon("library-search-back", IconName::ArrowLeft, t(Str::CdBack)).on_click(cx.listener(
+                    |view, _, _, cx| {
+                        if !view.back(cx) {
+                            cx.emit(LibrarySearchEvent::Back);
+                        }
+                    },
+                )),
+                cx,
+            ))
+            .child(
+                self.bar_focus
+                    .field(1, &self.input.focus_handle(cx), Input::new(&self.input).cleanable(true), cx)
+                    .flex_1(),
+            );
         let centered = |text: String| {
             div().flex_1().flex().items_center().justify_center().p_6().text_color(theme.muted_foreground).child(text)
         };

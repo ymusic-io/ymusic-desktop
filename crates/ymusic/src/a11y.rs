@@ -167,14 +167,19 @@ fn step(direction: Direction, window: &mut Window, cx: &mut App) -> bool {
 
 /// Arrow keys move focus geometrically from any stop inside `element`.
 fn on_arrows<E: InteractiveElement>(element: E) -> E {
-    element.on_key_down(|event: &KeyDownEvent, window, cx| {
+    arrows(element, true)
+}
+
+/// [`on_arrows`], or only Up and Down when `sideways` is false (a text field's caret keeps the rest).
+fn arrows<E: InteractiveElement>(element: E, sideways: bool) -> E {
+    element.on_key_down(move |event: &KeyDownEvent, window, cx| {
         let modifiers = &event.keystroke.modifiers;
         if modifiers.platform || modifiers.control || modifiers.alt || modifiers.shift {
             return;
         }
         let direction = match event.keystroke.key.as_str() {
-            "left" => Direction::Left,
-            "right" => Direction::Right,
+            "left" if sideways => Direction::Left,
+            "right" if sideways => Direction::Right,
             "up" => Direction::Up,
             "down" => Direction::Down,
             _ => return,
@@ -219,6 +224,24 @@ impl FocusList {
             slots.push(slot);
         }
         slots[index].clone()
+    }
+
+    /// The `index`th slot, focused through `handle` (a text input's own).
+    fn slot_for(&self, index: usize, handle: &FocusHandle, cx: &App) -> Rc<Slot> {
+        let current = self.slot(index, cx);
+        if current.handle == *handle {
+            return current;
+        }
+        let slot = Rc::new(Slot {
+            handle: handle.clone(),
+            group: self.group,
+            was_focused: Cell::new(false),
+            bounds: Cell::new(Bounds::default()),
+            painted: Cell::new(0),
+        });
+        RovingItems::register(cx, &slot);
+        self.slots.borrow_mut()[index] = slot.clone();
+        slot
     }
 
     pub fn handle(&self, index: usize, cx: &App) -> FocusHandle {
@@ -291,6 +314,13 @@ impl FocusList {
     pub fn wrap(&self, index: usize, element: impl IntoElement, cx: &App) -> Div {
         let slot = self.slot(index, cx);
         on_arrows(div().relative().flex_shrink_0().child(element).child(self.tracker(slot, None)))
+    }
+
+    /// Makes the text field `element`, whose input focuses through `input`, the list's `index`th stop:
+    /// Up and Down move on from it, Left and Right stay with the caret.
+    pub fn field(&self, index: usize, input: &FocusHandle, element: impl IntoElement, cx: &App) -> Div {
+        let slot = self.slot_for(index, input, cx);
+        arrows(div().relative().child(element).child(self.tracker(slot, None)), false)
     }
 
     /// Home and End over the stops in `items`.

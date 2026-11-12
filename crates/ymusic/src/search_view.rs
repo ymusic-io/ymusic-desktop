@@ -42,6 +42,7 @@ pub struct SearchView {
     history: Vec<String>,
     generation: u64,
     focus: FocusList,
+    bar_focus: FocusList,
     _subscription: Subscription,
 }
 
@@ -78,6 +79,7 @@ impl SearchView {
             history,
             generation: 0,
             focus: FocusList::new(None),
+            bar_focus: FocusList::new(None),
             _subscription: subscription,
         };
         view.query_changed(query.to_owned(), cx);
@@ -205,10 +207,18 @@ impl Render for SearchView {
             .border_b_1()
             .border_color(theme.border)
             .child(
-                action_icon("search-back", IconName::ArrowLeft, t(Str::CdBack))
-                    .on_click(cx.listener(|_, _, _, cx| cx.emit(SearchEvent::Back))),
+                self.bar_focus.button(
+                    0,
+                    action_icon("search-back", IconName::ArrowLeft, t(Str::CdBack))
+                        .on_click(cx.listener(|_, _, _, cx| cx.emit(SearchEvent::Back))),
+                    cx,
+                ),
             )
-            .child(div().flex_1().child(Input::new(&self.input).cleanable(true)));
+            .child(
+                self.bar_focus
+                    .field(1, &self.input.focus_handle(cx), Input::new(&self.input).cleanable(true), cx)
+                    .flex_1(),
+            );
         let typed = self.input.read(cx).value().trim().to_owned();
         if typed.is_empty() && self.history.is_empty() {
             let hint = div()
