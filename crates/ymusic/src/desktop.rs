@@ -319,16 +319,21 @@ pub fn install_pin_button(window: &Window, _cx: &App, log: &Logger) {
     const PIN_HEIGHT: f64 = 22.;
     const PIN_END_INSET: f64 = 6.;
 
-    // SAFETY (the helpers): AppKit objects messaged on the main thread.
+    /// # Safety
+    /// On the main thread, as every AppKit call.
     unsafe fn ns_string(text: &str) -> Option<Retained<AnyObject>> {
         let class = AnyClass::get(c"NSString")?;
         let text = std::ffi::CString::new(text).ok()?;
+        // SAFETY: the caller's main thread; a NUL-terminated UTF-8 string that outlives the call.
         unsafe { msg_send![class, stringWithUTF8String: text.as_ptr()] }
     }
 
+    /// # Safety
+    /// On the main thread, with `button` a live NSButton.
     unsafe fn show_state(button: *mut AnyObject, pinned: bool) {
         let Some(image_class) = AnyClass::get(c"NSImage") else { return };
         let symbol = if pinned { PINNED_SYMBOL } else { PIN_SYMBOL };
+        // SAFETY: the caller's contract; NSImage and NSButton messages with their declared types.
         unsafe {
             let (Some(name), Some(label)) = (ns_string(symbol), ns_string(t(Str::CdAlwaysOnTop))) else {
                 return;
@@ -346,6 +351,7 @@ pub fn install_pin_button(window: &Window, _cx: &App, log: &Logger) {
     }
 
     unsafe extern "C-unwind" fn toggle_pin(_this: *mut AnyObject, _: Sel, button: *mut AnyObject) {
+        // SAFETY: AppKit sends the action on the main thread with the live button that sent it.
         unsafe {
             let ns_window: *mut AnyObject = msg_send![button, window];
             if ns_window.is_null() {

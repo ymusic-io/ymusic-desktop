@@ -212,6 +212,7 @@ impl QuickJsRuntime {
         self.shared
             .call(move |engine| {
                 let mut err: *mut c_char = ptr::null_mut();
+                // SAFETY: on the engine thread before teardown, so `native` is live (Engine::native); the script outlives the call.
                 let rc = unsafe { ffi::qjs_eval_engine(engine.native.get(), script.as_ptr(), &mut err) };
                 if rc == 0 { Ok(()) } else { Err(PipeError::Js(take_c_string(err).unwrap_or_default())) }
             })
@@ -223,6 +224,7 @@ impl QuickJsRuntime {
         self.shared
             .call(move |engine| {
                 let mut err: *mut c_char = ptr::null_mut();
+                // SAFETY: on the engine thread before teardown, so `native` is live (Engine::native); the bytecode outlives the call.
                 let rc = unsafe {
                     ffi::qjs_eval_engine_bc(engine.native.get(), bytecode.as_ptr(), bytecode.len(), &mut err)
                 };
@@ -238,6 +240,7 @@ impl QuickJsRuntime {
         self.shared
             .call(move |engine| {
                 let mut is_error: c_int = 0;
+                // SAFETY: on the engine thread before teardown, so `native` is live (Engine::native); both strings outlive the call.
                 let out = unsafe {
                     ffi::qjs_eval_sync(engine.native.get(), script.as_ptr(), filename.as_ptr(), &mut is_error)
                 };
@@ -310,8 +313,9 @@ impl QuickJsRuntime {
     /// `host` and `vtable` must stay valid until detached or the runtime is closed.
     pub async unsafe fn attach_mse_host(&self, host: usize, vtable: usize) -> Result<(), PipeError> {
         self.shared
-            .call(move |engine| unsafe {
-                ffi::qjs_set_mse_host(engine.native.get(), host as *mut c_void, vtable as *const c_void)
+            .call(move |engine| {
+                // SAFETY: on the engine thread before teardown, so `native` is live (Engine::native); the caller vouches for both pointers.
+                unsafe { ffi::qjs_set_mse_host(engine.native.get(), host as *mut c_void, vtable as *const c_void) }
             })
             .await
     }
@@ -338,20 +342,26 @@ pub fn compile(script: &str, filename: &str) -> Result<Vec<u8>, PipeError> {
     let filename = CString::new(filename).map_err(|_| PipeError::Js("filename contains NUL".into()))?;
     let mut len = 0usize;
     let mut err: *mut c_char = ptr::null_mut();
+    // SAFETY: both strings are NUL-terminated and outlive the call; the out-pointers are valid.
     let out = unsafe { ffi::qjs_compile(script.as_ptr(), filename.as_ptr(), &mut len, &mut err) };
     if out.is_null() {
         return Err(PipeError::Js(take_c_string(err).unwrap_or_default()));
     }
+    // SAFETY: a non-null result is a malloc'd buffer of `len` bytes.
     let bytes = unsafe { std::slice::from_raw_parts(out, len) }.to_vec();
+    // SAFETY: freed once, by the allocator that made it.
     unsafe { ffi::qjs_free(out.cast()) };
     Ok(bytes)
 }
 
+/// Copies out and frees a string the C engine returned (malloc'd and NUL-terminated, or null).
 fn take_c_string(raw: *mut c_char) -> Option<String> {
     if raw.is_null() {
         return None;
     }
+    // SAFETY: every caller passes such a string straight from the C engine.
     let text = unsafe { CStr::from_ptr(raw) }.to_string_lossy().into_owned();
+    // SAFETY: freed once, by the allocator that made it.
     unsafe { ffi::qjs_free(raw.cast()) };
     Some(text)
 }
@@ -531,6 +541,8 @@ struct State {
 /// Engine-thread confined. Never hold a `state` borrow across an `ffi::qjs_*` call: every one of
 /// them can run JS, which re-enters [`inbound`] synchronously.
 struct Engine {
+    /// The C engine, live until `teardown` nulls it. Only jobs and pipe tasks reach it, and those
+    /// run on this thread's loop, which ends at teardown.
     native: Cell<*mut ffi::QjsEngine>,
     state: RefCell<State>,
     shared: Weak<Shared>,
@@ -561,6 +573,8 @@ fn engine_thread(
             on_log,
         });
         let versions = versions_json.and_then(|json| CString::new(json).ok());
+        // SAFETY: `versions` outlives the call; `engine` outlives the C engine, which teardown closes
+        // before this block drops it, so `inbound` always finds it at `user`.
         let native = unsafe {
             ffi::qjs_create(
                 app_version,
@@ -590,7 +604,9 @@ fn engine_thread(
 }
 
 unsafe extern "C" fn inbound(user: *mut c_void, op: c_int, id: u32, data: *const u8, len: usize) -> c_int {
+    // SAFETY: `user` is the Engine handed to qjs_create, alive until the C engine is closed.
     let engine = unsafe { &*(user as *const Engine) };
+    // SAFETY: C passes `len` bytes at `data`, valid through this call (quickjs_native.h).
     let bytes: &[u8] = if data.is_null() { &[] } else { unsafe { std::slice::from_raw_parts(data, len) } };
     catch_unwind(AssertUnwindSafe(|| match op {
         ffi::OP_OPEN => engine.on_open(id, &String::from_utf8_lossy(bytes)),
@@ -720,6 +736,7 @@ impl Engine {
             state.pipes.insert(id, PipeState::default());
             id
         };
+        // SAFETY: on the engine thread before teardown, so `native` is live (Engine::native); no state borrow is held.
         let rc = unsafe { ffi::qjs_open(self.native.get(), id, command.as_ptr()) };
         if rc < 0 {
             self.state.borrow_mut().pipes.remove(&id);
@@ -775,6 +792,7 @@ impl Engine {
             (chunk, drain)
         };
         if drain {
+            // SAFETY: on the engine thread before teardown, so `native` is live (Engine::native); no state borrow is held.
             unsafe { ffi::qjs_drain(self.native.get(), id) };
         }
         Ok(ReceiveStart::Ready(Some(chunk)))
@@ -802,6 +820,7 @@ impl Engine {
                 return Err(PipeError::BrokenPipe);
             }
         }
+        // SAFETY: on the engine thread before teardown, so `native` is live (Engine::native); `data` outlives the call and no state borrow is held.
         let written = unsafe { ffi::qjs_write(self.native.get(), id, data.as_ptr(), data.len()) };
         let mut state = self.state.borrow_mut();
         let pipe = state.pipes.get_mut(&id).ok_or(PipeError::RuntimeClosed)?;
@@ -847,6 +866,7 @@ impl Engine {
         };
         if reset {
             let reason = CString::new("send aborted mid-stream").unwrap();
+            // SAFETY: on the engine thread before teardown, so `native` is live (Engine::native); no state borrow is held.
             unsafe { ffi::qjs_close_write(self.native.get(), id, reason.as_ptr()) };
             self.notify_if_idle();
         }
@@ -866,6 +886,7 @@ impl Engine {
             (reason, writer)
         };
         let reason = reason.map(|text| CString::new(text.replace('\0', " ")).unwrap());
+        // SAFETY: on the engine thread before teardown, so `native` is live (Engine::native); no state borrow is held.
         unsafe {
             ffi::qjs_close_write(self.native.get(), id, reason.as_ref().map_or(ptr::null(), |text| text.as_ptr()))
         };
@@ -888,6 +909,7 @@ impl Engine {
                 let _ = reader.tx.send(Err(PipeError::Misuse("receive() after the read side was closed")));
             }
         }
+        // SAFETY: on the engine thread before teardown, so `native` is live (Engine::native); no state borrow is held.
         unsafe { ffi::qjs_close_read(self.native.get(), id) };
         self.notify_if_idle();
     }
@@ -959,6 +981,7 @@ impl Engine {
         for waiter in waiters {
             let _ = waiter.send(());
         }
+        // SAFETY: the live engine, closed once: `native` was swapped for null above.
         unsafe { ffi::qjs_close(native) };
     }
 }

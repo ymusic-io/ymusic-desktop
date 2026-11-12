@@ -21,6 +21,7 @@ rusqlite = { version = "0.41", features = ["bundled"] }
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
+undocumented_unsafe_blocks = "warn"
 
 # gpui's layout and painting run every frame; unoptimized they lag on each mouse move.
 [profile.dev.package."*"]

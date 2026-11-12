@@ -870,6 +870,7 @@ impl Playback {
         if self.presenter.is_some() {
             return;
         }
+        // SAFETY: this function's contract is `on_layer`'s.
         if let Some(presenter) = unsafe { Presenter::on_layer(layer) } {
             self.attach_presenter(Arc::new(presenter));
         }
