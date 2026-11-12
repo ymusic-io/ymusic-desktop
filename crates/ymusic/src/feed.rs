@@ -24,7 +24,7 @@ use crate::local_playlist::LocalPlaylistFromDownloads;
 use crate::offline::{OfflineMarks, offline_mark};
 use crate::playlist_download::PlaylistDownload;
 use crate::quick_download::saved_preset;
-use crate::settings_view::HOVER_ALPHA;
+use crate::settings_view::{HOVER_ALPHA, StackTones};
 use crate::spinner::{BusyButton, LoadingLine, Spinner};
 use crate::tab_row::tab_row;
 
@@ -877,7 +877,7 @@ impl FeedView {
                     }),
             )
             .child(actions)
-            .child(div().mx_4().mb_2().h(px(1.)).bg(theme.border))
+            .child(div().mx_4().mb_2().h(px(1.)).bg(cx.global::<StackTones>().near))
             .into_any_element()
     }
 
@@ -1098,6 +1098,29 @@ fn badge(item: &YtFeedItem) -> Option<String> {
     }
 }
 
+/// The two card edges peeking up-right behind a `width` × `height` playlist list thumbnail, each
+/// shifted by its offset and shrunk on every side (JVM `drawPlaylistStack`).
+fn playlist_stack(width: f32, height: f32, tones: StackTones) -> [Div; 2] {
+    let layer = |offset: f32, shrink: f32, color: Hsla| {
+        div()
+            .absolute()
+            .left(px(offset + shrink))
+            .top(px(shrink - offset))
+            .w(px(width - 2. * shrink))
+            .h(px(height - 2. * shrink))
+            .rounded(px(6.))
+            .bg(color)
+    };
+    [layer(8., 2., tones.far), layer(4., 1., tones.near)]
+}
+
+/// The next card's edge over a playlist grid thumbnail, 4 tall in the card's top inset (JVM
+/// `FeedGridCard`); its lower half hides under the art.
+fn playlist_tab(color: Hsla) -> Div {
+    // Compose scales the tab's 6dp top corners down to its 4dp height.
+    div().absolute().top(px(-4.)).left(px(6.)).right(px(6.)).h(px(8.)).rounded_t(px(4.)).bg(color)
+}
+
 impl FeedView {
     fn downloaded(&self, item: &YtFeedItem, cx: &App) -> bool {
         item.kind == "video" && self.offline.read(cx).contains(&item.id)
@@ -1286,34 +1309,40 @@ impl FeedView {
                 .child(div().absolute().top_0().right_0().child(self.more_menu(item, ("card-more", index), cx)))
                 .into_any_element();
         }
+        let stack_tab = (item.kind == "playlist").then(|| cx.global::<StackTones>().tab);
+        let thumbnail = div()
+            .relative()
+            .w_full()
+            .aspect_ratio(16. / 9.)
+            .rounded(px(5.))
+            .overflow_hidden()
+            .bg(theme.secondary)
+            .when_some(thumb_for(&item.thumbs, 640), |frame, url| {
+                frame.child(img(url).size_full().rounded(px(5.)).object_fit(ObjectFit::Cover))
+            })
+            .when(self.downloaded(item, cx), |frame| frame.child(offline_mark(theme.primary, 5.)))
+            .when_some(badge(item), |frame, text| {
+                frame.child(
+                    div()
+                        .absolute()
+                        .bottom_1()
+                        .right_1()
+                        .px(px(5.))
+                        .py(px(2.))
+                        .rounded(px(3.))
+                        .bg(black().opacity(0.75))
+                        .text_xs()
+                        .font_semibold()
+                        .text_color(white())
+                        .child(text),
+                )
+            });
         card.child(
             div()
                 .relative()
                 .w_full()
-                .aspect_ratio(16. / 9.)
-                .rounded(px(5.))
-                .overflow_hidden()
-                .bg(theme.secondary)
-                .when_some(thumb_for(&item.thumbs, 640), |frame, url| {
-                    frame.child(img(url).size_full().rounded(px(5.)).object_fit(ObjectFit::Cover))
-                })
-                .when(self.downloaded(item, cx), |frame| frame.child(offline_mark(theme.primary, 5.)))
-                .when_some(badge(item), |frame, text| {
-                    frame.child(
-                        div()
-                            .absolute()
-                            .bottom_1()
-                            .right_1()
-                            .px(px(5.))
-                            .py(px(2.))
-                            .rounded(px(3.))
-                            .bg(black().opacity(0.75))
-                            .text_xs()
-                            .font_semibold()
-                            .text_color(white())
-                            .child(text),
-                    )
-                }),
+                .when_some(stack_tab, |art, color| art.child(playlist_tab(color)))
+                .child(thumbnail),
         )
         .child(
             h_flex()
@@ -1350,6 +1379,34 @@ impl FeedView {
             _ if bands.square => (92., 92., false),
             _ => (160., 90., false),
         };
+        let stack = (item.kind == "playlist").then(|| playlist_stack(width, height, *cx.global::<StackTones>()));
+        let thumbnail = div()
+            .relative()
+            .size_full()
+            .overflow_hidden()
+            .bg(theme.secondary)
+            .when(round, |frame| frame.rounded_full())
+            .when(!round, |frame| frame.rounded(px(6.)))
+            .when_some(thumb_for(&item.thumbs, (width * 2.) as i32), |frame, url| {
+                let picture = img(url).size_full().object_fit(ObjectFit::Cover);
+                frame.child(if round { picture.rounded_full() } else { picture.rounded(px(6.)) })
+            })
+            .when(self.downloaded(item, cx), |frame| frame.child(offline_mark(theme.primary, 6.)))
+            .when_some(badge(item).filter(|_| !round), |frame, text| {
+                frame.child(
+                    div()
+                        .absolute()
+                        .bottom_1()
+                        .right_1()
+                        .px(px(5.))
+                        .py(px(2.))
+                        .rounded(px(3.))
+                        .bg(black().opacity(0.75))
+                        .text_xs()
+                        .text_color(white())
+                        .child(text),
+                )
+            });
         self.clickable(("feed-row", index), item, queue, None, cx)
             .child(
                 h_flex()
@@ -1364,30 +1421,8 @@ impl FeedView {
                             .flex_shrink_0()
                             .w(px(width))
                             .h(px(height))
-                            .overflow_hidden()
-                            .bg(theme.secondary)
-                            .when(round, |frame| frame.rounded_full())
-                            .when(!round, |frame| frame.rounded(px(6.)))
-                            .when_some(thumb_for(&item.thumbs, (width * 2.) as i32), |frame, url| {
-                                let picture = img(url).size_full().object_fit(ObjectFit::Cover);
-                                frame.child(if round { picture.rounded_full() } else { picture.rounded(px(6.)) })
-                            })
-                            .when(self.downloaded(item, cx), |frame| frame.child(offline_mark(theme.primary, 6.)))
-                            .when_some(badge(item).filter(|_| !round), |frame, text| {
-                                frame.child(
-                                    div()
-                                        .absolute()
-                                        .bottom_1()
-                                        .right_1()
-                                        .px(px(5.))
-                                        .py(px(2.))
-                                        .rounded(px(3.))
-                                        .bg(black().opacity(0.75))
-                                        .text_xs()
-                                        .text_color(white())
-                                        .child(text),
-                                )
-                            }),
+                            .children(stack.into_iter().flatten())
+                            .child(thumbnail),
                     )
                     .child(
                         v_flex()

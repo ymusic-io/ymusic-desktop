@@ -61,6 +61,7 @@ fn apply_theme(choice: &str, accent: &str, cx: &mut App) {
     let amoled = choice == "amoled";
     let ui_font = linux_ui_font(cx);
     let mut tones = ChromeTones { flat: black(), lifted: black() };
+    let mut stack = StackTones { near: black(), far: black(), tab: black() };
     Theme::update(cx, |theme| {
         if let Some(font) = ui_font {
             theme.font_family = font;
@@ -106,8 +107,10 @@ fn apply_theme(choice: &str, accent: &str, cx: &mut App) {
             theme.window_border = if theme.mode.is_dark() { white().opacity(0.07) } else { black().opacity(0.15) };
         }
         tones = ChromeTones { flat: palette.surface, lifted: palette.surface_elevated };
+        stack = StackTones { near: palette.stack_near, far: palette.stack_far, tab: palette.stack_tab };
     });
     cx.set_global(tones);
+    cx.set_global(stack);
 }
 
 /// The bars' grounds: flat over a page at its top, lifted while the page is scrolled from it.
@@ -119,6 +122,17 @@ pub struct ChromeTones {
 
 impl Global for ChromeTones {}
 
+/// The cards stacked behind a playlist's thumbnail: the two edges behind a list row's, the tab over
+/// a grid card's.
+#[derive(Clone, Copy)]
+pub struct StackTones {
+    pub near: Hsla,
+    pub far: Hsla,
+    pub tab: Hsla,
+}
+
+impl Global for StackTones {}
+
 /// The JVM app's `DesignPalette` grounds and inks (commonUi Theme.kt), per mode.
 struct Palette {
     surface: Hsla,
@@ -126,6 +140,9 @@ struct Palette {
     surface_elevated: Hsla,
     settings_card: Hsla,
     placeholder: Hsla,
+    stack_near: Hsla,
+    stack_far: Hsla,
+    stack_tab: Hsla,
     outline: Hsla,
     divider: Hsla,
     ink: Hsla,
@@ -141,6 +158,9 @@ impl Palette {
                 surface_elevated: rgb(0x292929).into(),
                 settings_card: rgb(0x333333).into(),
                 placeholder: rgb(0x454545).into(),
+                stack_near: rgb(0x454545).into(),
+                stack_far: rgb(0x3d3d3d).into(),
+                stack_tab: rgb(0x424242).into(),
                 outline: rgb(0x5c5c5c).into(),
                 divider: rgb(0x2a2a2a).into(),
                 ink: rgb(0xe2e2e2).into(),
@@ -153,6 +173,9 @@ impl Palette {
                 surface_elevated: rgb(0xf5f5f5).into(),
                 settings_card: rgb(0xf2f2f2).into(),
                 placeholder: rgb(0xe3e3e3).into(),
+                stack_near: rgb(0xececec).into(),
+                stack_far: rgb(0xf3f3f3).into(),
+                stack_tab: rgb(0xededed).into(),
                 outline: rgb(0xcfcfcf).into(),
                 divider: rgb(0xe6e6e6).into(),
                 ink: rgb(0x333333).into(),
