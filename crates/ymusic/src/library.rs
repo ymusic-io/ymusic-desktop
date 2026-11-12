@@ -19,7 +19,7 @@ use gpui_kit::*;
 use ym_i18n::{Str, t, tf};
 use ym_store::{Bucket, MediaItem, MediaStore, Playlist, PlaylistItemDetail};
 
-use crate::a11y::{DragRow, FocusList, KeyboardFocusable};
+use crate::a11y::{DragRow, FocusList};
 use crate::action_icon::action_icon;
 use crate::file_rename::RenameFileDialog;
 use crate::graph::{AppGraph, on_core};
@@ -162,6 +162,8 @@ const TOOL_SORT_DIRECTION: usize = 3;
 const TOOL_NEW_PLAYLIST: usize = 4;
 const TOOL_PLAYLIST_MENU: usize = 5;
 const TOOL_EMPTY_RESTORE: usize = 6;
+const TOOL_RESCAN: usize = 7;
+const TOOL_SCAN_EMPTY: usize = 8;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tab {
@@ -281,6 +283,7 @@ pub struct LibraryView {
     card_focus: FocusList,
     tab_focus: FocusList,
     tool_focus: FocusList,
+    crumb_focus: FocusList,
     tab_drag: DragRow,
     crumb_drag: DragRow,
     song_focus: FocusList,
@@ -327,6 +330,7 @@ impl LibraryView {
             card_focus: FocusList::new(Some(scroll.clone())),
             tab_focus: FocusList::new(None),
             tool_focus: FocusList::new(None),
+            crumb_focus: FocusList::new(None),
             tab_drag: DragRow::default(),
             crumb_drag: DragRow::default(),
             song_focus: FocusList::new(Some(scroll)),
@@ -1486,8 +1490,13 @@ impl LibraryView {
         if self.scanning {
             return div().size(px(40.)).flex().items_center().justify_center().child(Spinner::new()).into_any_element();
         }
-        action_icon("rescan", Lucide::RefreshCw, t(Str::LibraryRescan))
-            .on_click(cx.listener(|view, _, _, cx| view.rescan(cx)))
+        self.tool_focus
+            .button(
+                TOOL_RESCAN,
+                action_icon("rescan", Lucide::RefreshCw, t(Str::LibraryRescan))
+                    .on_click(cx.listener(|view, _, _, cx| view.rescan(cx))),
+                cx,
+            )
             .into_any_element()
     }
 
@@ -1497,7 +1506,6 @@ impl LibraryView {
             .id(id)
             .role(Role::Link)
             .aria_label(label.clone())
-            .keyboard_focusable(theme.ring)
             .px_1()
             .rounded(px(6.))
             .cursor_pointer()
@@ -1511,15 +1519,16 @@ impl LibraryView {
     fn drill_header(&self, bar: Div, title: String, back: fn(&mut Self), cx: &mut Context<Self>) -> Div {
         let theme = cx.theme().clone();
         let has_songs = !self.shown_items().is_empty();
-        bar.child(Self::crumb_link("drill-back", self.tab.label().to_owned(), cx).on_click(cx.listener(
+        let link = Self::crumb_link("drill-back", self.tab.label().to_owned(), cx).on_click(cx.listener(
             move |view, _, _, cx| {
                 back(view);
                 cx.notify();
             },
-        )))
-        .child(Icon::new(IconName::ChevronRight).size(px(16.)).text_color(theme.muted_foreground))
-        .child(div().text_sm().font_semibold().truncate().child(title))
-        .when(has_songs, |bar| bar.child(self.shuffle_chip(cx)))
+        ));
+        bar.child(self.crumb_focus.item(0, link, cx))
+            .child(Icon::new(IconName::ChevronRight).size(px(16.)).text_color(theme.muted_foreground))
+            .child(div().text_sm().font_semibold().truncate().child(title))
+            .when(has_songs, |bar| bar.child(self.shuffle_chip(cx)))
     }
 
     /// The 40-tall bar over the tab's content.
@@ -1549,9 +1558,15 @@ impl LibraryView {
                     .restrict_scroll_to_axis()
                     .gap_1()
                     .items_center();
+                let row = Some(self.crumb_drag.scroll().clone());
                 crumbs = crumbs.child(
-                    Self::crumb_link("crumb-root", t(Str::LibraryCrumbRoot).to_owned(), cx)
-                        .on_click(cx.listener(|view, _, _, cx| view.open_crumb(0, cx))),
+                    self.crumb_focus.item_in(
+                        0,
+                        Self::crumb_link("crumb-root", t(Str::LibraryCrumbRoot).to_owned(), cx)
+                            .on_click(cx.listener(|view, _, _, cx| view.open_crumb(0, cx))),
+                        row.clone(),
+                        cx,
+                    ),
                 );
                 let last = self.path.len() - 1;
                 for (depth, bucket) in self.path.iter().enumerate() {
@@ -1561,9 +1576,9 @@ impl LibraryView {
                     crumbs = crumbs.child(if depth == last {
                         div().px_1().text_sm().font_semibold().truncate().child(name).into_any_element()
                     } else {
-                        Self::crumb_link(("crumb", depth), name, cx)
-                            .on_click(cx.listener(move |view, _, _, cx| view.open_crumb(depth + 1, cx)))
-                            .into_any_element()
+                        let link = Self::crumb_link(("crumb", depth), name, cx)
+                            .on_click(cx.listener(move |view, _, _, cx| view.open_crumb(depth + 1, cx)));
+                        self.crumb_focus.item_in(depth + 1, link, row.clone(), cx).into_any_element()
                     });
                 }
                 bar.child(self.crumb_drag.wrap(crumbs).flex_1().min_w_0()).child(self.rescan_button(cx))
@@ -1850,11 +1865,15 @@ impl Render for LibraryView {
                         .gap(px(14.))
                         .child(div().text_color(theme.muted_foreground).child(t(Str::LibraryEmpty)))
                         .child(
-                            Button::new("scan-empty")
-                                .primary()
-                                .rounded_full()
-                                .label(t(Str::LibraryScanFolder))
-                                .on_click(cx.listener(|view, _, _, cx| view.scan(cx))),
+                            self.tool_focus.button(
+                                TOOL_SCAN_EMPTY,
+                                Button::new("scan-empty")
+                                    .primary()
+                                    .rounded_full()
+                                    .label(t(Str::LibraryScanFolder))
+                                    .on_click(cx.listener(|view, _, _, cx| view.scan(cx))),
+                                cx,
+                            ),
                         )
                         .when_some(self.summary.clone(), |column, summary| {
                             column.child(div().text_sm().text_color(theme.muted_foreground).child(summary))
