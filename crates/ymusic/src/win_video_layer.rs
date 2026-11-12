@@ -4,12 +4,12 @@
 //! video, as on macOS. Without D3D11 or DirectComposition, CPU pictures painted by gpui.
 
 use std::cell::{Cell, RefCell};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use gpui_kit::{Bounds, Div, Pixels, Stateful, Window, point, size};
 use gpui_windows::underlay::{self, Placement};
-use ym_mse::Presenter;
+use ym_mse::{CompositionSink, Presenter, SwapChain};
 
 use crate::video_layer::VideoLayer as CpuLayer;
 
@@ -18,6 +18,8 @@ pub struct VideoLayer {
     cpu: CpuLayer,
     /// The composition content's size, packed `width << 32 | height`; 0 before any.
     content: Arc<AtomicU64>,
+    /// A swap chain that replaced the attached one (a device loss), for the next render.
+    replaced: Arc<Mutex<Option<SwapChain>>>,
     composited: Cell<bool>,
     scale: Cell<f32>,
     placed: RefCell<Placement>,
@@ -30,6 +32,7 @@ impl VideoLayer {
             hwnd,
             cpu: CpuLayer::attach(window)?,
             content: Arc::default(),
+            replaced: Arc::default(),
             composited: Cell::new(false),
             scale: Cell::new(window.scale_factor()),
             placed: RefCell::default(),
@@ -37,15 +40,21 @@ impl VideoLayer {
     }
 
     /// The composition presenter under the window, else a CPU one; `wake` runs on a decode thread
-    /// when the picture needs a render (a CPU picture, a new content aspect).
+    /// when the picture needs a render (a CPU picture, a new content aspect or swap chain).
     pub fn presenter(&self, wake: impl Fn() + Send + Sync + 'static) -> Option<Arc<Presenter>> {
         let wake = Arc::new(wake);
-        let content = self.content.clone();
-        let on_size = wake.clone();
-        let composition = Presenter::d3d11_composition(Box::new(move |width, height| {
-            content.store(u64::from(width) << 32 | u64::from(height), Ordering::Release);
-            on_size();
-        }));
+        let (content, size_wake) = (self.content.clone(), wake.clone());
+        let (replaced, swap_wake) = (self.replaced.clone(), wake.clone());
+        let composition = Presenter::d3d11_composition(CompositionSink {
+            size: Box::new(move |width, height| {
+                content.store(u64::from(width) << 32 | u64::from(height), Ordering::Release);
+                size_wake();
+            }),
+            swap_chain: Box::new(move |swap_chain| {
+                *replaced.lock().unwrap_or_else(PoisonError::into_inner) = Some(swap_chain);
+                swap_wake();
+            }),
+        });
         if let Some((presenter, swap_chain)) = composition {
             // SAFETY: a live composition swap chain; the window takes its own reference.
             if unsafe { underlay::attach(self.hwnd, swap_chain.as_ptr()) } {
@@ -58,7 +67,15 @@ impl VideoLayer {
 
     pub fn refresh(&self, window: &mut Window) -> anyhow::Result<()> {
         self.scale.set(window.scale_factor());
-        if self.composited.get() { Ok(()) } else { self.cpu.refresh(window) }
+        if !self.composited.get() {
+            return self.cpu.refresh(window);
+        }
+        let replaced = self.replaced.lock().unwrap_or_else(PoisonError::into_inner).take();
+        if let Some(swap_chain) = replaced {
+            // SAFETY: a live composition swap chain; the window takes its own reference.
+            unsafe { underlay::attach(self.hwnd, swap_chain.as_ptr()) };
+        }
+        Ok(())
     }
 
     /// The composition shows through the unpainted box.

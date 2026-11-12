@@ -66,15 +66,21 @@ struct VpSink {
     release: Option<unsafe extern "C" fn(user: *mut c_void)>,
     user: *mut c_void,
     on_size: Option<unsafe extern "C" fn(user: *mut c_void, width: c_int, height: c_int)>,
+    on_swapchain: Option<unsafe extern "C" fn(user: *mut c_void, swap_chain: *mut c_void)>,
 }
 
 /// Receives each CPU-mode picture as tightly packed BGRA rows on a decode thread; the pixels are
 /// only valid during the call.
 pub type FrameSink = Box<dyn Fn(u32, u32, &[u8]) + Send + Sync>;
 
-/// Receives a composition presenter's content size (width, height) on a decode thread.
+/// What a composition presenter tells its owner, on a decode thread.
 #[cfg(target_os = "windows")]
-pub type SizeSink = Box<dyn Fn(u32, u32) + Send + Sync>;
+pub struct CompositionSink {
+    /// The content's size (width, height), which changes only with the picture's aspect.
+    pub size: Box<dyn Fn(u32, u32) + Send + Sync>,
+    /// The swap chain that replaces the one in use after a D3D11 device loss.
+    pub swap_chain: Box<dyn Fn(SwapChain) + Send + Sync>,
+}
 
 /// Video output: an `AVSampleBufferDisplayLayer` (zero-copy VideoToolbox frames on macOS), or
 /// BGRA pictures handed to a [`FrameSink`].
@@ -95,7 +101,7 @@ impl Presenter {
     #[cfg(target_os = "macos")]
     pub unsafe fn on_layer(layer: *mut c_void) -> Option<Self> {
         let user = std::ptr::null_mut();
-        let sink = VpSink { on_frame: None, on_mode: None, release: None, user, on_size: None };
+        let sink = VpSink { on_frame: None, on_mode: None, release: None, user, on_size: None, on_swapchain: None };
         // SAFETY: the caller vouches for `layer`; the C side copies the sink.
         let raw = unsafe { vpresent_create_vt_layer(layer, &sink) };
         (!raw.is_null()).then_some(Self { raw })
@@ -110,6 +116,7 @@ impl Presenter {
             release: Some(release_cpu_sink),
             user,
             on_size: None,
+            on_swapchain: None,
         };
         // SAFETY: the C side copies the sink and owns `user` from here, handing it back through
         // `release` as its last call.
@@ -123,16 +130,18 @@ impl Presenter {
     }
 
     /// Draws into a composition swap chain for a DirectComposition visual to show, D3D11 frames
-    /// without a copy; `sink` hears its content size, which changes only with the picture's aspect.
+    /// without a copy. After a device loss it moves to a device of its own (software pictures)
+    /// and hands `sink` the new swap chain.
     #[cfg(target_os = "windows")]
-    pub fn d3d11_composition(sink: SizeSink) -> Option<(Self, SwapChain)> {
+    pub fn d3d11_composition(sink: CompositionSink) -> Option<(Self, SwapChain)> {
         let user = Box::into_raw(Box::new(sink)).cast::<c_void>();
         let sink = VpSink {
             on_frame: None,
             on_mode: None,
-            release: Some(release_size_sink),
+            release: Some(release_composition_sink),
             user,
             on_size: Some(on_content_size),
+            on_swapchain: Some(on_swap_chain),
         };
         let mut swap_chain = std::ptr::null_mut();
         // SAFETY: the C side copies the sink and owns `user` from here, handing it back through
@@ -140,7 +149,7 @@ impl Presenter {
         let raw = unsafe { vpresent_create_d3d11_composition(&sink, &mut swap_chain) };
         if raw.is_null() {
             // SAFETY: a failed create never calls `release`, so `user` is still this box.
-            unsafe { release_size_sink(user) };
+            unsafe { release_composition_sink(user) };
             return None;
         }
         Some((Self { raw }, SwapChain(swap_chain)))
@@ -166,6 +175,10 @@ impl Presenter {
 /// One reference to a composition presenter's `IDXGISwapChain1`.
 #[cfg(target_os = "windows")]
 pub struct SwapChain(*mut c_void);
+
+// SAFETY: a COM reference; IDXGISwapChain1 counts references atomically, so any thread may drop it.
+#[cfg(target_os = "windows")]
+unsafe impl Send for SwapChain {}
 
 #[cfg(target_os = "windows")]
 impl SwapChain {
@@ -221,15 +234,27 @@ unsafe extern "C" fn on_content_size(user: *mut c_void, width: c_int, height: c_
     }
     // SAFETY: `user` is the box `Presenter::d3d11_composition` handed over, freed only by the
     // later `release`.
-    let sink = unsafe { &*user.cast::<SizeSink>() };
-    contain_panic(|| sink(width as u32, height as u32));
+    let sink = unsafe { &*user.cast::<CompositionSink>() };
+    contain_panic(|| (sink.size)(width as u32, height as u32));
 }
 
 #[cfg(target_os = "windows")]
-unsafe extern "C" fn release_size_sink(user: *mut c_void) {
+unsafe extern "C" fn on_swap_chain(user: *mut c_void, swap_chain: *mut c_void) {
+    if swap_chain.is_null() {
+        return;
+    }
+    let swap_chain = SwapChain(swap_chain);
+    // SAFETY: `user` is the box `Presenter::d3d11_composition` handed over, freed only by the
+    // later `release`.
+    let sink = unsafe { &*user.cast::<CompositionSink>() };
+    contain_panic(|| (sink.swap_chain)(swap_chain));
+}
+
+#[cfg(target_os = "windows")]
+unsafe extern "C" fn release_composition_sink(user: *mut c_void) {
     // SAFETY: the sink's last call (or a failed create's cleanup): `user` is the box from
     // `Presenter::d3d11_composition`, reclaimed exactly once.
-    let sink = unsafe { Box::from_raw(user.cast::<SizeSink>()) };
+    let sink = unsafe { Box::from_raw(user.cast::<CompositionSink>()) };
     contain_panic(|| drop(sink));
 }
 
