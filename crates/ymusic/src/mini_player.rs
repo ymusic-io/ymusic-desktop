@@ -201,12 +201,15 @@ impl MiniPlayer {
         }
     }
 
-    fn cover(item: &QueueItem, cx: &App) -> Div {
+    fn cover(item: &QueueItem, corner_radius: f32, cx: &App) -> Div {
         div()
             .overflow_hidden()
+            .rounded(px(corner_radius))
             .bg(cx.theme().secondary)
             .flex_shrink_0()
-            .when_some(item.thumb(320), |frame, url| frame.child(img(url).size_full().object_fit(ObjectFit::Cover)))
+            .when_some(item.thumb(320), |frame, url| {
+                frame.child(img(url).size_full().rounded(px(corner_radius)).object_fit(ObjectFit::Cover))
+            })
     }
 
     fn play_label(state: &PlayState) -> &'static str {
@@ -280,7 +283,7 @@ impl MiniPlayer {
                 cx.stop_propagation();
                 cx.emit(ToggleNowPlaying);
             }))
-            .child(Self::cover(&item, cx).size(px(48.)).rounded(px(4.)))
+            .child(Self::cover(&item, 4., cx).size(px(48.)))
             .child(
                 v_flex()
                     .flex_1()
@@ -465,7 +468,7 @@ impl MiniPlayer {
             .border_color(theme.border)
             .cursor_pointer()
             .on_click(cx.listener(|_, _, _, cx| cx.emit(ToggleNowPlaying)))
-            .child(Self::cover(&item, cx).h_full().aspect_ratio(16. / 9.))
+            .child(Self::cover(&item, 0., cx).h_full().aspect_ratio(16. / 9.))
             .child(
                 v_flex()
                     .flex_1()

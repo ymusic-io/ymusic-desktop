@@ -200,7 +200,9 @@ impl PlayAgainView {
                     .bg(theme.secondary)
                     .when(current == Some(offset), |tile| tile.border_1().border_color(theme.primary))
                     .when_some(thumb.clone(), |tile, url| {
-                        tile.child(img(SharedString::from(url)).size_full().object_fit(ObjectFit::Cover))
+                        tile.child(
+                            img(SharedString::from(url)).size_full().rounded(px(6.)).object_fit(ObjectFit::Cover),
+                        )
                     }),
             );
         }
@@ -258,7 +260,12 @@ impl PlayAgainView {
                             .overflow_hidden()
                             .bg(theme.secondary)
                             .when_some(session.thumbnail_url.clone(), |frame, url| {
-                                frame.child(img(SharedString::from(url)).size_full().object_fit(ObjectFit::Cover))
+                                frame.child(
+                                    img(SharedString::from(url))
+                                        .size_full()
+                                        .rounded(px(10.))
+                                        .object_fit(ObjectFit::Cover),
+                                )
                             }),
                     )
                     .child(

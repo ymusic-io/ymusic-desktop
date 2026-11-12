@@ -524,7 +524,7 @@ impl PlaylistDownload {
                     .overflow_hidden()
                     .bg(theme.secondary)
                     .when_some(thumb_for(&video.thumbs, 192), |frame, url| {
-                        frame.child(img(url).size_full().object_fit(ObjectFit::Cover))
+                        frame.child(img(url).size_full().rounded(px(6.)).object_fit(ObjectFit::Cover))
                     })
                     .when_some(video.duration.clone(), |frame, duration| {
                         frame.child(

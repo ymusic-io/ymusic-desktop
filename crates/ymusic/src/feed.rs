@@ -908,7 +908,7 @@ impl FeedView {
                         .rounded(px(12.))
                         .overflow_hidden()
                         .bg(theme.secondary)
-                        .child(img(url).size_full().object_fit(ObjectFit::Cover)),
+                        .child(img(url).size_full().rounded(px(12.)).object_fit(ObjectFit::Cover)),
                 )
             })
             .child(
@@ -1271,14 +1271,12 @@ impl FeedView {
                         .items_center()
                         .gap_1()
                         .child(
-                            div()
-                                .size(px(76.))
-                                .rounded_full()
-                                .overflow_hidden()
-                                .bg(theme.secondary)
-                                .when_some(thumb_for(&item.thumbs, 152), |frame, url| {
-                                    frame.child(img(url).size_full().object_fit(ObjectFit::Cover))
-                                }),
+                            div().size(px(76.)).rounded_full().overflow_hidden().bg(theme.secondary).when_some(
+                                thumb_for(&item.thumbs, 152),
+                                |frame, url| {
+                                    frame.child(img(url).size_full().rounded_full().object_fit(ObjectFit::Cover))
+                                },
+                            ),
                         )
                         .child(div().pt_1().text_sm().font_medium().truncate().child(item.title.clone()))
                         .when_some(subtitle(item), |column, line| {
@@ -1297,9 +1295,9 @@ impl FeedView {
                 .overflow_hidden()
                 .bg(theme.secondary)
                 .when_some(thumb_for(&item.thumbs, 640), |frame, url| {
-                    frame.child(img(url).size_full().object_fit(ObjectFit::Cover))
+                    frame.child(img(url).size_full().rounded(px(5.)).object_fit(ObjectFit::Cover))
                 })
-                .when(self.downloaded(item, cx), |frame| frame.child(offline_mark(theme.primary)))
+                .when(self.downloaded(item, cx), |frame| frame.child(offline_mark(theme.primary, 5.)))
                 .when_some(badge(item), |frame, text| {
                     frame.child(
                         div()
@@ -1371,9 +1369,10 @@ impl FeedView {
                             .when(round, |frame| frame.rounded_full())
                             .when(!round, |frame| frame.rounded(px(6.)))
                             .when_some(thumb_for(&item.thumbs, (width * 2.) as i32), |frame, url| {
-                                frame.child(img(url).size_full().object_fit(ObjectFit::Cover))
+                                let picture = img(url).size_full().object_fit(ObjectFit::Cover);
+                                frame.child(if round { picture.rounded_full() } else { picture.rounded(px(6.)) })
                             })
-                            .when(self.downloaded(item, cx), |frame| frame.child(offline_mark(theme.primary)))
+                            .when(self.downloaded(item, cx), |frame| frame.child(offline_mark(theme.primary, 6.)))
                             .when_some(badge(item).filter(|_| !round), |frame, text| {
                                 frame.child(
                                     div()
@@ -1561,7 +1560,9 @@ impl FeedView {
                                             .overflow_hidden()
                                             .bg(theme.secondary)
                                             .when_some(thumb_for(&item.thumbs, 128), |frame, url| {
-                                                frame.child(img(url).size_full().object_fit(ObjectFit::Cover))
+                                                frame.child(
+                                                    img(url).size_full().rounded_full().object_fit(ObjectFit::Cover),
+                                                )
                                             }),
                                     )
                                     .child(div().w_full().text_xs().text_center().truncate().child(item.title.clone())),

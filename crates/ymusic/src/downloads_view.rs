@@ -653,7 +653,9 @@ impl DownloadsView {
                             .rounded(px(6.))
                             .overflow_hidden()
                             .bg(theme.secondary)
-                            .child(img(SharedString::from(thumb)).size_full().object_fit(ObjectFit::Cover)),
+                            .child(
+                                img(SharedString::from(thumb)).size_full().rounded(px(6.)).object_fit(ObjectFit::Cover),
+                            ),
                     )
                     .child(
                         v_flex()

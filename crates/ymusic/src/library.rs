@@ -1194,13 +1194,21 @@ fn wheel_scrolls_row(row: ScrollHandle) -> impl Fn(&ScrollEvent, &mut Window, &m
     }
 }
 
-/// The artwork filling its frame, the icon while it loads or when there is none.
-pub fn art_or_icon(icon: Lucide, art: Option<SharedString>, icon_size: Pixels, cx: &App) -> AnyElement {
+/// The artwork filling its frame with `corner_radius` corners, the icon while it loads or when there
+/// is none.
+pub fn art_or_icon(
+    icon: Lucide,
+    art: Option<SharedString>,
+    icon_size: Pixels,
+    corner_radius: f32,
+    cx: &App,
+) -> AnyElement {
     let color = cx.theme().muted_foreground;
     let placeholder = move || Icon::new(icon).size(icon_size).text_color(color).into_any_element();
     match art {
         Some(url) => img(url)
             .size_full()
+            .rounded(px(corner_radius))
             .object_fit(ObjectFit::Cover)
             .with_loading(placeholder)
             .with_fallback(placeholder)
@@ -1380,7 +1388,7 @@ impl LibraryView {
             .flex()
             .items_center()
             .justify_center()
-            .child(art_or_icon(icon, art, px(20.), cx))
+            .child(art_or_icon(icon, art, px(20.), 10., cx))
             .when_some(duration_ms, |thumb, duration| {
                 thumb.child(
                     div()
@@ -1454,7 +1462,7 @@ impl LibraryView {
                         .flex()
                         .items_center()
                         .justify_center()
-                        .child(art_or_icon(icon, art, px(40.), cx))
+                        .child(art_or_icon(icon, art, px(40.), 10., cx))
                         .when(marked, |tile| {
                             tile.child(
                                 div()

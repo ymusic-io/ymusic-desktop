@@ -771,6 +771,7 @@ impl ArrangePlaylist {
                         Lucide::Music,
                         crate::local_art::art_url(song, crate::local_art::ROW_PX),
                         px(18.),
+                        6.,
                         cx,
                     )),
             )

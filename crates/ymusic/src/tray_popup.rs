@@ -137,7 +137,7 @@ impl Render for TrayPopup {
             .justify_center()
             .child(Icon::new(Lucide::Music).text_color(theme.muted_foreground))
             .when_some(item.as_ref().and_then(|item| item.thumb(160)), |frame, url| {
-                frame.child(img(url).absolute().inset_0().size_full().object_fit(ObjectFit::Cover))
+                frame.child(img(url).absolute().inset_0().size_full().rounded(px(5.)).object_fit(ObjectFit::Cover))
             });
         let play_label = t(if playing { Str::CdPause } else { Str::CdPlay });
         v_flex()

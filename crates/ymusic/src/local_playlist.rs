@@ -265,7 +265,7 @@ impl Render for LocalPlaylistFromDownloads {
                             .overflow_hidden()
                             .bg(theme.secondary)
                             .when_some(thumb_for(&video.thumbs, 128), |frame, url| {
-                                frame.child(img(url).size_full().object_fit(ObjectFit::Cover))
+                                frame.child(img(url).size_full().rounded(px(4.)).object_fit(ObjectFit::Cover))
                             }),
                     )
                     .child(

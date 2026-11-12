@@ -1515,7 +1515,7 @@ impl NowPlaying {
                             .overflow_hidden()
                             .bg(theme.secondary)
                             .when_some(item.thumb(120), |frame, url| {
-                                frame.child(img(url).size_full().object_fit(ObjectFit::Cover))
+                                frame.child(img(url).size_full().rounded(px(6.)).object_fit(ObjectFit::Cover))
                             }),
                     )
                     .child(

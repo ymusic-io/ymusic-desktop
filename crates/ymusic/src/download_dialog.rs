@@ -893,7 +893,7 @@ impl DownloadPicker {
             .justify_center()
             .child(Icon::new(Lucide::Image).size(px(26.)).text_color(theme.muted_foreground))
             .when_some(self.target.thumbnail_url.clone(), |frame, url| {
-                frame.child(img(url).absolute().inset_0().size_full().object_fit(ObjectFit::Cover))
+                frame.child(img(url).absolute().inset_0().size_full().rounded(px(10.)).object_fit(ObjectFit::Cover))
             })
             .when_some(duration, |frame, ms| {
                 frame.child(
@@ -1246,7 +1246,7 @@ impl DownloadPicker {
             .relative()
             .child(Icon::new(Lucide::Music).size(px(24.)).text_color(theme.muted_foreground))
             .when_some(self.target.thumbnail_url.clone(), |frame, url| {
-                frame.child(img(url).absolute().inset_0().size_full().object_fit(ObjectFit::Cover))
+                frame.child(img(url).absolute().inset_0().size_full().rounded(px(8.)).object_fit(ObjectFit::Cover))
             });
         let rename = action_icon(
             "download-rename",

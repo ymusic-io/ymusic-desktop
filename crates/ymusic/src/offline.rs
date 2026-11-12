@@ -94,13 +94,16 @@ impl OfflineMarks {
     }
 }
 
-/// The mark itself: an accent triangle in the thumbnail's top-left corner (JVM `AvailableOfflineMark`).
-pub fn offline_mark(color: Hsla) -> impl IntoElement {
+/// The mark itself: an accent triangle in the thumbnail's top-left corner (JVM `AvailableOfflineMark`),
+/// rounded off as a thumbnail with `corner_radius` clips it.
+pub fn offline_mark(color: Hsla, corner_radius: f32) -> impl IntoElement {
     canvas(
         |_, _, _| {},
         move |bounds, _, window, _| {
+            let radius = px(corner_radius);
             let mut corner = PathBuilder::fill();
-            corner.move_to(bounds.origin);
+            corner.move_to(point(bounds.left(), bounds.top() + radius));
+            corner.arc_to(point(radius, radius), px(0.), false, true, point(bounds.left() + radius, bounds.top()));
             corner.line_to(point(bounds.right(), bounds.top()));
             corner.line_to(point(bounds.left(), bounds.bottom()));
             corner.close();

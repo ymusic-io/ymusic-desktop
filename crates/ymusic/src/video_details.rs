@@ -518,7 +518,7 @@ impl VideoDetailsView {
     fn avatar(thumbs: &[YtThumb], size: f32, cx: &App) -> Div {
         let frame = div().size(px(size)).flex_shrink_0().rounded_full().overflow_hidden().bg(cx.theme().secondary);
         match thumb_for(thumbs, (size * 2.) as i32) {
-            Some(url) => frame.child(img(url).size_full().object_fit(ObjectFit::Cover)),
+            Some(url) => frame.child(img(url).size_full().rounded_full().object_fit(ObjectFit::Cover)),
             None => frame
                 .flex()
                 .items_center()

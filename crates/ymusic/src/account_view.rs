@@ -320,7 +320,7 @@ impl Render for AccountHeader {
                     .justify_center()
                     .font_bold()
                     .map(|frame| match (avatar, initial) {
-                        (Some(url), _) => frame.child(img(url).size_full().object_fit(ObjectFit::Cover)),
+                        (Some(url), _) => frame.child(img(url).size_full().rounded_full().object_fit(ObjectFit::Cover)),
                         (None, Some(letter)) => frame.child(letter),
                         (None, None) => frame.child(Icon::new(Lucide::User)),
                     }),
