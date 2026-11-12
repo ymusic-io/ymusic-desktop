@@ -320,6 +320,32 @@ impl FocusList {
         on_arrows(div().relative().flex_shrink_0().child(element).child(self.tracker(slot, None)))
     }
 
+    /// Makes `element`, a full-width row already tracking [`Self::handle`]`(index)`, the list's `index`th
+    /// stop, ringed inside: a control's own ring is drawn outside it, where the row's card clips it.
+    pub fn row(&self, index: usize, element: impl IntoElement, cx: &App) -> Div {
+        let slot = self.slot(index, cx);
+        let (handle, ring) = (slot.handle.clone(), cx.theme().ring);
+        let ring = canvas(
+            |_, _, _| {},
+            move |bounds, _, window, _| {
+                if handle.is_focused(window) && window.last_input_was_keyboard() {
+                    window.paint_quad(quad(bounds, px(0.), transparent_black(), px(RING), ring, BorderStyle::Solid));
+                }
+            },
+        )
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full();
+        on_arrows(div().relative().w_full().child(element).child(self.tracker(slot, None)).child(ring))
+    }
+
+    /// [`Self::row`] for a row that is one button.
+    pub fn row_button(&self, index: usize, button: Button, cx: &App) -> Div {
+        let handle = self.handle(index, cx);
+        self.row(index, button.track_focus(&handle), cx)
+    }
+
     /// Makes the text field `element`, whose input focuses through `input`, the list's `index`th stop:
     /// Up and Down move on from it, Left and Right stay with the caret.
     pub fn field(&self, index: usize, input: &FocusHandle, element: impl IntoElement, cx: &App) -> Div {

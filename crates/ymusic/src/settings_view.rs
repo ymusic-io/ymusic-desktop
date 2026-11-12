@@ -7,7 +7,7 @@ use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{
-    ActiveTheme, Colorize, IconName, Sizable, StyledExt, Theme, ThemeMode, WindowExt, h_flex, v_flex,
+    ActiveTheme, Colorize, FocusableExt, Icon, IconName, StyledExt, Theme, ThemeMode, WindowExt, h_flex, v_flex,
 };
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
@@ -404,6 +404,38 @@ fn row_body(title: impl Into<SharedString>, hint: Option<String>, control: impl 
         .child(div().flex_shrink_0().child(control))
 }
 
+/// A row that is one button: its ring, click target and spoken name are the whole row, with `value`
+/// (what it is set to, or where it leads) at its end.
+fn button_row(
+    id: &'static str,
+    title: impl Into<SharedString>,
+    hint: Option<String>,
+    value: impl IntoElement,
+    cx: &App,
+) -> Button {
+    let theme = cx.theme();
+    Button::new(id).ghost().focus_ring(false).w_full().h_auto().px_4().py(px(14.)).rounded(px(0.)).child(
+        h_flex()
+            .w_full()
+            .gap_4()
+            .items_center()
+            .child(
+                v_flex().flex_1().min_w_0().items_start().child(div().text_sm().child(title.into())).when_some(
+                    hint,
+                    |column, hint| {
+                        column.child(div().pt(px(2.)).text_xs().text_color(theme.muted_foreground).child(hint))
+                    },
+                ),
+            )
+            .child(div().flex_shrink_0().text_sm().child(value)),
+    )
+}
+
+/// The end of a row that opens a panel or a page.
+fn chevron(cx: &App) -> Icon {
+    Icon::new(IconName::ChevronRight).text_color(cx.theme().muted_foreground)
+}
+
 /// A control's spoken name: the row's title, then the value it shows.
 fn spoken(title: &str, value: &str) -> String {
     if value.is_empty() || value == title { title.to_owned() } else { format!("{title}, {value}") }
@@ -447,14 +479,16 @@ fn language_name(tag: &str) -> String {
 
 impl SettingsView {
     fn link_row(&self, index: usize, id: &'static str, title: &'static str, url: String, cx: &App) -> AnyElement {
-        let button = Button::new(id)
-            .small()
-            .ghost()
-            .icon(IconName::ExternalLink)
+        let link = Icon::new(IconName::ExternalLink).text_color(cx.theme().muted_foreground);
+        let button = button_row(id, title, None, link, cx)
             .accessibility_label(title)
             .tooltip(url.clone())
             .on_click(move |_, _, cx| cx.open_url(&url));
-        row(title, None, self.focus.button(index, button, cx), cx)
+        self.wide(self.focus.row_button(index, button, cx))
+    }
+
+    fn wide(&self, stop: Div) -> AnyElement {
+        stop.w_full().into_any_element()
     }
 
     fn toggle(
@@ -529,13 +563,10 @@ impl Render for SettingsView {
         });
         let entity = cx.entity().downgrade();
         let theme_stop = next();
-        let theme_menu = Button::new("theme")
-            .small()
-            .ghost()
-            .label(theme_label)
+        let theme_row = button_row("theme", t(Str::SettingsTheme), None, theme_label, cx)
             .accessibility_label(spoken(t(Str::SettingsTheme), theme_label))
             .track_focus(&self.focus.handle(theme_stop, cx))
-            .dropdown_menu(move |mut menu, _, _| {
+            .dropdown_menu_with_anchor(Anchor::TopRight, move |mut menu, _, _| {
                 for (choice, label) in [
                     ("", Str::SettingsThemeSystem),
                     ("light", Str::SettingsThemeLight),
@@ -549,14 +580,12 @@ impl Render for SettingsView {
                 }
                 menu
             });
-        let theme_menu = self.focus.wrap(theme_stop, theme_menu, cx);
+        let theme_row = self.wide(self.focus.row(theme_stop, theme_row, cx));
 
         let entity = cx.entity().downgrade();
-        let accent_button = Button::new("accent")
-            .small()
-            .ghost()
+        let swatch = div().size(px(20.)).rounded_full().bg(accent_color(&accent));
+        let accent_row = button_row("accent", t(Str::SettingsAccentColor), None, swatch, cx)
             .accessibility_label(t(Str::SettingsAccentColor))
-            .child(div().size(px(20.)).rounded_full().bg(accent_color(&accent)))
             .on_click(move |_, window, cx| {
                 let view = entity.clone();
                 AccentPicker::open(
@@ -568,19 +597,16 @@ impl Render for SettingsView {
                     cx,
                 );
             });
-        let accent_button = self.focus.button(next(), accent_button, cx);
+        let accent_row = self.wide(self.focus.row_button(next(), accent_row, cx));
 
         let language_label =
             if language.is_empty() { t(Str::SettingsThemeSystem).to_owned() } else { language_name(&language) };
         let entity = cx.entity().downgrade();
         let language_stop = next();
-        let language_menu = Button::new("language")
-            .small()
-            .ghost()
+        let language_row = button_row("language", t(Str::SettingsLanguage), None, language_label.clone(), cx)
             .accessibility_label(spoken(t(Str::SettingsLanguage), &language_label))
-            .label(language_label)
             .track_focus(&self.focus.handle(language_stop, cx))
-            .dropdown_menu(move |mut menu, _, _| {
+            .dropdown_menu_with_anchor(Anchor::TopRight, move |mut menu, _, _| {
                 menu = menu.scrollable(true).max_h(px(360.));
                 let system = entity.clone();
                 menu = menu.item(PopupMenuItem::new(t(Str::SettingsThemeSystem)).on_click(move |_, window, cx| {
@@ -594,7 +620,7 @@ impl Render for SettingsView {
                 }
                 menu
             });
-        let language_menu = self.focus.wrap(language_stop, language_menu, cx);
+        let language_row = self.wide(self.focus.row(language_stop, language_row, cx));
 
         let region_label = self
             .locales
@@ -609,77 +635,38 @@ impl Render for SettingsView {
             })
             .filter(|label| !label.is_empty())
             .unwrap_or_else(|| t(Str::SettingsContentRegion).to_owned());
-        let region_button = Button::new("region")
-            .small()
-            .ghost()
-            .accessibility_label(spoken(t(Str::SettingsContentRegion), &region_label))
-            .label(region_label)
-            .busy(self.locales.is_none() && self.locales_loading)
-            .on_click(cx.listener(|_, _, window, cx| RegionPicker::open(cx.entity(), window, cx)));
-        let region_button = self.focus.button(next(), region_button, cx);
-
-        let account_control = match &self.account {
-            Some(account) if account.signed_in => Button::new("sign-out")
-                .small()
-                .label(t(Str::AccountSignOut))
-                .busy(self.signing_out)
-                .on_click(cx.listener(|view, _, _, cx| view.sign_out(cx))),
-            _ => Button::new("sign-in")
-                .small()
-                .primary()
-                .label(t(Str::SigninButton))
-                .on_click(|_, window, cx| window.dispatch_action(Box::new(crate::shortcuts::OpenSignIn), cx)),
-        };
-        let account_title = match &self.account {
-            Some(account) if account.signed_in => {
-                account.name.clone().or_else(|| account.email.clone()).unwrap_or_default()
-            }
-            _ => t(Str::SigninPrefaceTitle).to_owned(),
-        };
-        let account_hint = match &self.account {
-            Some(account) if account.signed_in => account.email.clone().or_else(|| account.handle.clone()),
-            _ => Some(t(Str::SigninPrefaceSubtitle).to_owned()),
-        };
-
-        let appearance = vec![
-            row(t(Str::SettingsTheme), None, theme_menu, cx),
-            row(t(Str::SettingsAccentColor), None, accent_button, cx),
-            row(t(Str::SettingsLanguage), None, language_menu, cx),
-        ];
-        let content = vec![row(
+        let region_row = button_row(
+            "region",
             t(Str::SettingsContentRegion),
             Some(t(Str::SettingsContentLocaleHint).to_owned()),
-            region_button,
+            region_label.clone(),
             cx,
-        )];
+        )
+        .accessibility_label(spoken(t(Str::SettingsContentRegion), &region_label))
+        .busy(self.locales.is_none() && self.locales_loading)
+        .on_click(cx.listener(|_, _, window, cx| RegionPicker::open(cx.entity(), window, cx)));
+        let region_row = self.wide(self.focus.row_button(next(), region_row, cx));
+
+        let appearance = vec![theme_row, accent_row, language_row];
+        let content = vec![region_row];
+        let sound_row =
+            button_row("sound", t(Str::SettingsSound), Some(t(Str::SettingsSoundHint).to_owned()), chevron(cx), cx)
+                .accessibility_label(t(Str::SettingsSound))
+                .on_click(cx.listener(|view, _, window, cx| {
+                    crate::sound_panel::SoundPanel::open(view.playback.clone(), window, cx)
+                }));
+        let caption_row = button_row(
+            "caption-style",
+            t(Str::SettingsCaptionStyle),
+            Some(t(Str::SettingsCaptionStyleHint).to_owned()),
+            crate::caption_style::sample(caption_look),
+            cx,
+        )
+        .accessibility_label(t(Str::SettingsCaptionStyle))
+        .on_click(|_, window, cx| CaptionStyleDialog::open(window, cx));
         let mut playback = vec![
-            row(
-                t(Str::SettingsSound),
-                Some(t(Str::SettingsSoundHint).to_owned()),
-                self.focus.button(
-                    next(),
-                    Button::new("sound").small().ghost().label(t(Str::SoundTitle)).on_click(cx.listener(
-                        |view, _, window, cx| crate::sound_panel::SoundPanel::open(view.playback.clone(), window, cx),
-                    )),
-                    cx,
-                ),
-                cx,
-            ),
-            row(
-                t(Str::SettingsCaptionStyle),
-                Some(t(Str::SettingsCaptionStyleHint).to_owned()),
-                self.focus.button(
-                    next(),
-                    Button::new("caption-style")
-                        .small()
-                        .ghost()
-                        .accessibility_label(t(Str::SettingsCaptionStyle))
-                        .child(crate::caption_style::sample(caption_look))
-                        .on_click(|_, window, cx| CaptionStyleDialog::open(window, cx)),
-                    cx,
-                ),
-                cx,
-            ),
+            self.wide(self.focus.row_button(next(), sound_row, cx)),
+            self.wide(self.focus.row_button(next(), caption_row, cx)),
             self.toggle(next(), SPONSOR_BLOCK_KEY, t(Str::SettingsSponsorBlock), t(Str::SettingsSponsorBlockHint), cx),
         ];
         if let Some(saved) = cache_saved {
@@ -697,65 +684,72 @@ impl Render for SettingsView {
             };
             let entity = cx.entity().downgrade();
             let cache_stop = next();
-            let menu = Button::new("player-cache")
-                .small()
-                .ghost()
-                .label(crate::player_cache::max_label(cache_max_mb))
-                .accessibility_label(spoken(t(Str::SettingsPlayerCache), &summary))
-                .track_focus(&self.focus.handle(cache_stop, cx))
-                .dropdown_menu(move |mut menu, _, _| {
-                    for max_mb in crate::player_cache::SIZE_CHOICES_MB {
-                        let view = entity.clone();
-                        menu = menu.item(
-                            PopupMenuItem::new(crate::player_cache::max_label(max_mb))
-                                .checked(max_mb == cache_max_mb)
-                                .on_click(move |_, _, cx| {
-                                    view.update(cx, |view, cx| view.set_cache_max(max_mb, cx)).ok();
-                                }),
-                        );
-                    }
-                    menu
-                });
-            let menu = self.focus.wrap(cache_stop, menu, cx);
-            playback.push(row(t(Str::SettingsPlayerCache), Some(summary), menu, cx));
+            let cache_row = button_row(
+                "player-cache",
+                t(Str::SettingsPlayerCache),
+                Some(summary.clone()),
+                crate::player_cache::max_label(cache_max_mb),
+                cx,
+            )
+            .accessibility_label(spoken(t(Str::SettingsPlayerCache), &summary))
+            .track_focus(&self.focus.handle(cache_stop, cx))
+            .dropdown_menu_with_anchor(Anchor::TopRight, move |mut menu, _, _| {
+                for max_mb in crate::player_cache::SIZE_CHOICES_MB {
+                    let view = entity.clone();
+                    menu = menu.item(
+                        PopupMenuItem::new(crate::player_cache::max_label(max_mb))
+                            .checked(max_mb == cache_max_mb)
+                            .on_click(move |_, _, cx| {
+                                view.update(cx, |view, cx| view.set_cache_max(max_mb, cx)).ok();
+                            }),
+                    );
+                }
+                menu
+            });
+            playback.push(self.wide(self.focus.row(cache_stop, cache_row, cx)));
         }
         let folder = folder
             .map(|folder| folder.display().to_string())
             .unwrap_or_else(|| t(Str::DownloadLocationNotSet).to_owned());
-        let downloads = vec![row(
-            t(Str::MenuDownloadLocation),
-            Some(folder.clone()),
-            self.focus.button(
-                next(),
-                Button::new("download-folder")
-                    .small()
-                    .ghost()
-                    .label(t(Str::MenuDownloadLocation))
-                    .accessibility_label(spoken(t(Str::MenuDownloadLocation), &folder))
-                    .on_click(cx.listener(|view, _, window, cx| view.choose_folder(window, cx))),
-                cx,
-            ),
-            cx,
-        )];
+        let folder_row =
+            button_row("download-folder", t(Str::MenuDownloadLocation), Some(folder.clone()), chevron(cx), cx)
+                .accessibility_label(spoken(t(Str::MenuDownloadLocation), &folder))
+                .on_click(cx.listener(|view, _, window, cx| view.choose_folder(window, cx)));
         let quick_preset = crate::quick_download::saved_preset(cx).label();
-        let downloads = downloads.into_iter().chain([row(
-            t(Str::SettingsQuickDownload),
-            None,
-            self.focus.button(
-                next(),
-                Button::new("quick-download")
-                    .small()
-                    .ghost()
-                    .accessibility_label(spoken(t(Str::SettingsQuickDownload), &quick_preset))
-                    .label(quick_preset)
-                    .on_click(|_, window, cx| crate::quick_download::QuickPresetEditor::open(window, cx)),
-                cx,
+        let quick_row = button_row("quick-download", t(Str::SettingsQuickDownload), None, quick_preset.clone(), cx)
+            .accessibility_label(spoken(t(Str::SettingsQuickDownload), &quick_preset))
+            .on_click(|_, window, cx| crate::quick_download::QuickPresetEditor::open(window, cx));
+        let downloads = vec![
+            self.wide(self.focus.row_button(next(), folder_row, cx)),
+            self.wide(self.focus.row_button(next(), quick_row, cx)),
+        ];
+
+        let (signed_in, account_title, account_hint) = match &self.account {
+            Some(account) if account.signed_in => (
+                true,
+                account.name.clone().or_else(|| account.email.clone()).unwrap_or_default(),
+                account.email.clone().or_else(|| account.handle.clone()),
             ),
+            _ => (false, t(Str::SigninPrefaceTitle).to_owned(), Some(t(Str::SigninPrefaceSubtitle).to_owned())),
+        };
+        let action = t(if signed_in { Str::AccountSignOut } else { Str::SigninButton });
+        let theme = cx.theme();
+        let action_label =
+            div().font_semibold().text_color(if signed_in { theme.foreground } else { theme.primary }).child(action);
+        let account_row = button_row(
+            if signed_in { "sign-out" } else { "sign-in" },
+            account_title.clone(),
+            account_hint,
+            action_label,
             cx,
-        )]);
-        let downloads: Vec<AnyElement> = downloads.collect();
-        let account_control = self.focus.button(next(), account_control, cx);
-        let account = vec![row(account_title, account_hint, account_control, cx)];
+        )
+        .accessibility_label(spoken(action, &account_title));
+        let account_row = if signed_in {
+            account_row.busy(self.signing_out).on_click(cx.listener(|view, _, _, cx| view.sign_out(cx)))
+        } else {
+            account_row.on_click(|_, window, cx| window.dispatch_action(Box::new(crate::shortcuts::OpenSignIn), cx))
+        };
+        let account = vec![self.wide(self.focus.row_button(next(), account_row, cx))];
         let privacy = vec![
             self.toggle(next(), CRASH_REPORTS_KEY, t(Str::SettingsCrashReports), t(Str::SettingsCrashReportsHint), cx),
             self.toggle(next(), STATS_KEY, t(Str::SettingsStats), t(Str::SettingsStatsHint), cx),
@@ -775,20 +769,14 @@ impl Render for SettingsView {
             self.link_row(next(), "changelog", t(Str::SettingsChangelog), changelog_url, cx),
             self.link_row(next(), "source", t(Str::SettingsSourceCode), source_url, cx),
             self.link_row(next(), "terms", t(Str::SettingsTerms), terms_url, cx),
-            row(
-                t(Str::SettingsLicenses),
-                None,
-                self.focus.button(
+            self.wide(
+                self.focus.row_button(
                     next(),
-                    Button::new("licenses")
-                        .small()
-                        .ghost()
-                        .icon(IconName::ChevronRight)
+                    button_row("licenses", t(Str::SettingsLicenses), None, chevron(cx), cx)
                         .accessibility_label(t(Str::SettingsLicenses))
                         .on_click(|_, window, cx| Licenses::open(window, cx)),
                     cx,
                 ),
-                cx,
             ),
         ]);
         let debug = vec![self.toggle_with(
