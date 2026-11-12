@@ -1336,6 +1336,7 @@ impl WindowsWindowInner {
         {
             panic!("Device lost: {err}");
         }
+        self.state.underlay.invalidate();
         // Make sure the first `draw_window` after recovery (whether it comes
         // from the forced WM_GPUI_FORCE_UPDATE_WINDOW or a stray WM_PAINT in
         // between) is treated as a forced render so it both clears

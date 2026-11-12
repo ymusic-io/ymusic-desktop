@@ -112,6 +112,11 @@ impl UnderlayState {
         underlay.swap_chain.is_some() && underlay.placement.visible
     }
 
+    /// Forces the next frame to rebuild the visuals (a new DirectComposition device).
+    pub(crate) fn invalidate(&self) {
+        self.0.borrow_mut().dirty = true;
+    }
+
     /// The request when it changed since the last call.
     pub(crate) fn take_change(&self) -> Option<(Option<IDXGISwapChain1>, Placement)> {
         let mut underlay = self.0.borrow_mut();
