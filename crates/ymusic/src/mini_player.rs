@@ -22,9 +22,47 @@ pub struct MiniPlayer {
     seek: Entity<SliderState>,
     volume: Entity<SliderState>,
     dragging_seek: bool,
+    /// What the bar last drew from playback.
+    shown: Option<Shown>,
     /// Arrow keys move between the bar's controls.
     focus: FocusList,
     _subscriptions: Vec<Subscription>,
+}
+
+/// What the bar shows from playback, at the resolution it shows it: the time to the second, the
+/// seek bar moving with it. Each redraw of the bar redraws the shell around it, so a progress tick
+/// that changes none of this draws nothing.
+#[derive(PartialEq)]
+struct Shown {
+    item: Option<QueueItem>,
+    state: PlayState,
+    second: i64,
+    duration_ms: i64,
+    has_next: bool,
+    loop_mode: LoopMode,
+    shuffle: bool,
+    sleep_second: Option<u64>,
+    sleep_after_current: bool,
+    volume: f32,
+    tuned: bool,
+}
+
+impl Shown {
+    fn of(playback: &Playback) -> Self {
+        Self {
+            item: playback.current().cloned(),
+            state: playback.state.clone(),
+            second: playback.position_ms / 1000,
+            duration_ms: playback.duration_ms,
+            has_next: playback.has_next(),
+            loop_mode: playback.nav.loop_mode,
+            shuffle: playback.nav.shuffle,
+            sleep_second: playback.sleep_remaining().map(|left| left.as_secs()),
+            sleep_after_current: playback.sleep_after_current,
+            volume: playback.volume,
+            tuned: (playback.effects.speed, playback.effects.pitch) != (1.0, 1.0),
+        }
+    }
 }
 
 impl EventEmitter<ToggleNowPlaying> for MiniPlayer {}
@@ -36,8 +74,12 @@ impl MiniPlayer {
         let volume = cx.new(|_| SliderState::new().min(0.).max(1.).step(0.01).default_value(initial_volume));
         let subscriptions = vec![
             cx.observe_in(&playback, window, |player, playback, window, cx| {
+                let playback = playback.read(cx);
+                let shown = Shown::of(playback);
+                if player.shown.as_ref() == Some(&shown) {
+                    return;
+                }
                 if !player.dragging_seek {
-                    let playback = playback.read(cx);
                     let fraction = if playback.duration_ms > 0 {
                         (playback.position_ms as f32 / playback.duration_ms as f32).clamp(0., 1.)
                     } else {
@@ -45,6 +87,7 @@ impl MiniPlayer {
                     };
                     player.seek.update(cx, |slider, cx| slider.set_value(fraction, window, cx));
                 }
+                player.shown = Some(shown);
                 cx.notify();
             }),
             cx.subscribe(&seek, |player, _, event: &SliderEvent, cx| match event {
@@ -69,6 +112,7 @@ impl MiniPlayer {
             seek,
             volume,
             dragging_seek: false,
+            shown: None,
             focus: FocusList::new(None),
             _subscriptions: subscriptions,
         }
