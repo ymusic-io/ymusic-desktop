@@ -48,6 +48,13 @@ const RAIL_EXPANDED: f32 = 280.;
 const RAIL_LOGO: f32 = 32.;
 const DRAWER_WIDTH: f32 = 300.;
 const WEBSITE: &str = "https://ymusic.io";
+/// The bars' and the rail's buttons, as arrow stops.
+const CHROME_RAIL_TOGGLE: usize = 0;
+const CHROME_BACK: usize = 1;
+const CHROME_FILTER: usize = 2;
+const CHROME_LAYER_SEARCH: usize = 3;
+const CHROME_DRAWER: usize = 4;
+const CHROME_SEARCH: usize = 5;
 
 /// Shared with the JVM app: the section and Discover tab a restart resumes, by their stable ids.
 const LAST_SECTION_KEY: &str = "app.lastSection";
@@ -311,6 +318,7 @@ pub struct Shell {
     nav_focus: FocusList,
     tab_focus: FocusList,
     music_tab_focus: FocusList,
+    chrome_focus: FocusList,
     music_tab_drag: DragRow,
     /// The last Esc that had nothing to close; a second one soon after goes back.
     idle_escape_at: Option<Instant>,
@@ -505,6 +513,7 @@ impl Shell {
             nav_focus: FocusList::new(None),
             tab_focus: FocusList::new(None),
             music_tab_focus: FocusList::new(None),
+            chrome_focus: FocusList::new(None),
             music_tab_drag: DragRow::default(),
             idle_escape_at: None,
             tray,
@@ -1533,22 +1542,31 @@ impl Shell {
             .border_b_1()
             .border_color(theme.border)
             .child(
-                action_icon("layer-back", Icon::new(IconName::ArrowLeft), t(Str::CdBack))
-                    .on_click(cx.listener(|shell, _, _, cx| shell.back(cx))),
+                self.chrome_focus.button(
+                    CHROME_BACK,
+                    action_icon("layer-back", Icon::new(IconName::ArrowLeft), t(Str::CdBack))
+                        .on_click(cx.listener(|shell, _, _, cx| shell.back(cx))),
+                    cx,
+                ),
             )
             .child(div().flex_1().min_w_0().truncate().text_lg().font_semibold().child(title))
             .when_some(filter, |bar, view| {
                 bar.child(
-                    action_icon("layer-filter", Icon::new(Lucide::Funnel), t(Str::CdFilter))
-                        .on_click(move |_, window, cx| open_search_filter(&view, window, cx)),
+                    self.chrome_focus.button(
+                        CHROME_FILTER,
+                        action_icon("layer-filter", Icon::new(Lucide::Funnel), t(Str::CdFilter))
+                            .on_click(move |_, window, cx| open_search_filter(&view, window, cx)),
+                        cx,
+                    ),
                 )
             })
-            .child(
-                action_icon("layer-search", Icon::new(IconName::Search), t(Str::CdSearch))
-                    .on_click(cx.listener(move |shell, _, window, cx| {
-                        shell.open_search(search_query.clone().unwrap_or_default(), window, cx)
-                    })),
-            )
+            .child(self.chrome_focus.button(
+                CHROME_LAYER_SEARCH,
+                action_icon("layer-search", Icon::new(IconName::Search), t(Str::CdSearch)).on_click(cx.listener(
+                    move |shell, _, window, cx| shell.open_search(search_query.clone().unwrap_or_default(), window, cx),
+                )),
+                cx,
+            ))
             .into_any_element()
     }
 
@@ -1568,13 +1586,16 @@ impl Shell {
             .items_center()
             .when(!wide || !discover, |bar| bar.border_b_1().border_color(theme.border))
             .when(!rail_mode, |bar| {
-                bar.child(
-                    action_icon("open-drawer", Icon::new(Lucide::Menu), t(Str::CdMenu))
-                        .on_click(cx.listener(|shell, _, _, cx| {
+                bar.child(self.chrome_focus.button(
+                    CHROME_DRAWER,
+                    action_icon("open-drawer", Icon::new(Lucide::Menu), t(Str::CdMenu)).on_click(cx.listener(
+                        |shell, _, _, cx| {
                             shell.drawer_open = true;
                             cx.notify();
-                        })),
-                )
+                        },
+                    )),
+                    cx,
+                ))
             })
             .when(rail_mode, |bar| bar.child(div().w(px(8.))))
             .child(
@@ -1589,8 +1610,12 @@ impl Shell {
             .when(discover && wide, |bar| bar.child(div().pl_4().flex_1().child(self.discover_tabs(true, cx))))
             .when(searchable, |bar| {
                 bar.child(
-                    action_icon("open-search", Icon::new(IconName::Search), t(Str::CdSearch))
-                        .on_click(cx.listener(|shell, _, window, cx| shell.open_search(String::new(), window, cx))),
+                    self.chrome_focus.button(
+                        CHROME_SEARCH,
+                        action_icon("open-search", Icon::new(IconName::Search), t(Str::CdSearch))
+                            .on_click(cx.listener(|shell, _, window, cx| shell.open_search(String::new(), window, cx))),
+                        cx,
+                    ),
                 )
             })
             .into_any_element()
@@ -1777,7 +1802,12 @@ impl Shell {
             .on_click(cx.listener(move |shell, _, _, cx| shell.toggle_rail(expanded, cx)));
         // The toggle and every section icon share the collapsed rail's centre line, so expanding moves
         // none of them.
-        let toggle = div().w(px(RAIL_COLLAPSED)).flex_shrink_0().flex().justify_center().child(toggle);
+        let toggle = div()
+            .w(px(RAIL_COLLAPSED))
+            .flex_shrink_0()
+            .flex()
+            .justify_center()
+            .child(self.chrome_focus.button(CHROME_RAIL_TOGGLE, toggle, cx));
         let header = h_flex()
             .min_h(px(48.))
             .items_center()
