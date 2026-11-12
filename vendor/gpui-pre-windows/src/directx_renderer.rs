@@ -20,6 +20,7 @@ use windows::{
 };
 
 use crate::directx_renderer::shader_resources::{RawShaderBytes, ShaderModule, ShaderTarget};
+use crate::underlay::{UnderlayState, UnderlayVisuals};
 use crate::*;
 use gpui::*;
 
@@ -121,6 +122,7 @@ struct DirectComposition {
     /// The target's root: gpui's visual and anything placed under it.
     root_visual: IDCompositionVisual,
     comp_visual: IDCompositionVisual,
+    underlay: Option<UnderlayVisuals>,
 }
 
 impl DirectXRendererDevices {
@@ -333,6 +335,7 @@ impl DirectXRenderer {
         &mut self,
         scene: &Scene,
         background_appearance: WindowBackgroundAppearance,
+        underlay: &UnderlayState,
     ) -> Result<()> {
         if self.skip_draws {
             // skip drawing this frame, we just recovered from a device lost event
@@ -340,7 +343,23 @@ impl DirectXRenderer {
             return Ok(());
         }
         self.render(scene, background_appearance)?;
-        self.present()
+        let underlay_changed = match (underlay.take_change(), &mut self.direct_composition) {
+            (Some((swap_chain, placement)), Some(composition)) => {
+                let devices = self.devices.as_ref().context("devices missing")?;
+                composition
+                    .apply_underlay(devices, swap_chain, placement)
+                    .context("Placing the underlay")
+                    .log_err();
+                true
+            }
+            _ => false,
+        };
+        self.present()?;
+        // Committed right after the present, so geometry and gpui's frame land together.
+        if underlay_changed && let Some(composition) = &self.direct_composition {
+            unsafe { composition.comp_device.Commit() }?;
+        }
+        Ok(())
     }
 
     /// Clear the render target for `background_appearance` and encode every
@@ -1029,6 +1048,7 @@ impl DirectComposition {
             _comp_target: comp_target,
             root_visual,
             comp_visual,
+            underlay: None,
         })
     }
 
@@ -1038,6 +1058,28 @@ impl DirectComposition {
             self.comp_device.Commit()?;
         }
         Ok(())
+    }
+
+    /// Applies an underlay request under gpui's visual; the caller commits.
+    fn apply_underlay(
+        &mut self,
+        devices: &DirectXRendererDevices,
+        swap_chain: Option<IDXGISwapChain1>,
+        placement: crate::underlay::Placement,
+    ) -> Result<()> {
+        let underlay = match &mut self.underlay {
+            Some(underlay) => underlay,
+            None if swap_chain.is_none() => return Ok(()),
+            None => {
+                let device_context = devices.device_context.cast()?;
+                self.underlay.insert(UnderlayVisuals::new(
+                    &self.comp_device,
+                    &devices.device,
+                    &device_context,
+                )?)
+            }
+        };
+        underlay.apply(&self.root_visual, &self.comp_visual, swap_chain, placement)
     }
 }
 

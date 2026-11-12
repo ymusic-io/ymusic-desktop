@@ -15,6 +15,7 @@ mod keyboard;
 mod platform;
 mod system_notifications;
 mod system_settings;
+pub mod underlay;
 mod util;
 mod vsync;
 mod window;
