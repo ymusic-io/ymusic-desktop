@@ -3,9 +3,9 @@
 
 use std::collections::HashSet;
 
-use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::button::Button;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
-use gpui_kit::component::{ActiveTheme, Disableable, Sizable, WindowExt, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme, Sizable, WindowExt, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use ym_engine::yt::{YtFeedItem, YtFeedPage};
@@ -13,12 +13,17 @@ use ym_i18n::{Plural, Str, plural, t, tf};
 
 use crate::a11y::FocusList;
 use crate::downloads::offline_ids;
+use crate::elevated_dialog::{
+    DEFAULT_WIDTH, ROW_HORIZONTAL, bar_spinner, button_bar, chrome, press, scroll_body, text_button, title_bar,
+};
 use crate::feed::{FeedSource, error_text, thumb_for};
 use crate::graph::{AppGraph, on_core};
 use crate::spinner::Spinner;
 
 const STOP_LOAD_MORE: usize = 0;
 const STOP_CREATE: usize = 1;
+const STOP_NAME: usize = 2;
+const STOP_CANCEL: usize = 3;
 
 pub struct LocalPlaylistFromDownloads {
     source: FeedSource,
@@ -65,8 +70,8 @@ impl LocalPlaylistFromDownloads {
             view.load_state(cx);
             view
         });
-        window.open_dialog(cx, move |dialog, _, _| {
-            dialog.title(t(Str::LocalPlaylistCreate)).width(px(520.)).child(view.clone())
+        window.open_dialog(cx, move |dialog, window, _| {
+            chrome(dialog, DEFAULT_WIDTH, window).overlay_closable(false).on_ok(|_, _, _| false).child(view.clone())
         });
     }
 
@@ -231,16 +236,24 @@ impl Render for LocalPlaylistFromDownloads {
         } else {
             div().into_any_element()
         };
-        let mut rows = v_flex().gap_1();
+        let mut rows = v_flex().w_full();
         if self.offline.is_some() && downloaded.is_empty() {
-            rows =
-                rows.child(div().py_2().text_sm().text_color(theme.muted_foreground).child(t(Str::LocalPlaylistEmpty)));
+            rows = rows.child(
+                div()
+                    .px(px(ROW_HORIZONTAL))
+                    .py_4()
+                    .text_size(px(14.))
+                    .text_color(theme.muted_foreground)
+                    .child(t(Str::LocalPlaylistEmpty)),
+            );
         }
         for (index, video) in downloaded.iter().enumerate() {
             rows = rows.child(
                 h_flex()
                     .id(("local-video", index))
+                    .w_full()
                     .gap_4()
+                    .px(px(ROW_HORIZONTAL))
                     .py_1()
                     .items_center()
                     .child(
@@ -266,16 +279,43 @@ impl Render for LocalPlaylistFromDownloads {
                     ),
             );
         }
-        let height = (window.viewport_size().height - px(380.)).max(px(160.));
-        v_flex()
-            .gap_3()
-            .child(div().text_sm().text_color(theme.muted_foreground).child(t(Str::LocalPlaylistDesc)))
-            .child(Input::new(&self.name))
-            .when(duplicate, |column| {
-                column.child(div().text_xs().text_color(theme.danger).child(t(Str::PlaylistNameExists)))
-            })
+        let field = Input::new(&self.name)
+            .aria_label(t(Str::PlaylistNameHint))
+            .when(duplicate, |input| input.border_color(theme.danger));
+        let body = v_flex()
+            .w_full()
+            .pb_2()
+            .child(
+                div()
+                    .px(px(ROW_HORIZONTAL))
+                    .pt_4()
+                    .text_size(px(14.))
+                    .text_color(theme.muted_foreground)
+                    .child(t(Str::LocalPlaylistDesc)),
+            )
+            .child(
+                v_flex()
+                    .px(px(ROW_HORIZONTAL))
+                    .py_2()
+                    .gap_1()
+                    .child(self.focus.field(STOP_NAME, &self.name.focus_handle(cx), field, cx))
+                    .when(duplicate, |column| {
+                        column.child(
+                            div()
+                                .id("local-playlist-taken")
+                                .px_4()
+                                .text_size(px(12.))
+                                .text_color(theme.danger)
+                                .role(Role::Alert)
+                                .aria_label(t(Str::PlaylistNameExists))
+                                .child(t(Str::PlaylistNameExists)),
+                        )
+                    }),
+            )
             .child(
                 h_flex()
+                    .px(px(ROW_HORIZONTAL))
+                    .py_1()
                     .gap_2()
                     .items_center()
                     .child(
@@ -285,28 +325,33 @@ impl Render for LocalPlaylistFromDownloads {
                     )
                     .child(load_more),
             )
-            .child(
-                div()
-                    .id("local-playlist-scroll")
-                    .max_h(height)
-                    .overflow_y_scroll()
-                    .track_scroll(&self.scroll)
-                    .child(rows),
+            .child(rows);
+        let create = if self.busy {
+            bar_spinner()
+        } else {
+            press(
+                &self.focus,
+                STOP_CREATE,
+                text_button("local-playlist-create", t(Str::PlaylistCreateConfirm), true, can_submit, cx),
+                can_submit,
+                cx.listener(|view, _, window, cx| view.submit(window, cx)),
+                cx,
             )
-            .child(h_flex().justify_end().gap_2().child(if self.busy {
-                div().p_2().child(Spinner::new().small()).into_any_element()
-            } else {
-                self.focus
-                    .button(
-                        STOP_CREATE,
-                        Button::new("local-playlist-create")
-                            .primary()
-                            .label(t(Str::PlaylistCreateConfirm))
-                            .disabled(!can_submit)
-                            .on_click(cx.listener(|view, _, window, cx| view.submit(window, cx))),
-                        cx,
-                    )
-                    .into_any_element()
-            }))
+        };
+        let buttons = h_flex()
+            .child(press(
+                &self.focus,
+                STOP_CANCEL,
+                text_button("local-playlist-cancel", t(Str::DialogCancel), false, !self.busy, cx),
+                !self.busy,
+                |_, window, cx| window.close_dialog(cx),
+                cx,
+            ))
+            .child(create);
+        v_flex()
+            .w_full()
+            .child(title_bar(t(Str::LocalPlaylistCreate), cx))
+            .child(scroll_body("local-playlist-scroll", &self.scroll, body, window, cx))
+            .child(button_bar(buttons, cx))
     }
 }

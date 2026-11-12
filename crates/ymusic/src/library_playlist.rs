@@ -5,7 +5,7 @@
 use std::rc::Rc;
 
 use gpui_kit::assets::IconName as Lucide;
-use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants};
+use gpui_kit::component::button::Button;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::{ActiveTheme, Disableable, Icon, IconName, Sizable, WindowExt, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder;
@@ -15,7 +15,12 @@ use ym_store::{MediaItem, MediaStore, Playlist, PlaylistItemDetail};
 
 use crate::a11y::FocusList;
 use crate::action_icon::{HIT, sized_action_icon};
+use crate::elevated_dialog::{
+    ConfirmDialog, DEFAULT_WIDTH, ROW_HORIZONTAL, ROW_VERTICAL, bar_spinner, button_bar, chrome, message, press,
+    scroll_body, text_button, title_bar, title_bar_with,
+};
 use crate::graph::{AppGraph, on_core};
+use crate::settings_view::HOVER_ALPHA;
 use crate::spinner::Spinner;
 
 /// Runs after a dialog changed the library, so the opener reloads.
@@ -58,16 +63,16 @@ fn pick_row(id: impl Into<ElementId>, icon: Icon, label: String, accent: bool, c
         .id(id)
         .role(Role::Button)
         .aria_label(label.clone())
+        .w_full()
         .gap_4()
-        .px_4()
-        .py_2()
+        .px(px(ROW_HORIZONTAL))
+        .py(px(ROW_VERTICAL))
         .items_center()
-        .rounded(px(8.))
         .cursor_pointer()
-        .hover(|style| style.bg(theme.secondary))
+        .hover(|style| style.bg(theme.primary.opacity(HOVER_ALPHA)))
         .text_color(if accent { theme.primary } else { theme.foreground })
-        .child(icon.size(px(20.)))
-        .child(div().flex_1().min_w_0().truncate().text_sm().child(label))
+        .child(icon.size(px(22.)))
+        .child(div().flex_1().min_w_0().truncate().text_size(px(14.)).child(label))
 }
 
 /// The user's playlists plus New playlist…; picking one appends `codes` and closes.
@@ -77,6 +82,7 @@ pub struct AddToLocalPlaylist {
     failed: bool,
     changed: Option<Changed>,
     focus: FocusList,
+    scroll: ScrollHandle,
     focused_first: bool,
     busy: bool,
 }
@@ -84,21 +90,23 @@ pub struct AddToLocalPlaylist {
 impl AddToLocalPlaylist {
     pub fn open(codes: Vec<String>, changed: Option<Changed>, window: &mut Window, cx: &mut App) {
         let view = cx.new(|cx| {
+            let scroll = ScrollHandle::new();
             let mut view = Self {
                 codes,
                 playlists: None,
                 failed: false,
                 changed,
-                focus: FocusList::modal(None, cx),
+                focus: FocusList::modal(Some(scroll.clone()), cx),
+                scroll,
                 focused_first: false,
                 busy: false,
             };
             view.load(cx);
             view
         });
-        window.open_dialog(cx, move |dialog, _, _| {
+        window.open_dialog(cx, move |dialog, window, _| {
             let confirm = view.clone();
-            dialog.title(t(Str::CdAddToPlaylist)).width(px(420.)).child(view.clone()).on_ok(move |_, window, cx| {
+            chrome(dialog, DEFAULT_WIDTH, window).child(view.clone()).on_ok(move |_, window, cx| {
                 confirm.update(cx, |view, cx| view.activate_focused(window, cx));
                 false
             })
@@ -183,42 +191,55 @@ impl AddToLocalPlaylist {
 
 impl Render for AddToLocalPlaylist {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let Some(playlists) = self.playlists.clone() else {
-            return h_flex().justify_center().py_6().child(Spinner::new()).into_any_element();
-        };
-        if !self.focused_first {
-            self.focused_first = true;
-            let first = self.focus.handle(0, cx);
-            window.defer(cx, move |window, cx| window.focus(&first, cx));
-        }
         let theme = cx.theme().clone();
-        if self.failed {
-            return div()
-                .px_4()
-                .py_4()
-                .text_sm()
-                .text_color(theme.muted_foreground)
-                .child(tf(Str::ErrorGeneric, &[&"R94000"]))
-                .into_any_element();
-        }
-        let new_row =
-            pick_row("new-local-playlist", Icon::new(IconName::Plus), t(Str::AddToPlaylistNew).to_owned(), true, cx)
-                .on_click(cx.listener(|view, _, window, cx| view.activate(0, window, cx)));
-        let mut list = v_flex()
-            .id("local-playlists")
-            .max_h(px(420.))
-            .overflow_y_scroll()
-            .pb_2()
-            .child(self.focus.item(0, new_row, cx));
-        for (index, playlist) in playlists.into_iter().enumerate() {
-            let row =
-                pick_row(("local-playlist", index), Icon::new(Lucide::ListMusic), playlist.name.clone(), false, cx)
-                    .text_color(theme.foreground)
-                    .on_click(cx.listener(move |view, _, window, cx| view.activate(index + 1, window, cx)));
-            list = list.child(self.focus.item(index + 1, row, cx));
-        }
         let count = self.focus_count();
-        self.focus.container(list, 0..count, cx).into_any_element()
+        let body = match self.playlists.clone() {
+            None => h_flex().w_full().justify_center().py_6().child(Spinner::new()).into_any_element(),
+            Some(_) if self.failed => {
+                message(tf(Str::ErrorGeneric, &[&"R94000"]), cx).text_color(theme.muted_foreground).into_any_element()
+            }
+            Some(playlists) => {
+                if !self.focused_first {
+                    self.focused_first = true;
+                    let first = self.focus.handle(0, cx);
+                    window.defer(cx, move |window, cx| window.focus(&first, cx));
+                }
+                let new_row = pick_row(
+                    "new-local-playlist",
+                    Icon::new(IconName::Plus),
+                    t(Str::AddToPlaylistNew).to_owned(),
+                    true,
+                    cx,
+                )
+                .on_click(cx.listener(|view, _, window, cx| view.activate(0, window, cx)));
+                let mut list = v_flex().w_full().child(self.focus.item(0, new_row, cx));
+                for (index, playlist) in playlists.into_iter().enumerate() {
+                    let row = pick_row(
+                        ("local-playlist", index),
+                        Icon::new(Lucide::ListMusic),
+                        playlist.name.clone(),
+                        false,
+                        cx,
+                    )
+                    .on_click(cx.listener(move |view, _, window, cx| view.activate(index + 1, window, cx)));
+                    list = list.child(self.focus.item(index + 1, row, cx));
+                }
+                scroll_body("local-playlists", &self.scroll, list, window, cx).into_any_element()
+            }
+        };
+        let cancel = press(
+            &self.focus,
+            count,
+            text_button("local-playlist-cancel", t(Str::DialogCancel), false, true, cx),
+            true,
+            |_, window, cx| window.close_dialog(cx),
+            cx,
+        );
+        self.focus
+            .container(v_flex().w_full(), 0..count + 1, cx)
+            .child(title_bar(t(Str::CdAddToPlaylist), cx))
+            .child(body)
+            .child(button_bar(cancel, cx))
     }
 }
 
@@ -245,15 +266,15 @@ pub struct PlaylistNameDialog {
     changed: Option<Changed>,
     busy: bool,
     focused: bool,
-    cancel: FocusHandle,
+    focus: FocusList,
     _subscription: Subscription,
 }
 
 impl PlaylistNameDialog {
     pub fn open(mode: NameMode, existing: Vec<String>, changed: Option<Changed>, window: &mut Window, cx: &mut App) {
-        let (title, initial) = match &mode {
-            NameMode::Create { name, .. } => (Str::PlaylistCreateTitle, name.clone()),
-            NameMode::Rename(playlist) => (Str::PlaylistRenameTitle, playlist.name.clone()),
+        let initial = match &mode {
+            NameMode::Create { name, .. } => name.clone(),
+            NameMode::Rename(playlist) => playlist.name.clone(),
         };
         let existing = match &mode {
             NameMode::Rename(playlist) => {
@@ -278,20 +299,14 @@ impl PlaylistNameDialog {
                 changed,
                 busy: false,
                 focused: false,
-                cancel: cx.focus_handle(),
+                focus: FocusList::modal(None, cx),
                 _subscription: subscription,
             }
         });
-        window.open_dialog(cx, move |dialog, _, _| {
+        window.open_dialog(cx, move |dialog, window, _| {
             let submit = view.clone();
-            dialog.title(t(title)).width(px(420.)).child(view.clone()).on_ok(move |_, window, cx| {
-                submit.update(cx, |view, cx| {
-                    if view.cancel.is_focused(window) {
-                        window.close_dialog(cx);
-                    } else {
-                        view.submit(window, cx);
-                    }
-                });
+            chrome(dialog, DEFAULT_WIDTH, window).child(view.clone()).on_ok(move |_, window, cx| {
+                submit.update(cx, |view, cx| view.submit(window, cx));
                 false
             })
         });
@@ -359,115 +374,116 @@ impl Render for PlaylistNameDialog {
         let theme = cx.theme().clone();
         let duplicate = self.duplicate(cx);
         let can_submit = !self.busy && !self.trimmed(cx).is_empty() && !duplicate;
-        let confirm = match self.mode {
-            NameMode::Create { .. } => Str::PlaylistCreateConfirm,
-            NameMode::Rename(_) => Str::PlaylistRenameConfirm,
+        let (title, confirm) = match self.mode {
+            NameMode::Create { .. } => (Str::PlaylistCreateTitle, Str::PlaylistCreateConfirm),
+            NameMode::Rename(_) => (Str::PlaylistRenameTitle, Str::PlaylistRenameConfirm),
         };
+        let field = Input::new(&self.name)
+            .aria_label(t(Str::PlaylistNameHint))
+            .when(duplicate, |input| input.border_color(theme.danger));
+        let submit = if self.busy {
+            bar_spinner()
+        } else {
+            press(
+                &self.focus,
+                2,
+                text_button("playlist-name-confirm", t(confirm), true, can_submit, cx),
+                can_submit,
+                cx.listener(|view, _, window, cx| view.submit(window, cx)),
+                cx,
+            )
+        };
+        let buttons = h_flex()
+            .child(press(
+                &self.focus,
+                1,
+                text_button("playlist-name-cancel", t(Str::DialogCancel), false, !self.busy, cx),
+                !self.busy,
+                |_, window, cx| window.close_dialog(cx),
+                cx,
+            ))
+            .child(submit);
         v_flex()
-            .gap_2()
-            .px_4()
-            .pb_2()
-            .child(Input::new(&self.name))
-            .when(duplicate, |column| {
-                column.child(
-                    div()
-                        .id("playlist-name-taken")
-                        .text_xs()
-                        .text_color(theme.danger)
-                        .role(Role::Alert)
-                        .aria_label(t(Str::PlaylistNameExists))
-                        .child(t(Str::PlaylistNameExists)),
-                )
-            })
+            .w_full()
+            .child(title_bar(t(title), cx))
             .child(
-                h_flex()
-                    .justify_end()
-                    .gap_2()
-                    .pt_2()
-                    .child(
-                        Button::new("playlist-name-cancel")
-                            .track_focus(&self.cancel)
-                            .outline()
-                            .label(t(Str::DialogCancel))
-                            .disabled(self.busy)
-                            .on_click(|_, window, cx| window.close_dialog(cx)),
-                    )
-                    .child(if self.busy {
-                        div().p_2().child(Spinner::new().small()).into_any_element()
-                    } else {
-                        Button::new("playlist-name-confirm")
-                            .primary()
-                            .label(t(confirm))
-                            .disabled(!can_submit)
-                            .on_click(cx.listener(|view, _, window, cx| view.submit(window, cx)))
-                            .into_any_element()
+                v_flex()
+                    .w_full()
+                    .px(px(ROW_HORIZONTAL))
+                    .py_2()
+                    .gap_1()
+                    .child(self.focus.field(0, &self.name.focus_handle(cx), field, cx))
+                    .when(duplicate, |column| {
+                        column.child(
+                            div()
+                                .id("playlist-name-taken")
+                                .px_4()
+                                .text_size(px(12.))
+                                .text_color(theme.danger)
+                                .role(Role::Alert)
+                                .aria_label(t(Str::PlaylistNameExists))
+                                .child(t(Str::PlaylistNameExists)),
+                        )
                     }),
             )
+            .child(button_bar(buttons, cx))
     }
 }
 
 /// "Delete playlist?": the playlist goes, its songs stay in the library.
 pub fn confirm_delete_playlist(playlist: Playlist, changed: Option<Changed>, window: &mut Window, cx: &mut App) {
-    window.open_alert_dialog(cx, move |alert, _, _| {
-        let (changed, id) = (changed.clone(), playlist.id);
-        alert
-            .title(t(Str::PlaylistDeleteTitle))
-            .description(tf(Str::PlaylistDeleteMessage, &[&playlist.name]))
-            .ok_text(t(Str::DeleteFromDiskConfirm))
-            .ok_variant(ButtonVariant::Danger)
-            .cancel_text(t(Str::DialogCancel))
-            .show_cancel(true)
-            .on_ok(move |_, window, cx| {
-                let changed = changed.clone();
-                let request = store_call(cx, move |store| store.delete_playlist(id));
-                window
-                    .spawn(cx, async move |cx| {
-                        let result = request.await;
-                        cx.update(|window, cx| match result {
-                            Ok(()) => notify_changed(&changed, window, cx),
-                            Err(error) => report("R94001", "deleting a playlist failed", &error, window, cx),
-                        })
-                        .ok();
-                    })
-                    .detach();
-                true
+    let id = playlist.id;
+    ConfirmDialog::new(
+        t(Str::PlaylistDeleteTitle),
+        tf(Str::PlaylistDeleteMessage, &[&playlist.name]),
+        t(Str::DeleteFromDiskConfirm),
+    )
+    .destructive()
+    .open(window, cx, move |window, cx| {
+        let changed = changed.clone();
+        let request = store_call(cx, move |store| store.delete_playlist(id));
+        window
+            .spawn(cx, async move |cx| {
+                let result = request.await;
+                cx.update(|window, cx| match result {
+                    Ok(()) => notify_changed(&changed, window, cx),
+                    Err(error) => report("R94001", "deleting a playlist failed", &error, window, cx),
+                })
+                .ok();
             })
+            .detach();
     });
 }
 
 /// "Delete file?": the file is removed from disk (one already gone counts as removed), then its row.
 pub fn confirm_delete_from_disk(item: MediaItem, changed: Option<Changed>, window: &mut Window, cx: &mut App) {
-    window.open_alert_dialog(cx, move |alert, _, _| {
-        let (changed, item_id, path) = (changed.clone(), item.id, std::path::PathBuf::from(&item.uri));
-        alert
-            .title(t(Str::DeleteFromDiskTitle))
-            .description(tf(Str::DeleteFromDiskMessage, &[&item.title]))
-            .ok_text(t(Str::DeleteFromDiskConfirm))
-            .ok_variant(ButtonVariant::Danger)
-            .cancel_text(t(Str::DialogCancel))
-            .show_cancel(true)
-            .on_ok(move |_, window, cx| {
-                let (changed, path) = (changed.clone(), path.clone());
-                let request = store_call(cx, move |store| {
-                    match std::fs::remove_file(&path) {
-                        Ok(()) => {}
-                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                        Err(error) => return Err(format!("{}: {error}", path.display())),
-                    }
-                    store.delete_item(item_id).map_err(|error| error.to_string())
-                });
-                window
-                    .spawn(cx, async move |cx| {
-                        let result = request.await;
-                        cx.update(|window, cx| match result {
-                            Ok(()) => notify_changed(&changed, window, cx),
-                            Err(error) => report("R94003", "deleting a file from disk failed", &error, window, cx),
-                        })
-                        .ok();
-                    })
-                    .detach();
-                true
+    let (item_id, path) = (item.id, std::path::PathBuf::from(&item.uri));
+    ConfirmDialog::new(
+        t(Str::DeleteFromDiskTitle),
+        tf(Str::DeleteFromDiskMessage, &[&item.title]),
+        t(Str::DeleteFromDiskConfirm),
+    )
+    .destructive()
+    .open(window, cx, move |window, cx| {
+        let (changed, path) = (changed.clone(), path.clone());
+        let request = store_call(cx, move |store| {
+            match std::fs::remove_file(&path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(format!("{}: {error}", path.display())),
+            }
+            store.delete_item(item_id).map_err(|error| error.to_string())
+        });
+        window
+            .spawn(cx, async move |cx| {
+                let result = request.await;
+                cx.update(|window, cx| match result {
+                    Ok(()) => notify_changed(&changed, window, cx),
+                    Err(error) => report("R94003", "deleting a file from disk failed", &error, window, cx),
+                })
+                .ok();
             })
+            .detach();
     });
 }
 
@@ -605,9 +621,9 @@ impl ArrangePlaylist {
                 focused_first: false,
             }
         });
-        window.open_dialog(cx, move |dialog, _, _| {
+        window.open_dialog(cx, move |dialog, window, _| {
             let confirm = view.clone();
-            dialog.title(t(Str::ArrangeSongs)).width(px(560.)).overlay_closable(false).child(view.clone()).on_ok(
+            chrome(dialog, DEFAULT_WIDTH, window).overlay_closable(false).child(view.clone()).on_ok(
                 move |_, window, cx| {
                     confirm.update(cx, |view, cx| view.activate_focused(window, cx));
                     false
@@ -778,11 +794,11 @@ impl ArrangePlaylist {
             .id(("arrange-row", index))
             .role(Role::ListItem)
             .aria_label(label)
+            .w_full()
             .gap_3()
             .px_2()
             .py_1()
             .items_center()
-            .rounded(px(8.))
             .when(stacked, |row| row.bg(theme.primary.opacity(0.08)))
             .drag_over::<DraggedSong>(move |style, _, _, cx| style.bg(cx.theme().secondary))
             .on_drop(cx.listener(move |view, dragged: &DraggedSong, _, cx| {
@@ -816,7 +832,6 @@ impl ArrangePlaylist {
 
 impl Render for ArrangePlaylist {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme().clone();
         if !self.focused_first && !self.state.items.is_empty() {
             self.focused_first = true;
             let first = self.focus.handle(row_stop(0), cx);
@@ -835,27 +850,17 @@ impl Render for ArrangePlaylist {
                 .accessibility_label(format!("{label}, {}", t(Str::CdResetStacking)))
                 .tooltip(t(Str::CdResetStacking))
                 .on_click(cx.listener(|view, _, _, cx| view.edit(cx, |state| state.stack = 0)));
-            h_flex().px_2().pb_2().child(self.focus.button(CONTROL_STACK, chip, cx))
+            self.focus.button(CONTROL_STACK, chip, cx)
         });
-        let list = div()
-            .id("arrange-rows")
-            .max_h(px(440.))
-            .overflow_y_scroll()
-            .track_scroll(&self.scroll)
-            .child(v_flex().gap_1().children(rows));
+        let list = v_flex().w_full().py_1().gap_1().children(rows);
+        let can_undo = !self.busy && !self.state.history.is_empty();
         let footer = h_flex()
-            .gap_2()
-            .pt_3()
-            .px_2()
-            .border_t_1()
-            .border_color(theme.border)
+            .w_full()
             .child(
                 self.focus.button(
                     CONTROL_UNDO,
-                    Button::new("arrange-undo")
-                        .ghost()
-                        .label(t(Str::DialogUndo))
-                        .disabled(self.busy || self.state.history.is_empty())
+                    text_button("arrange-undo", t(Str::DialogUndo), false, can_undo, cx)
+                        .disabled(!can_undo)
                         .on_click(cx.listener(|view, _, _, cx| view.edit(cx, ArrangeState::undo))),
                     cx,
                 ),
@@ -864,28 +869,26 @@ impl Render for ArrangePlaylist {
             .child(
                 self.focus.button(
                     CONTROL_CANCEL,
-                    Button::new("arrange-cancel")
-                        .outline()
-                        .label(t(Str::DialogCancel))
+                    text_button("arrange-cancel", t(Str::DialogCancel), false, !self.busy, cx)
                         .disabled(self.busy)
                         .on_click(|_, window, cx| window.close_dialog(cx)),
                     cx,
                 ),
             )
             .child(if self.busy {
-                div().p_2().child(Spinner::new().small()).into_any_element()
+                bar_spinner()
             } else {
-                self.focus
-                    .button(
-                        CONTROL_SAVE,
-                        Button::new("arrange-save")
-                            .primary()
-                            .label(t(Str::DialogSave))
-                            .on_click(cx.listener(|view, _, window, cx| view.save(window, cx))),
-                        cx,
-                    )
-                    .into_any_element()
+                self.focus.button(
+                    CONTROL_SAVE,
+                    text_button("arrange-save", t(Str::DialogSave), true, true, cx)
+                        .on_click(cx.listener(|view, _, window, cx| view.save(window, cx))),
+                    cx,
+                )
             });
-        v_flex().pb_2().children(stacking).child(list).child(footer)
+        v_flex()
+            .w_full()
+            .child(title_bar_with(t(Str::ArrangeSongs), stacking, cx))
+            .child(scroll_body("arrange-rows", &self.scroll, list, window, cx))
+            .child(button_bar(footer, cx))
     }
 }

@@ -7,7 +7,8 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use gpui_kit::assets::IconName as Lucide;
-use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::base::actions::Confirm;
+use gpui_kit::component::button::Button;
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
@@ -23,11 +24,16 @@ use crate::a11y::FocusList;
 use crate::action_icon::action_icon;
 use crate::download_dialog::DownloadTarget;
 use crate::downloads::{download_folder, offline_ids, pick_download_folder, usable_download_folder};
+use crate::elevated_dialog::{
+    ConfirmDialog, DEFAULT_WIDTH, ROW_HORIZONTAL, bar_spinner, button_bar, chrome, press, scroll_body, text_button,
+    title_bar,
+};
 use crate::feed::{FeedSource, error_text, thumb_for};
 use crate::graph::{AppGraph, on_core};
 use crate::quick_download::{
     PRESET_FIELD_STOPS, QuickPreset, dropdown, load_languages, option_line, preset_fields, saved_preset,
 };
+use crate::settings_view::HOVER_ALPHA;
 use crate::spinner::Spinner;
 
 type CheckAction = fn(&mut PlaylistDownload);
@@ -40,7 +46,10 @@ const STOP_FOLDER: usize = STOP_PRESET + PRESET_FIELD_STOPS;
 const STOP_PREFIX: usize = STOP_FOLDER + 1;
 const STOP_TARGET: usize = STOP_PREFIX + 1;
 const STOP_DOWNLOAD: usize = STOP_TARGET + 1;
-const STOP_ROWS: usize = STOP_DOWNLOAD + 1;
+const STOP_CANCEL: usize = STOP_DOWNLOAD + 1;
+const STOP_ROWS: usize = STOP_CANCEL + 1;
+/// The form's width: room for the options beside the thumbnails.
+const DIALOG_WIDTH: f32 = 760.;
 
 pub struct PlaylistDownload {
     source: FeedSource,
@@ -66,8 +75,8 @@ impl PlaylistDownload {
     /// Opens the page for `title`, starting from the videos `page` already holds.
     pub fn open(source: FeedSource, title: String, page: &YtFeedPage, window: &mut Window, cx: &mut App) {
         let view = cx.new(|cx| Self::new(source, title, page, cx));
-        window.open_dialog(cx, move |dialog, _, _| {
-            dialog.title(t(Str::PlaylistDownloadTitle)).width(px(760.)).child(view.clone())
+        window.open_dialog(cx, move |dialog, window, _| {
+            chrome(dialog, DIALOG_WIDTH, window).on_ok(|_, _, _| false).child(view.clone())
         });
     }
 
@@ -161,6 +170,18 @@ impl PlaylistDownload {
         .detach();
     }
 
+    fn toggle(&mut self, id: &str, cx: &mut Context<Self>) {
+        if !self.checked.remove(id) {
+            self.checked.insert(id.to_owned());
+        }
+        cx.notify();
+    }
+
+    fn toggle_prefix(&mut self, cx: &mut Context<Self>) {
+        self.index_prefix = !self.index_prefix;
+        cx.notify();
+    }
+
     fn pickable(&self) -> impl Iterator<Item = &YtFeedItem> {
         self.videos.iter().filter(|video| !video.live)
     }
@@ -195,46 +216,19 @@ impl PlaylistDownload {
         let view = cx.entity().downgrade();
         let message = plural(Plural::PlaylistRedownloadMessage, downloaded as i64, &[&downloaded]);
         let offline = self.offline.clone();
-        window.open_dialog(cx, move |dialog, _, cx| {
-            let theme = cx.theme().clone();
-            let (all_view, all_picked) = (view.clone(), picked.clone());
-            let (skip_view, skip_picked, offline) = (view.clone(), picked.clone(), offline.clone());
-            dialog.title(t(Str::RedownloadTitle)).width(px(440.)).child(
-                v_flex().gap_4().child(div().text_sm().text_color(theme.foreground).child(message.clone())).child(
-                    h_flex()
-                        .justify_end()
-                        .gap_2()
-                        .child(
-                            Button::new("redownload-cancel")
-                                .ghost()
-                                .label(t(Str::DialogCancel))
-                                .on_click(|_, window, cx| window.close_dialog(cx)),
-                        )
-                        .child(Button::new("redownload-all").outline().label(t(Str::PlaylistDownloadAll)).on_click(
-                            move |_, window, cx| {
-                                window.close_dialog(cx);
-                                let picked = all_picked.clone();
-                                all_view.update(cx, |view, cx| view.start(picked, window, cx)).ok();
-                            },
-                        ))
-                        .child(
-                            Button::new("redownload-skip").primary().label(t(Str::PlaylistSkipDownloaded)).on_click(
-                                move |_, window, cx| {
-                                    window.close_dialog(cx);
-                                    let fresh: Vec<YtFeedItem> = skip_picked
-                                        .iter()
-                                        .filter(|video| !offline.contains(&video.id))
-                                        .cloned()
-                                        .collect();
-                                    if !fresh.is_empty() {
-                                        skip_view.update(cx, |view, cx| view.start(fresh, window, cx)).ok();
-                                    }
-                                },
-                            ),
-                        ),
-                ),
-            )
-        });
+        let (all_view, all_picked) = (view.clone(), picked.clone());
+        ConfirmDialog::new(t(Str::RedownloadTitle), message, t(Str::PlaylistSkipDownloaded))
+            .alternative(t(Str::PlaylistDownloadAll), move |window, cx| {
+                let picked = all_picked.clone();
+                all_view.update(cx, |view, cx| view.start(picked, window, cx)).ok();
+            })
+            .open(window, cx, move |window, cx| {
+                let fresh: Vec<YtFeedItem> =
+                    picked.iter().filter(|video| !offline.contains(&video.id)).cloned().collect();
+                if !fresh.is_empty() {
+                    view.update(cx, |view, cx| view.start(fresh, window, cx)).ok();
+                }
+            });
     }
 
     /// Queues `picked` with the preset (numbered by playlist position when asked), adds them to
@@ -451,10 +445,8 @@ impl PlaylistDownload {
                         .rounded(px(6.))
                         .items_center()
                         .cursor_pointer()
-                        .on_click(cx.listener(|view, _, _, cx| {
-                            view.index_prefix = !view.index_prefix;
-                            cx.notify();
-                        }))
+                        .on_click(cx.listener(|view, _, _, cx| view.toggle_prefix(cx)))
+                        .on_action(cx.listener(|view, _: &Confirm, _, cx| view.toggle_prefix(cx)))
                         .child(
                             div()
                                 .w(px(112.))
@@ -498,7 +490,7 @@ impl PlaylistDownload {
         .flatten()
         .collect::<Vec<_>>()
         .join(", ");
-        let id = video.id.clone();
+        let (id, enter_id) = (video.id.clone(), video.id.clone());
         let live = video.live;
         let element = h_flex()
             .id(("playlist-video", index))
@@ -510,15 +502,16 @@ impl PlaylistDownload {
             .py_1()
             .rounded(px(8.))
             .items_center()
-            .when(!live, |row| row.cursor_pointer().hover(|style| style.bg(theme.secondary)))
+            .when(!live, |row| row.cursor_pointer().hover(|style| style.bg(theme.primary.opacity(HOVER_ALPHA))))
             .on_click(cx.listener(move |view, _, _, cx| {
-                if live {
-                    return;
+                if !live {
+                    view.toggle(&id, cx);
                 }
-                if !view.checked.remove(&id) {
-                    view.checked.insert(id.clone());
+            }))
+            .on_action(cx.listener(move |view, _: &Confirm, _, cx| {
+                if !live {
+                    view.toggle(&enter_id, cx);
                 }
-                cx.notify();
             }))
             .child(Checkbox::new(("video-check", index)).checked(checked).tab_stop(false).disabled(live))
             .child(
@@ -587,30 +580,42 @@ impl Render for PlaylistDownload {
             rows = rows.child(self.row(index, video, cx));
         }
         let rows = self.focus.container(rows, STOP_ROWS..STOP_ROWS + self.videos.len(), cx);
-        let height = (window.viewport_size().height - px(260.)).max(px(240.));
-        v_flex()
+        let body = v_flex()
+            .w_full()
+            .px(px(ROW_HORIZONTAL))
+            .py_4()
             .gap_3()
-            .child(
-                div()
-                    .id("playlist-download-scroll")
-                    .max_h(height)
-                    .overflow_y_scroll()
-                    .track_scroll(&self.scroll)
-                    .child(v_flex().gap_3().pr_2().child(self.header(window, cx)).child(self.options(cx)).child(rows)),
-            )
-            .child(
-                h_flex().justify_end().child(
-                    self.focus.button(
-                        STOP_DOWNLOAD,
-                        Button::new("playlist-download")
-                            .primary()
-                            .label(plural(Plural::PlaylistDownloadAction, count as i64, &[&count]))
-                            .disabled(count == 0)
-                            .on_click(cx.listener(|view, _, window, cx| view.download(window, cx))),
-                        cx,
-                    ),
+            .child(self.header(window, cx))
+            .child(self.options(cx))
+            .child(rows);
+        let buttons = h_flex()
+            .child(press(
+                &self.focus,
+                STOP_CANCEL,
+                text_button("playlist-download-cancel", t(Str::DialogCancel), false, true, cx),
+                true,
+                |_, window, cx| window.close_dialog(cx),
+                cx,
+            ))
+            .child(press(
+                &self.focus,
+                STOP_DOWNLOAD,
+                text_button(
+                    "playlist-download",
+                    plural(Plural::PlaylistDownloadAction, count as i64, &[&count]),
+                    true,
+                    count > 0,
+                    cx,
                 ),
-            )
+                count > 0,
+                cx.listener(|view, _, window, cx| view.download(window, cx)),
+                cx,
+            ));
+        v_flex()
+            .w_full()
+            .child(title_bar(t(Str::PlaylistDownloadTitle), cx))
+            .child(scroll_body("playlist-download-scroll", &self.scroll, body, window, cx))
+            .child(button_bar(buttons, cx))
     }
 }
 
@@ -620,6 +625,7 @@ pub struct NewPlaylistName {
     taken: Vec<String>,
     on_created: OnCreated,
     busy: bool,
+    focus: FocusList,
     _subscription: Subscription,
 }
 
@@ -642,10 +648,21 @@ impl NewPlaylistName {
                 }
                 cx.notify();
             });
-            Self { name, taken, on_created: Rc::new(on_created), busy: false, _subscription: subscription }
+            Self {
+                name,
+                taken,
+                on_created: Rc::new(on_created),
+                busy: false,
+                focus: FocusList::modal(None, cx),
+                _subscription: subscription,
+            }
         });
-        window.open_dialog(cx, move |dialog, _, _| {
-            dialog.title(t(Str::PlaylistCreateTitle)).width(px(420.)).child(view.clone())
+        window.open_dialog(cx, move |dialog, window, _| {
+            let submit = view.downgrade();
+            chrome(dialog, DEFAULT_WIDTH, window).child(view.clone()).on_ok(move |_, window, cx| {
+                submit.update(cx, |view, cx| view.submit(window, cx)).ok();
+                false
+            })
         });
     }
 
@@ -699,21 +716,54 @@ impl Render for NewPlaylistName {
         let theme = cx.theme().clone();
         let duplicate = self.duplicate(cx);
         let can_submit = !self.busy && !self.trimmed(cx).is_empty() && !duplicate;
+        let field = Input::new(&self.name)
+            .aria_label(t(Str::PlaylistNameHint))
+            .when(duplicate, |input| input.border_color(theme.danger));
+        let create = if self.busy {
+            bar_spinner()
+        } else {
+            press(
+                &self.focus,
+                2,
+                text_button("new-playlist-create", t(Str::PlaylistCreateConfirm), true, can_submit, cx),
+                can_submit,
+                cx.listener(|view, _, window, cx| view.submit(window, cx)),
+                cx,
+            )
+        };
+        let buttons = h_flex()
+            .child(press(
+                &self.focus,
+                1,
+                text_button("new-playlist-cancel", t(Str::DialogCancel), false, !self.busy, cx),
+                !self.busy,
+                |_, window, cx| window.close_dialog(cx),
+                cx,
+            ))
+            .child(create);
         v_flex()
-            .gap_2()
-            .child(Input::new(&self.name))
-            .when(duplicate, |column| {
-                column.child(div().text_xs().text_color(theme.danger).child(t(Str::PlaylistNameExists)))
-            })
-            .child(h_flex().justify_end().gap_2().child(if self.busy {
-                div().p_2().child(Spinner::new().small()).into_any_element()
-            } else {
-                Button::new("new-playlist-create")
-                    .primary()
-                    .label(t(Str::PlaylistCreateConfirm))
-                    .disabled(!can_submit)
-                    .on_click(cx.listener(|view, _, window, cx| view.submit(window, cx)))
-                    .into_any_element()
-            }))
+            .w_full()
+            .child(title_bar(t(Str::PlaylistCreateTitle), cx))
+            .child(
+                v_flex()
+                    .w_full()
+                    .px(px(ROW_HORIZONTAL))
+                    .py_2()
+                    .gap_1()
+                    .child(self.focus.field(0, &self.name.focus_handle(cx), field, cx))
+                    .when(duplicate, |column| {
+                        column.child(
+                            div()
+                                .id("new-playlist-taken")
+                                .px_4()
+                                .text_size(px(12.))
+                                .text_color(theme.danger)
+                                .role(Role::Alert)
+                                .aria_label(t(Str::PlaylistNameExists))
+                                .child(t(Str::PlaylistNameExists)),
+                        )
+                    }),
+            )
+            .child(button_bar(buttons, cx))
     }
 }

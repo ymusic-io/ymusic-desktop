@@ -4,18 +4,20 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
-use gpui_kit::component::{ActiveTheme, Disableable, WindowExt, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme, WindowExt, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use ym_download::{DownloadService, names};
 use ym_i18n::{Str, t, tf};
 use ym_store::MediaStore;
 
+use crate::a11y::FocusList;
+use crate::elevated_dialog::{
+    DEFAULT_WIDTH, ROW_HORIZONTAL, bar_spinner, button_bar, chrome, press, text_button, title_bar,
+};
 use crate::graph::{AppGraph, on_core};
 use crate::library_playlist::Changed;
-use crate::spinner::Spinner;
 
 #[derive(Debug, thiserror::Error)]
 enum RenameError {
@@ -108,7 +110,7 @@ pub struct RenameFileDialog {
     busy: bool,
     focused: bool,
     changed: Option<Changed>,
-    cancel: FocusHandle,
+    focus: FocusList,
     _subscription: Subscription,
 }
 
@@ -150,20 +152,14 @@ impl RenameFileDialog {
                 busy: false,
                 focused: false,
                 changed,
-                cancel: cx.focus_handle(),
+                focus: FocusList::modal(None, cx),
                 _subscription: subscription,
             }
         });
-        window.open_dialog(cx, move |dialog, _, _| {
+        window.open_dialog(cx, move |dialog, window, _| {
             let submit = view.clone();
-            dialog.title(t(Str::DownloadRename)).width(px(460.)).child(view.clone()).on_ok(move |_, window, cx| {
-                submit.update(cx, |view, cx| {
-                    if view.cancel.is_focused(window) {
-                        window.close_dialog(cx);
-                    } else {
-                        view.submit(window, cx);
-                    }
-                });
+            chrome(dialog, DEFAULT_WIDTH, window).child(view.clone()).on_ok(move |_, window, cx| {
+                submit.update(cx, |view, cx| view.submit(window, cx));
                 false
             })
         });
@@ -229,46 +225,54 @@ impl Render for RenameFileDialog {
             None if blank => (t(Str::DownloadNameEmpty).to_owned(), true),
             None => (tf(Str::DownloadForbiddenHint, &[&names::FORBIDDEN_DISPLAY]), self.stripped),
         };
+        let tone = if alert { theme.danger } else { theme.muted_foreground };
+        let field = Input::new(&self.name)
+            .aria_label(t(Str::DownloadFileName))
+            .when(alert, |input| input.border_color(theme.danger))
+            .suffix(div().text_color(theme.muted_foreground).child(self.extension.clone()));
+        let save = if self.busy {
+            bar_spinner()
+        } else {
+            press(
+                &self.focus,
+                2,
+                text_button("rename-save", t(Str::DownloadSave), true, !blank, cx),
+                !blank,
+                cx.listener(|view, _, window, cx| view.submit(window, cx)),
+                cx,
+            )
+        };
+        let buttons = h_flex()
+            .child(press(
+                &self.focus,
+                1,
+                text_button("rename-cancel", t(Str::DialogCancel), false, !self.busy, cx),
+                !self.busy,
+                |_, window, cx| window.close_dialog(cx),
+                cx,
+            ))
+            .child(save);
         v_flex()
-            .gap_1()
-            .px_4()
-            .pb_2()
-            .child(div().text_sm().text_color(theme.muted_foreground).child(t(Str::DownloadFileName)))
+            .w_full()
+            .child(title_bar(t(Str::DownloadRename), cx))
             .child(
-                Input::new(&self.name)
-                    .suffix(div().text_sm().text_color(theme.muted_foreground).child(self.extension.clone())),
-            )
-            .child(
-                div()
-                    .id("rename-hint")
-                    .text_xs()
-                    .text_color(if alert { theme.danger } else { theme.muted_foreground })
-                    .when(alert, |hint_line| hint_line.role(Role::Alert).aria_label(hint.clone()))
-                    .child(hint),
-            )
-            .child(
-                h_flex()
-                    .justify_end()
-                    .gap_2()
-                    .pt_3()
+                v_flex()
+                    .w_full()
+                    .px(px(ROW_HORIZONTAL))
+                    .py_2()
+                    .gap_1()
+                    .child(div().text_size(px(12.)).text_color(tone).child(t(Str::DownloadFileName)))
+                    .child(self.focus.field(0, &self.name.focus_handle(cx), field, cx))
                     .child(
-                        Button::new("rename-cancel")
-                            .track_focus(&self.cancel)
-                            .outline()
-                            .label(t(Str::DialogCancel))
-                            .disabled(self.busy)
-                            .on_click(|_, window, cx| window.close_dialog(cx)),
-                    )
-                    .child(if self.busy {
-                        div().p_2().child(Spinner::new().small()).into_any_element()
-                    } else {
-                        Button::new("rename-save")
-                            .primary()
-                            .label(t(Str::DownloadSave))
-                            .disabled(blank)
-                            .on_click(cx.listener(|view, _, window, cx| view.submit(window, cx)))
-                            .into_any_element()
-                    }),
+                        div()
+                            .id("rename-hint")
+                            .px_4()
+                            .text_size(px(12.))
+                            .text_color(tone)
+                            .when(alert, |hint_line| hint_line.role(Role::Alert).aria_label(hint.clone()))
+                            .child(hint),
+                    ),
             )
+            .child(button_bar(buttons, cx))
     }
 }

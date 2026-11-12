@@ -20,6 +20,7 @@ use crate::a11y::FocusList;
 use crate::elevated_dialog::{self, button_bar, chrome, text_button, title_bar};
 use crate::graph::{APP_VERSION_NAME, AppGraph, on_core};
 use crate::library_playlist::Changed;
+use crate::settings_view::HOVER_ALPHA;
 
 const BACKUP_FORMAT: &str = "ymusic.playlists";
 const BACKUP_VERSION: i64 = 1;
@@ -460,7 +461,7 @@ impl RestorePlaylists {
             .py(px(8.))
             .gap(px(8.))
             .items_start()
-            .when(!busy, |row| row.cursor_pointer().hover(|style| style.bg(theme.secondary)))
+            .when(!busy, |row| row.cursor_pointer().hover(|style| style.bg(theme.primary.opacity(HOVER_ALPHA))))
             .child(div().pt(px(2.)).child(Radio::new(("restore-radio", stop)).checked(selected).tab_stop(false)))
             .child(
                 v_flex()
