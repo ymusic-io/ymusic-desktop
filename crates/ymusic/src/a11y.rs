@@ -34,6 +34,9 @@ pub struct RovingItems {
     slots: RefCell<Vec<Weak<Slot>>>,
     frame: Cell<u64>,
     last_group: Cell<u64>,
+    /// Handles window roots track: a cached view replays its stops into the rendered frame under
+    /// one without painting them again.
+    roots: RefCell<Vec<WeakFocusHandle>>,
 }
 
 impl Global for RovingItems {}
@@ -45,12 +48,28 @@ impl RovingItems {
         slots.push(Rc::downgrade(slot));
     }
 
-    /// The stops the latest frame painted, which is what is on screen.
-    fn painted(cx: &App) -> Vec<Rc<Slot>> {
+    /// The stops on screen: painted by the latest frame, or replayed in it by a cached view, whose
+    /// bounds are then the ones last painted.
+    fn on_screen(window: &Window, cx: &App) -> Vec<Rc<Slot>> {
         let items = cx.global::<RovingItems>();
         let frame = items.frame.get();
-        items.slots.borrow().iter().filter_map(Weak::upgrade).filter(|slot| slot.painted.get() == frame).collect()
+        let roots: Vec<FocusHandle> = items.roots.borrow().iter().filter_map(WeakFocusHandle::upgrade).collect();
+        items
+            .slots
+            .borrow()
+            .iter()
+            .filter_map(Weak::upgrade)
+            .filter(|slot| slot.painted.get() == frame || roots.iter().any(|root| root.contains(&slot.handle, window)))
+            .collect()
     }
+}
+
+/// Registers `handle`, tracked by a window's root element, so stops in cached views under it count
+/// as on screen.
+pub fn track_root(handle: &FocusHandle, cx: &App) {
+    let mut roots = cx.global::<RovingItems>().roots.borrow_mut();
+    roots.retain(|root| root.upgrade().is_some());
+    roots.push(handle.downgrade());
 }
 
 pub fn init(cx: &mut App) {
@@ -99,11 +118,13 @@ fn rank(from: Bounds<Pixels>, to: Bounds<Pixels>, direction: Direction) -> Optio
     let (fl, fr, ft, fb) =
         (f32::from(from.left()), f32::from(from.right()), f32::from(from.top()), f32::from(from.bottom()));
     let (tl, tr, tt, tb) = (f32::from(to.left()), f32::from(to.right()), f32::from(to.top()), f32::from(to.bottom()));
+    let (center_x, center_y) = ((fl + fr) / 2., (ft + fb) / 2.);
+    // Past the centre line too, so a neighbour in the same row a few pixels taller is not "below".
     let candidate = match direction {
-        Direction::Left => (fr > tr || fl >= tr) && fl > tl,
-        Direction::Right => (fl < tl || fr <= tl) && fr < tr,
-        Direction::Up => (fb > tb || ft >= tb) && ft > tt,
-        Direction::Down => (ft < tt || fb <= tt) && fb < tb,
+        Direction::Left => (fr > tr || fl >= tr) && fl > tl && tr <= center_x,
+        Direction::Right => (fl < tl || fr <= tl) && fr < tr && tl >= center_x,
+        Direction::Up => (fb > tb || ft >= tb) && ft > tt && tb <= center_y,
+        Direction::Down => (ft < tt || fb <= tt) && fb < tb && tt >= center_y,
     };
     if !candidate {
         return None;
@@ -117,10 +138,21 @@ fn rank(from: Bounds<Pixels>, to: Bounds<Pixels>, direction: Direction) -> Optio
     Some((!in_beam, MAJOR_WEIGHT * major * major + minor * minor))
 }
 
-/// Moves focus to the best stop in `direction`; false when there is none.
+/// Moves focus to the best stop in `direction`, from the focused stop or the innermost stop holding
+/// the focused control (a card's menu button); false when there is none.
 fn step(direction: Direction, window: &mut Window, cx: &mut App) -> bool {
-    let slots = RovingItems::painted(cx);
-    let Some(current) = slots.iter().find(|slot| slot.handle.is_focused(window)) else { return false };
+    let slots = RovingItems::on_screen(window, cx);
+    let area = |slot: &&Rc<Slot>| {
+        let size = slot.bounds.get().size;
+        f32::from(size.width) * f32::from(size.height)
+    };
+    let current = slots.iter().find(|slot| slot.handle.is_focused(window)).or_else(|| {
+        slots
+            .iter()
+            .filter(|slot| slot.handle.contains_focused(window, cx))
+            .min_by(|left, right| area(left).total_cmp(&area(right)))
+    });
+    let Some(current) = current else { return false };
     let from = current.bounds.get();
     let best = slots
         .iter()

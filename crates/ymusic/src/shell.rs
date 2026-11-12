@@ -470,6 +470,8 @@ impl Shell {
             .and_then(DiscoverTab::from_id)
             .filter(|tab| DiscoverTab::listed(guest).contains(tab))
             .unwrap_or(DiscoverTab::Home);
+        let focus = cx.focus_handle();
+        crate::a11y::track_root(&focus, cx);
         Self {
             playback,
             mini_player,
@@ -499,7 +501,7 @@ impl Shell {
             rail_manual: None,
             rail_auto: None,
             drawer_open: false,
-            focus: cx.focus_handle(),
+            focus,
             nav_focus: FocusList::new(None),
             tab_focus: FocusList::new(None),
             music_tab_focus: FocusList::new(None),
