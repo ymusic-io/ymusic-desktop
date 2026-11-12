@@ -113,8 +113,11 @@ enum Direction {
     Down,
 }
 
-/// FocusFinder's ranking of `to` as the next stop from `from`; `None` when it is not that way.
-fn rank(from: Bounds<Pixels>, to: Bounds<Pixels>, direction: Direction) -> Option<(bool, f32)> {
+/// FocusFinder's ranking of `to` as the next stop from `from` (lower is better); `None` when it is
+/// not that way. A stop lined up with `from` ranks by its distance along the arrow alone, its centre's
+/// offset only breaking ties, so a full-width row is not passed over for a button further on that
+/// shares the focused control's centre line.
+fn rank(from: Bounds<Pixels>, to: Bounds<Pixels>, direction: Direction) -> Option<(bool, f32, f32)> {
     let (fl, fr, ft, fb) =
         (f32::from(from.left()), f32::from(from.right()), f32::from(from.top()), f32::from(from.bottom()));
     let (tl, tr, tt, tb) = (f32::from(to.left()), f32::from(to.right()), f32::from(to.top()), f32::from(to.bottom()));
@@ -135,7 +138,8 @@ fn rank(from: Bounds<Pixels>, to: Bounds<Pixels>, direction: Direction) -> Optio
         Direction::Up => ((ft - tb).max(0.), ((fl + fr) - (tl + tr)).abs() / 2., tr > fl && tl < fr),
         Direction::Down => ((tt - fb).max(0.), ((fl + fr) - (tl + tr)).abs() / 2., tr > fl && tl < fr),
     };
-    Some((!in_beam, MAJOR_WEIGHT * major * major + minor * minor))
+    let sideways = if in_beam { 0. } else { minor };
+    Some((!in_beam, MAJOR_WEIGHT * major * major + sideways * sideways, minor))
 }
 
 /// Moves focus to the best stop in `direction`, from the focused stop or the innermost stop holding
