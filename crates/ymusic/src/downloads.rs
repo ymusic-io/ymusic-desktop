@@ -19,6 +19,7 @@ use ym_settings::SettingsStore;
 use ym_store::MediaStore;
 use ym_ytmedia::sabr::SabrHttp;
 
+use crate::elevated_dialog::ConfirmDialog;
 use crate::graph::{AppGraph, on_core};
 use crate::youtube_session::YoutubeSessions;
 
@@ -275,19 +276,9 @@ pub fn location_offer(media: &MediaStore, log: &Logger) -> Result<Option<ym_stor
 pub fn offer_download_location(folder: ym_store::Bucket, window: &mut Window, cx: &mut App) {
     let message = tf(Str::DownloadLocationPromptMessage, &[&folder.alias_name.clone().unwrap_or(folder.name.clone())]);
     let path = PathBuf::from(&folder.uri);
-    window.open_alert_dialog(cx, move |alert, _, _| {
-        let path = path.clone();
-        alert
-            .title(t(Str::MenuDownloadLocation))
-            .description(message.clone())
-            .ok_text(t(Str::DownloadLocationPromptSetDefault))
-            .cancel_text(t(Str::DownloadLocationPromptNotNow))
-            .show_cancel(true)
-            .on_ok(move |_, _, cx| {
-                save_download_folder(&path, cx);
-                true
-            })
-    });
+    ConfirmDialog::new(t(Str::MenuDownloadLocation), message, t(Str::DownloadLocationPromptSetDefault))
+        .cancel(t(Str::DownloadLocationPromptNotNow))
+        .open(window, cx, move |_, cx| save_download_folder(&path, cx));
 }
 
 /// Video ids already saved: Library files tagged with their YouTube id, and finished downloads.

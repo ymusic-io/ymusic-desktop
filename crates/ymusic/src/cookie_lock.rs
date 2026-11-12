@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputContentType, InputEvent, InputState};
-use gpui_kit::component::{ActiveTheme, Disableable, StyledExt, WindowExt, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme, Disableable, StyledExt, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use tokio::runtime::Handle;
@@ -15,6 +15,7 @@ use ym_i18n::{Str, t, tf};
 
 use crate::a11y::FocusList;
 use crate::cookie_session::{CookieSession, CookieStoreError, LockedJar, SealedJar};
+use crate::elevated_dialog::ConfirmDialog;
 use crate::spinner::Spinner;
 
 const FORM_MAX: f32 = 560.;
@@ -173,19 +174,14 @@ impl UnlockView {
 
     fn confirm_sign_out(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let view = cx.entity().downgrade();
-        window.open_alert_dialog(cx, move |alert, _, _| {
-            let view = view.clone();
-            alert
-                .title(t(Str::CookieUnlockSignOutTitle))
-                .description(t(Str::CookieUnlockSignOutBody))
-                .ok_text(t(Str::CookieUnlockSignOut))
-                .ok_variant(gpui_kit::component::button::ButtonVariant::Danger)
-                .cancel_text(t(Str::DialogCancel))
-                .show_cancel(true)
-                .on_ok(move |_, window, cx| {
-                    view.update(cx, |view, cx| view.run(UnlockAction::SignOut, window, cx)).ok();
-                    true
-                })
+        ConfirmDialog::new(
+            t(Str::CookieUnlockSignOutTitle),
+            t(Str::CookieUnlockSignOutBody),
+            t(Str::CookieUnlockSignOut),
+        )
+        .destructive()
+        .open(window, cx, move |window, cx| {
+            view.update(cx, |view, cx| view.run(UnlockAction::SignOut, window, cx)).ok();
         });
     }
 

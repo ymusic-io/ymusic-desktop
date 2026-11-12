@@ -369,20 +369,7 @@ fn retry_dialog(
     cx: &mut App,
     on_action: impl Fn(&mut Window, &mut App) + 'static,
 ) {
-    let on_action = std::rc::Rc::new(on_action);
-    window.open_alert_dialog(cx, move |alert, _, _| {
-        let on_action = on_action.clone();
-        alert
-            .title(title)
-            .description(message)
-            .ok_text(action)
-            .cancel_text(t(Str::DialogCancel))
-            .show_cancel(true)
-            .on_ok(move |_, window, cx| {
-                on_action(window, cx);
-                true
-            })
-    })
+    crate::elevated_dialog::ConfirmDialog::new(title, message, action).open(window, cx, on_action);
 }
 
 /// "Jul 31, 2026", in the local time zone.

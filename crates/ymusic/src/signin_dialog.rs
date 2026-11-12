@@ -5,7 +5,7 @@
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Textarea, TextareaState};
-use gpui_kit::component::{ActiveTheme, Disableable, IconName, StyledExt, WindowExt, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme, Disableable, IconName, StyledExt, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use ym_i18n::{Str, t, tf};
@@ -15,6 +15,7 @@ use crate::a11y::KeyboardFocusable;
 use crate::action_icon::action_icon;
 use crate::cookie_guide::CookieGuide;
 use crate::cookie_lock::{ProtectEvent, ProtectStep};
+use crate::elevated_dialog::ConfirmDialog;
 use crate::graph::{AppGraph, on_core};
 use crate::signin::SignInError;
 use crate::spinner::{BusyButton, Spinner};
@@ -193,12 +194,13 @@ impl SignInView {
         let cookies = ym_signin::parse_cookie_paste(&text);
         if cookies.is_empty() {
             if text.trim_start().starts_with("curl") {
-                window.open_dialog(cx, |dialog, _, _| {
-                    dialog
-                        .title(t(Str::SigninPasteNoCookieTitle))
-                        .width(px(FORM_MAX))
-                        .child(div().text_sm().child(t(Str::SigninPasteNoCookieBody)))
-                });
+                ConfirmDialog::new(
+                    t(Str::SigninPasteNoCookieTitle),
+                    t(Str::SigninPasteNoCookieBody),
+                    t(Str::SigninPasteNoCookieOk),
+                )
+                .without_cancel()
+                .open(window, cx, |_, _| {});
             } else {
                 self.error = Some(t(Str::SigninPasteEmpty).to_owned());
                 cx.notify();
