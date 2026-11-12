@@ -54,3 +54,12 @@ pub fn hit_target(id: impl Into<ElementId>, hit_size: f32) -> Button {
     // The glyph goes in as a child: gpui-kit sizes an `.icon(..)` from the button's size.
     Button::new(id).ghost().size(px(hit_size)).p_0().rounded_full()
 }
+
+/// The JVM app's chip: 13.5 text inset 12 across and 7 above and below, so the label sits centered.
+pub fn chip(button: Button) -> Button {
+    button.rounded_full().h_auto().px(px(CHIP_PADDING_X)).py(px(CHIP_PADDING_Y)).text_size(px(CHIP_TEXT))
+}
+
+const CHIP_PADDING_X: f32 = 12.;
+const CHIP_PADDING_Y: f32 = 7.;
+const CHIP_TEXT: f32 = 13.5;

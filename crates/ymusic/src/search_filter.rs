@@ -4,7 +4,7 @@
 use std::rc::Rc;
 
 use gpui_kit::component::button::{Button, ButtonVariants};
-use gpui_kit::component::{ActiveTheme, Selectable, Sizable, StyledExt, WindowExt, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme, Selectable, StyledExt, WindowExt, h_flex, v_flex};
 use gpui_kit::*;
 use ym_engine::yt::YtFilterGroup;
 use ym_i18n::{Str, t};
@@ -69,9 +69,7 @@ impl Render for SearchFilter {
             for option in &group.options {
                 let params = option.params.clone();
                 let on_select = self.on_select.clone();
-                let pill = Button::new(("filter-option", stop))
-                    .small()
-                    .rounded_full()
+                let pill = crate::action_icon::chip(Button::new(("filter-option", stop)))
                     .label(option.label.clone())
                     .selected(option.selected);
                 let pill = if option.selected { pill.primary() } else { pill.outline() };

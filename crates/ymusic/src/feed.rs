@@ -1796,7 +1796,7 @@ impl Render for FeedView {
             for (index, chip) in self.page.chips.clone().into_iter().enumerate() {
                 let token = chip.token.clone();
                 let loading = self.refiltering == Some(Refilter::Chip(index));
-                let mut button = Button::new(("chip", index)).label(chip.title.clone()).small().rounded_full();
+                let mut button = crate::action_icon::chip(Button::new(("chip", index))).label(chip.title.clone());
                 button = if chip.selected { button.primary() } else { button.outline() };
                 let button = button
                     .selected(chip.selected)

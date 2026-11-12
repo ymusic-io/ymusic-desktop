@@ -243,7 +243,7 @@ impl Render for SleepTimerDialog {
         };
 
         let chip = |id: ElementId, label: String, selected: bool| {
-            let chip = Button::new(id).small().rounded_full().label(label).selected(selected);
+            let chip = crate::action_icon::chip(Button::new(id)).label(label).selected(selected);
             if selected { chip.primary() } else { chip.outline() }
         };
         let mut chips = h_flex().flex_wrap().gap_2();

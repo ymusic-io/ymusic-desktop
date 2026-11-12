@@ -5,7 +5,7 @@ use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::base::actions::Confirm;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
-use gpui_kit::component::{ActiveTheme, Icon, IconName, Selectable, Sizable, WindowExt, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme, Icon, IconName, Selectable, WindowExt, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use ym_engine::EngineError;
@@ -329,7 +329,7 @@ impl Render for CreatePlaylist {
         let mut chips = h_flex().flex_wrap().gap_2();
         for (offset, (value, label)) in PRIVACY.into_iter().enumerate() {
             let selected = self.privacy == value;
-            let chip = Button::new(value).small().rounded_full().label(t(label));
+            let chip = crate::action_icon::chip(Button::new(value)).label(t(label));
             let chip = if selected { chip.primary() } else { chip.outline() }.selected(selected);
             chips = chips.child(press(
                 &self.focus,

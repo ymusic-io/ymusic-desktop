@@ -746,7 +746,7 @@ impl Render for DownloadsView {
                 format!("{} {count}", candidate.label())
             };
             let selected = candidate == filter;
-            let chip = Button::new(("filter", index)).small().rounded_full().label(label).selected(selected);
+            let chip = crate::action_icon::chip(Button::new(("filter", index))).label(label).selected(selected);
             let chip = if selected { chip.primary() } else { chip.outline() };
             let chip = chip.on_click(cx.listener(move |view, _, _, cx| {
                 view.filter = candidate;

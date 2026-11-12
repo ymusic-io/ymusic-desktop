@@ -961,7 +961,8 @@ impl VideoDetailsView {
                 for (index, chip) in header.sort.iter().enumerate() {
                     let token = chip.token.clone();
                     let selected = chip.selected;
-                    let button = Button::new(("comment-sort", index)).small().rounded_full().label(chip.title.clone());
+                    let button =
+                        crate::action_icon::chip(Button::new(("comment-sort", index))).label(chip.title.clone());
                     let chip = if selected { button.primary() } else { button.outline() }.selected(selected).on_click(
                         cx.listener(move |view, _, _, cx| {
                             if let (false, Some(token)) = (selected, token.clone()) {

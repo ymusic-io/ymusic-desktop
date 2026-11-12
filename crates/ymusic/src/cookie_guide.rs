@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::button::{Button, ButtonVariants};
-use gpui_kit::component::{ActiveTheme, Icon, Selectable, Sizable, StyledExt, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme, Icon, Selectable, StyledExt, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use ym_i18n::{Str, t};
@@ -382,8 +382,9 @@ impl Render for CookieGuide {
         let mut browsers = h_flex().gap_2().justify_center();
         for (index, browser) in Browser::ALL.into_iter().enumerate() {
             let selected = browser == self.browser;
-            let chip =
-                Button::new(("signin-browser", index)).small().rounded_full().label(browser.label()).selected(selected);
+            let chip = crate::action_icon::chip(Button::new(("signin-browser", index)))
+                .label(browser.label())
+                .selected(selected);
             let chip = if selected { chip.primary() } else { chip.outline() };
             let chip = chip.on_click(cx.listener(move |guide, _, _, cx| {
                 guide.browser = browser;
