@@ -286,6 +286,8 @@ pub struct LibraryView {
     crumb_focus: FocusList,
     tab_drag: DragRow,
     crumb_drag: DragRow,
+    /// The open folder the crumbs were last scrolled to the end for.
+    crumbs_shown_for: Option<i64>,
     song_focus: FocusList,
     /// Debug-route actions, one run after each finished reload.
     dev_actions: Vec<String>,
@@ -333,6 +335,7 @@ impl LibraryView {
             crumb_focus: FocusList::new(None),
             tab_drag: DragRow::default(),
             crumb_drag: DragRow::default(),
+            crumbs_shown_for: None,
             song_focus: FocusList::new(Some(scroll)),
             dev_actions: Vec::new(),
             dev_ready: false,
@@ -1170,6 +1173,27 @@ pub fn reveal_label() -> &'static str {
     })
 }
 
+/// A mouse wheel's turn scrolls the horizontal `row` while it can move (the JVM app's
+/// `horizontalWheelScroll`); at either end the page under it scrolls instead.
+fn wheel_scrolls_row(row: ScrollHandle) -> impl Fn(&ScrollEvent, &mut Window, &mut App) + 'static {
+    move |event, window, cx| {
+        if event.delta.precise() {
+            return;
+        }
+        let delta = event.delta.pixel_delta(window.line_height());
+        if !delta.x.is_zero() || delta.y.is_zero() {
+            return;
+        }
+        let offset = row.offset();
+        let x = (offset.x + delta.y).clamp(-row.max_offset().x, px(0.));
+        if x != offset.x {
+            row.set_offset(point(x, offset.y));
+            window.refresh();
+            cx.stop_propagation();
+        }
+    }
+}
+
 /// The artwork filling its frame, the icon while it loads or when there is none.
 pub fn art_or_icon(icon: Lucide, art: Option<SharedString>, icon_size: Pixels, cx: &App) -> AnyElement {
     let color = cx.theme().muted_foreground;
@@ -1568,17 +1592,20 @@ impl LibraryView {
                     .track_scroll(self.crumb_drag.scroll())
                     .overflow_x_scroll()
                     .restrict_scroll_to_axis()
+                    .on_scroll(wheel_scrolls_row(self.crumb_drag.scroll().clone()))
                     .gap_1()
                     .items_center();
                 let row = Some(self.crumb_drag.scroll().clone());
                 crumbs = crumbs.child(
-                    self.crumb_focus.item_in(
-                        0,
-                        Self::crumb_link("crumb-root", t(Str::LibraryCrumbRoot).to_owned(), cx)
-                            .on_click(cx.listener(|view, _, _, cx| view.open_crumb(0, cx))),
-                        row.clone(),
-                        cx,
-                    ),
+                    self.crumb_focus
+                        .item_in(
+                            0,
+                            Self::crumb_link("crumb-root", t(Str::LibraryCrumbRoot).to_owned(), cx)
+                                .on_click(cx.listener(|view, _, _, cx| view.open_crumb(0, cx))),
+                            row.clone(),
+                            cx,
+                        )
+                        .flex_shrink_0(),
                 );
                 let last = self.path.len() - 1;
                 for (depth, bucket) in self.path.iter().enumerate() {
@@ -1586,11 +1613,11 @@ impl LibraryView {
                     crumbs = crumbs
                         .child(Icon::new(IconName::ChevronRight).size(px(16.)).text_color(theme.muted_foreground));
                     crumbs = crumbs.child(if depth == last {
-                        div().px_1().text_sm().font_semibold().truncate().child(name).into_any_element()
+                        div().flex_shrink_0().px_1().text_sm().font_semibold().child(name).into_any_element()
                     } else {
                         let link = Self::crumb_link(("crumb", depth), name, cx)
                             .on_click(cx.listener(move |view, _, _, cx| view.open_crumb(depth + 1, cx)));
-                        self.crumb_focus.item_in(depth + 1, link, row.clone(), cx).into_any_element()
+                        self.crumb_focus.item_in(depth + 1, link, row.clone(), cx).flex_shrink_0().into_any_element()
                     });
                 }
                 bar.child(self.crumb_drag.wrap(crumbs).min_w_0()).child(self.rescan_button(cx))
@@ -1845,6 +1872,12 @@ impl Render for LibraryView {
             let view = cx.entity();
             window.defer(cx, move |window, cx| view.update(cx, |view, cx| view.dev_action(&action, window, cx)));
         }
+        let open_folder = self.path.last().map(|bucket| bucket.id);
+        if open_folder.is_some() && self.crumbs_shown_for != open_folder {
+            // The current crumb is the row's last child: each folder adds a chevron and its crumb.
+            self.crumb_drag.scroll().scroll_to_item(2 * self.path.len());
+        }
+        self.crumbs_shown_for = open_folder;
         let theme = cx.theme().clone();
         let width = crate::feed::feed_width(window);
         let grid = width >= GRID_MIN_WIDTH;
