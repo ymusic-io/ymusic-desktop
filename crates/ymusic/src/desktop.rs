@@ -721,6 +721,7 @@ pub fn show_main_window() {
 /// What a tray click or menu entry asks for.
 pub enum TrayCommand {
     /// Toggle the mini player popup at the icon's logical screen bounds.
+    #[cfg_attr(target_os = "linux", allow(dead_code))]
     Popup(Bounds<Pixels>),
     Open,
     TogglePlay,
