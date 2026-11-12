@@ -80,6 +80,8 @@ fn apply_theme(choice: &str, accent: &str, cx: &mut App) {
         theme.slider_bar = accent;
         theme.slider_thumb = accent;
         theme.switch_thumb = on_accent;
+        // Material 3's extra-small shape, the JVM app's menus.
+        theme.radius = px(4.);
         let palette = Palette::for_mode(theme.mode.is_dark(), amoled);
         theme.background = palette.surface;
         theme.foreground = palette.ink;
