@@ -134,7 +134,15 @@ enum Direction {
 /// not that way. A stop lined up with `from` ranks by its distance along the arrow alone, its centre's
 /// offset only breaking ties, so a full-width row is not passed over for a button further on that
 /// shares the focused control's centre line.
-fn rank(from: Bounds<Pixels>, to: Bounds<Pixels>, direction: Direction) -> Option<(bool, f32, f32)> {
+///
+/// Next after lining up with the stop, a target lining up with the stop's whole list (`list`) wins: Down
+/// from a tab goes into the page under the tab row, not to the rail beside it.
+fn rank(
+    from: Bounds<Pixels>,
+    to: Bounds<Pixels>,
+    list: Bounds<Pixels>,
+    direction: Direction,
+) -> Option<(bool, bool, f32, f32)> {
     let (fl, fr, ft, fb) =
         (f32::from(from.left()), f32::from(from.right()), f32::from(from.top()), f32::from(from.bottom()));
     let (tl, tr, tt, tb) = (f32::from(to.left()), f32::from(to.right()), f32::from(to.top()), f32::from(to.bottom()));
@@ -155,8 +163,12 @@ fn rank(from: Bounds<Pixels>, to: Bounds<Pixels>, direction: Direction) -> Optio
         Direction::Up => ((ft - tb).max(0.), ((fl + fr) - (tl + tr)).abs() / 2., tr > fl && tl < fr),
         Direction::Down => ((tt - fb).max(0.), ((fl + fr) - (tl + tr)).abs() / 2., tr > fl && tl < fr),
     };
+    let in_list_beam = match direction {
+        Direction::Left | Direction::Right => to.bottom() > list.top() && to.top() < list.bottom(),
+        Direction::Up | Direction::Down => to.right() > list.left() && to.left() < list.right(),
+    };
     let sideways = if in_beam { 0. } else { minor };
-    Some((!in_beam, MAJOR_WEIGHT * major * major + sideways * sideways, minor))
+    Some((!in_beam, !in_list_beam, MAJOR_WEIGHT * major * major + sideways * sideways, minor))
 }
 
 /// Moves focus to the best stop in `direction`, from the focused stop or the innermost stop holding
@@ -180,10 +192,15 @@ fn step(direction: Direction, window: &mut Window, cx: &mut App) -> bool {
         Some(shown) => Some(shown),
         None => (slot.viewport.get() == current.viewport.get()).then(|| slot.bounds.get()),
     };
+    let list = slots
+        .iter()
+        .filter(|slot| Rc::ptr_eq(&slot.entry, &current.entry))
+        .filter_map(|slot| slot.visible())
+        .fold(from, |span, shown| span.union(&shown));
     let best = slots
         .iter()
         .filter(|slot| !Rc::ptr_eq(slot, current) && slot.group == current.group)
-        .filter_map(|slot| reachable(slot).and_then(|to| rank(from, to, direction)).map(|rank| (rank, slot)))
+        .filter_map(|slot| reachable(slot).and_then(|to| rank(from, to, list, direction)).map(|rank| (rank, slot)))
         .min_by(|(left, _), (right, _)| left.partial_cmp(right).unwrap_or(std::cmp::Ordering::Equal));
     let Some((_, target)) = best else { return false };
     let mut handle = target.handle.clone();
