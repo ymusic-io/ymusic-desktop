@@ -404,6 +404,11 @@ fn row_body(title: impl Into<SharedString>, hint: Option<String>, control: impl 
         .child(div().flex_shrink_0().child(control))
 }
 
+/// A control's spoken name: the row's title, then the value it shows.
+fn spoken(title: &str, value: &str) -> String {
+    if value.is_empty() || value == title { title.to_owned() } else { format!("{title}, {value}") }
+}
+
 fn language_name(tag: &str) -> String {
     let base = tag.split(['-', '_']).next().unwrap_or(tag);
     let name = match base {
@@ -474,13 +479,19 @@ impl SettingsView {
         checked: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let body = row_body(title, Some(hint.to_owned()), Switch::new(key).checked(checked).tab_stop(false), cx)
-            .id(SharedString::from(format!("{key}-row")))
-            .role(Role::Switch)
-            .aria_label(title)
-            .aria_toggled(if checked { Toggled::True } else { Toggled::False })
-            .cursor_pointer()
-            .on_click(cx.listener(move |view, _, _, cx| view.put(key, (!checked).to_string(), cx)));
+        let body = row_body(
+            title,
+            Some(hint.to_owned()),
+            Switch::new(key).checked(checked).tab_stop(false).accessibility_label(title),
+            cx,
+        )
+        .id(SharedString::from(format!("{key}-row")))
+        .role(Role::Switch)
+        .aria_label(title)
+        .aria_description(hint)
+        .aria_toggled(if checked { Toggled::True } else { Toggled::False })
+        .cursor_pointer()
+        .on_click(cx.listener(move |view, _, _, cx| view.put(key, (!checked).to_string(), cx)));
         self.focus.item(index, body, cx).into_any_element()
     }
 }
@@ -522,6 +533,7 @@ impl Render for SettingsView {
             .small()
             .ghost()
             .label(theme_label)
+            .accessibility_label(spoken(t(Str::SettingsTheme), theme_label))
             .track_focus(&self.focus.handle(theme_stop, cx))
             .dropdown_menu(move |mut menu, _, _| {
                 for (choice, label) in [
@@ -565,6 +577,7 @@ impl Render for SettingsView {
         let language_menu = Button::new("language")
             .small()
             .ghost()
+            .accessibility_label(spoken(t(Str::SettingsLanguage), &language_label))
             .label(language_label)
             .track_focus(&self.focus.handle(language_stop, cx))
             .dropdown_menu(move |mut menu, _, _| {
@@ -599,6 +612,7 @@ impl Render for SettingsView {
         let region_button = Button::new("region")
             .small()
             .ghost()
+            .accessibility_label(spoken(t(Str::SettingsContentRegion), &region_label))
             .label(region_label)
             .busy(self.locales.is_none() && self.locales_loading)
             .on_click(cx.listener(|_, _, window, cx| RegionPicker::open(cx.entity(), window, cx)));
@@ -687,7 +701,7 @@ impl Render for SettingsView {
                 .small()
                 .ghost()
                 .label(crate::player_cache::max_label(cache_max_mb))
-                .accessibility_label(t(Str::SettingsPlayerCache))
+                .accessibility_label(spoken(t(Str::SettingsPlayerCache), &summary))
                 .track_focus(&self.focus.handle(cache_stop, cx))
                 .dropdown_menu(move |mut menu, _, _| {
                     for max_mb in crate::player_cache::SIZE_CHOICES_MB {
@@ -705,24 +719,25 @@ impl Render for SettingsView {
             let menu = self.focus.wrap(cache_stop, menu, cx);
             playback.push(row(t(Str::SettingsPlayerCache), Some(summary), menu, cx));
         }
+        let folder = folder
+            .map(|folder| folder.display().to_string())
+            .unwrap_or_else(|| t(Str::DownloadLocationNotSet).to_owned());
         let downloads = vec![row(
             t(Str::MenuDownloadLocation),
-            Some(
-                folder
-                    .map(|folder| folder.display().to_string())
-                    .unwrap_or_else(|| t(Str::DownloadLocationNotSet).to_owned()),
-            ),
+            Some(folder.clone()),
             self.focus.button(
                 next(),
                 Button::new("download-folder")
                     .small()
                     .ghost()
                     .label(t(Str::MenuDownloadLocation))
+                    .accessibility_label(spoken(t(Str::MenuDownloadLocation), &folder))
                     .on_click(cx.listener(|view, _, window, cx| view.choose_folder(window, cx))),
                 cx,
             ),
             cx,
         )];
+        let quick_preset = crate::quick_download::saved_preset(cx).label();
         let downloads = downloads.into_iter().chain([row(
             t(Str::SettingsQuickDownload),
             None,
@@ -731,7 +746,8 @@ impl Render for SettingsView {
                 Button::new("quick-download")
                     .small()
                     .ghost()
-                    .label(crate::quick_download::saved_preset(cx).label())
+                    .accessibility_label(spoken(t(Str::SettingsQuickDownload), &quick_preset))
+                    .label(quick_preset)
                     .on_click(|_, window, cx| crate::quick_download::QuickPresetEditor::open(window, cx)),
                 cx,
             ),

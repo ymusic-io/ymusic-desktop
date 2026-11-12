@@ -470,7 +470,12 @@ impl PlaylistDownload {
                                 .text_color(theme.muted_foreground)
                                 .child(t(Str::PlaylistIndexPrefixHint)),
                         )
-                        .child(Switch::new("index-prefix").checked(self.index_prefix).tab_stop(false)),
+                        .child(
+                            Switch::new("index-prefix")
+                                .checked(self.index_prefix)
+                                .tab_stop(false)
+                                .accessibility_label(t(Str::PlaylistIndexPrefix)),
+                        ),
                     cx,
                 ),
             )
