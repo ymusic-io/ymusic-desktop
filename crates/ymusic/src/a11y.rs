@@ -392,7 +392,15 @@ impl FocusList {
     pub fn button_in(&self, index: usize, button: Button, row: Option<ScrollHandle>, cx: &App) -> Div {
         let button = button.track_focus(&self.handle(index, cx));
         let slot = self.slot(index, cx);
-        on_arrows(div().relative().flex_shrink_0().child(button).child(self.tracker(slot, row)))
+        // A press on the button is the button's: a clickable row or bar around it must not take it too.
+        on_arrows(
+            div()
+                .relative()
+                .flex_shrink_0()
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .child(button)
+                .child(self.tracker(slot, row)),
+        )
     }
 
     /// Makes `element`, already tracking [`Self::handle`]`(index)`, the list's `index`th stop.
@@ -456,6 +464,7 @@ impl FocusList {
         cx: &App,
     ) -> Stateful<Div> {
         let slot = self.slot(index, cx);
+        let press_focus = slot.handle.clone();
         let model = state.read(cx);
         let (value, min, max) = (model.value().end(), model.min_value(), model.max_value());
         let step = spec.step.unwrap_or_else(|| model.accessibility_step());
@@ -503,6 +512,10 @@ impl FocusList {
             .on_a11y_action(AccessibleAction::Decrement, move |_, window, cx| match &decrement {
                 Some(on_step) => on_step(-1., window, cx),
                 None => act(-step, &down_state, window, cx),
+            })
+            .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                window.focus(&press_focus, cx);
+                cx.stop_propagation();
             })
             .child(slider);
         self.ringed(slot, element, None, cx)

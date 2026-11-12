@@ -5,7 +5,7 @@ use std::rc::Rc;
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::base::slider::{SliderEvent, SliderState};
 use gpui_kit::component::slider::Slider;
-use gpui_kit::component::{ActiveTheme, Disableable, Icon, Selectable, StyledExt, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme, Disableable, Icon, StyledExt, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use ym_i18n::{Str, t, tf};
@@ -146,11 +146,13 @@ impl MiniPlayer {
         let armed = remaining.is_some() || after_current;
         self.focus.button(
             STOP_SLEEP,
-            action_icon("sleep-timer", Lucide::Timer, t(Str::CdSleepTimer)).selected(armed).tooltip(tooltip).on_click(
-                cx.listener(|player, _, window, cx| {
+            action_icon("sleep-timer", Lucide::Timer, t(Str::CdSleepTimer))
+                .toggled(armed)
+                .when(armed, |button| button.text_color(cx.theme().primary))
+                .tooltip(tooltip)
+                .on_click(cx.listener(|player, _, window, cx| {
                     crate::sleep_timer::SleepTimerDialog::open(player.playback.clone(), window, cx)
-                }),
-            ),
+                })),
             cx,
         )
     }
@@ -299,7 +301,8 @@ impl MiniPlayer {
                                 BAR_SMALL_ICON,
                                 BAR_SMALL_HIT,
                             )
-                            .selected(shuffle)
+                            .toggled(shuffle)
+                            .when(shuffle, |button| button.text_color(cx.theme().primary))
                             .on_click(cx.listener(move |player, _, _, cx| {
                                 player.playback.update(cx, |playback, cx| playback.set_shuffle(!shuffle, cx))
                             })),
@@ -333,7 +336,8 @@ impl MiniPlayer {
                                 BAR_SMALL_ICON,
                                 BAR_SMALL_HIT,
                             )
-                            .selected(loop_mode != LoopMode::None)
+                            .toggled(loop_mode != LoopMode::None)
+                            .when(loop_mode != LoopMode::None, |button| button.text_color(cx.theme().primary))
                             .on_click(cx.listener(move |player, _, _, cx| {
                                 player
                                     .playback
@@ -382,7 +386,8 @@ impl MiniPlayer {
                     self.focus.button(
                         STOP_SPEED,
                         sized_action_icon("speed-pitch", Lucide::Gauge, t(Str::MenuSpeedPitch), BAR_SMALL_ICON, HIT)
-                            .selected(tuned)
+                            .toggled(tuned)
+                            .when(tuned, |button| button.text_color(cx.theme().primary))
                             .on_click(cx.listener(|player, _, window, cx| {
                                 crate::sound_panel::SoundPanel::open(player.playback.clone(), window, cx)
                             })),
