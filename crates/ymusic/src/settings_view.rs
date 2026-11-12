@@ -94,6 +94,10 @@ fn apply_theme(choice: &str, accent: &str, cx: &mut App) {
         theme.secondary_foreground = palette.ink;
         theme.muted = palette.placeholder;
         theme.input = palette.outline;
+        // The JVM app's hovers are the accent at Material's 8% hover alpha; the kit halves this
+        // token on a dark ghost button.
+        theme.accent = accent.opacity(if theme.mode.is_dark() { 0.16 } else { 0.08 });
+        theme.accent_foreground = palette.ink;
         // Adwaita's faint window outline. Corners stay square: gpui clips content to rectangles, so
         // a rounded frame needs every surface touching a bottom corner rounded too.
         if cfg!(target_os = "linux") {
