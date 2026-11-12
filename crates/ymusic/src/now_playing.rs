@@ -1536,7 +1536,7 @@ impl NowPlaying {
                 .id(("np-queue-handle", position))
                 .flex_shrink_0()
                 .cursor_grab()
-                .text_color(if active { theme.primary } else { theme.muted_foreground })
+                .text_color(if active { theme.primary } else { theme.input })
                 .child(Icon::new(Lucide::GripVertical).small())
                 .on_mouse_down(
                     MouseButton::Left,
@@ -1560,8 +1560,8 @@ impl NowPlaying {
                     .gap(px(if large { 12. } else { 8. }))
                     .items_center()
                     .cursor_pointer()
-                    .when(active, |row| row.bg(theme.secondary))
-                    .hover(|style| style.bg(theme.secondary))
+                    .when(active, |row| row.bg(theme.primary.opacity(0.1)))
+                    .hover(|style| style.bg(theme.primary.opacity(0.08)))
                     .when(dragging == Some(position), |row| {
                         row.bg(theme.popover).shadow(vec![BoxShadow {
                             color: black().opacity(0.25),
@@ -1592,7 +1592,8 @@ impl NowPlaying {
                                 div()
                                     .text_sm()
                                     .truncate()
-                                    .when(active, |text| text.font_semibold())
+                                    .font_semibold()
+                                    .when(active, |text| text.text_color(theme.primary))
                                     .child(item.title.clone()),
                             )
                             .when(!detail.is_empty(), |column| {
