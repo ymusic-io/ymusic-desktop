@@ -91,7 +91,40 @@ pub fn adopt_saved_bounds(app_db: &ym_settings::AppDb, path: &Path, log: &Logger
 
 #[cfg_attr(target_os = "windows", allow(dead_code))]
 const LOGO_PNG: &[u8] = include_bytes!("../assets/ymusic-512.png");
-const TRAY_PNG: &[u8] = include_bytes!("../assets/ymusic-tray.png");
+
+/// The JVM app's tray scales: a raster per display scale, since one upscaled by the OS turns soft.
+#[cfg(not(target_os = "windows"))]
+const TRAY_SCALES: [f32; 7] = [1., 1.25, 1.5, 1.75, 2., 2.5, 3.];
+
+/// The JVM app's tray icon (AWT `CSystemTray`), in points: drawn at that size, as it fits the 21 pt
+/// AWT leaves in the status bar.
+#[cfg(target_os = "macos")]
+const TRAY_POINTS: f32 = 20.;
+
+/// The tray icon's sizes on Linux, which the StatusNotifierItem host picks from: GNOME's panel cell
+/// and KDE's, across the scales.
+#[cfg(target_os = "linux")]
+const TRAY_LINUX_BASES: [f32; 2] = [16., 22.];
+
+/// The tray icon as the JVM app draws it: the logo's disc (`ymusic_logo`), full color, a `side` px
+/// square of straight RGBA. One mask cuts the disc, so its rim antialiases once.
+fn tray_logo(side: u32) -> anyhow::Result<image::RgbaImage> {
+    use resvg::tiny_skia::{FillRule, Mask, PathBuilder, Pixmap, Transform};
+    let tree = resvg::usvg::Tree::from_str(crate::assets::LOGO_SVG, &resvg::usvg::Options::default())?;
+    let mut pixmap = Pixmap::new(side, side).ok_or_else(|| anyhow::anyhow!("no {side} px tray pixmap"))?;
+    let scale = side as f32 / tree.size().width();
+    resvg::render(&tree, Transform::from_scale(scale, scale), &mut pixmap.as_mut());
+    let radius = side as f32 / 2.;
+    let disc = PathBuilder::from_circle(radius, radius, radius).ok_or_else(|| anyhow::anyhow!("no tray disc"))?;
+    let mut mask = Mask::new(side, side).ok_or_else(|| anyhow::anyhow!("no {side} px tray mask"))?;
+    mask.fill_path(&disc, FillRule::Winding, true, Transform::identity());
+    pixmap.apply_mask(&mask);
+    let pixels = pixmap.pixels().iter().flat_map(|pixel| {
+        let color = pixel.demultiply();
+        [color.red(), color.green(), color.blue(), color.alpha()]
+    });
+    image::RgbaImage::from_raw(side, side, pixels.collect()).ok_or_else(|| anyhow::anyhow!("{side} px tray buffer"))
+}
 
 /// The Dock shows the app's logo even when it runs outside an app bundle.
 #[cfg(target_os = "macos")]
@@ -828,6 +861,13 @@ pub struct Tray {
     stop: tray_icon::menu::MenuItem,
     quit: tray_icon::menu::MenuItem,
     playing: Option<bool>,
+    visible: bool,
+    /// The side the icon was drawn at, in pixels.
+    #[cfg(target_os = "windows")]
+    side: u32,
+    /// The status item's NSImage: the logo at [`TRAY_POINTS`], a representation per scale.
+    #[cfg(target_os = "macos")]
+    image: objc2::rc::Retained<objc2::runtime::AnyObject>,
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -839,9 +879,11 @@ impl Tray {
     ) -> anyhow::Result<(Self, futures::channel::mpsc::UnboundedReceiver<TrayCommand>)> {
         use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
         use tray_icon::{TrayIconBuilder, TrayIconEvent};
-        let image = image::load_from_memory(TRAY_PNG)?.into_rgba8();
-        let (width, height) = image.dimensions();
-        let icon = tray_icon::Icon::from_rgba(image.into_raw(), width, height)?;
+        #[cfg(target_os = "windows")]
+        let side = tray_icon_side()?;
+        #[cfg(target_os = "macos")]
+        let (side, image) = ((TRAY_POINTS * 2.) as u32, status_item_image()?);
+        let icon = tray_icon_raster(side)?;
         let open = MenuItem::new(t(Str::CdOpenApp), true, None);
         let toggle = MenuItem::new(t(Str::TrayPause), true, None);
         let stop = MenuItem::new(t(Str::TrayStop), true, None);
@@ -896,12 +938,29 @@ impl Tray {
             }
             _ => {}
         }));
-        Ok((Self { icon: tray, open, toggle, stop, quit, playing: None }, receiver))
+        let tray = Self {
+            icon: tray,
+            open,
+            toggle,
+            stop,
+            quit,
+            playing: None,
+            visible: false,
+            #[cfg(target_os = "windows")]
+            side,
+            #[cfg(target_os = "macos")]
+            image,
+        };
+        Ok((tray, receiver))
     }
 
     /// Shown while there is a queue to control or the window is hidden (the only way back then).
+    /// Each time it appears it is drawn for the display as it is then, as the JVM app's.
     pub fn update(&mut self, has_queue: bool, playing: bool, window_hidden: bool) -> anyhow::Result<()> {
-        self.icon.set_visible(has_queue || window_hidden)?;
+        let visible = has_queue || window_hidden;
+        let appeared = visible && !self.visible;
+        self.icon.set_visible(visible)?;
+        self.visible = visible;
         self.toggle.set_enabled(has_queue);
         self.stop.set_enabled(has_queue);
         self.open.set_enabled(true);
@@ -910,12 +969,103 @@ impl Tray {
             self.toggle.set_text(t(if playing { Str::TrayPause } else { Str::TrayResume }));
             self.playing = Some(playing);
         }
+        if appeared {
+            self.draw_icon()?;
+        }
         Ok(())
     }
 
     /// Whether a window hidden now could be brought back from the tray.
     pub fn available(&self) -> bool {
         true
+    }
+
+    /// Redraws the icon when the primary display's DPI changed since it was drawn.
+    #[cfg(target_os = "windows")]
+    fn draw_icon(&mut self) -> anyhow::Result<()> {
+        let side = tray_icon_side()?;
+        if side != self.side {
+            self.icon.set_icon(Some(tray_icon_raster(side)?))?;
+            self.side = side;
+        }
+        Ok(())
+    }
+
+    /// tray-icon draws every icon 18 pt tall from one raster, the JVM app's is 20 pt with a raster
+    /// per scale; tray-icon makes the status item anew, with its own image, each time it is shown.
+    #[cfg(target_os = "macos")]
+    fn draw_icon(&mut self) -> anyhow::Result<()> {
+        use objc2::msg_send;
+        use objc2::rc::Retained;
+        use objc2::runtime::AnyObject;
+        let Some(item) = self.icon.ns_status_item() else { return Ok(()) };
+        // SAFETY: AppKit calls on the main thread, with the live status item and image.
+        unsafe {
+            let button: Option<Retained<AnyObject>> = msg_send![&*item, button];
+            if let Some(button) = button {
+                let _: () = msg_send![&*button, setImage: &*self.image];
+            }
+        }
+        // Hack: tray-icon fits its click target to the button again only in its own setters.
+        self.icon.set_tooltip(Some(t(Str::AppName)))?;
+        Ok(())
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn tray_icon_raster(side: u32) -> anyhow::Result<tray_icon::Icon> {
+    Ok(tray_icon::Icon::from_rgba(tray_logo(side)?.into_raw(), side, side)?)
+}
+
+/// The notification area draws an icon at the small icon size for the primary display's DPI; the
+/// JVM app's was 16 px scaled for that display, the same.
+#[cfg(target_os = "windows")]
+fn tray_icon_side() -> windows::core::Result<u32> {
+    use windows::Win32::Foundation::POINT;
+    use windows::Win32::Graphics::Gdi::{MONITOR_DEFAULTTOPRIMARY, MonitorFromPoint};
+    use windows::Win32::UI::HiDpi::{GetDpiForMonitor, GetSystemMetricsForDpi, MDT_EFFECTIVE_DPI};
+    use windows::Win32::UI::WindowsAndMessaging::SM_CXSMICON;
+    let (mut dpi, mut vertical_dpi) = (0, 0);
+    // SAFETY: plain Win32 queries; the out-pointers are live locals.
+    unsafe {
+        let primary = MonitorFromPoint(POINT::default(), MONITOR_DEFAULTTOPRIMARY);
+        GetDpiForMonitor(primary, MDT_EFFECTIVE_DPI, &mut dpi, &mut vertical_dpi)?;
+        Ok(GetSystemMetricsForDpi(SM_CXSMICON, dpi).max(16) as u32)
+    }
+}
+
+/// The status item's image: the logo at [`TRAY_POINTS`] with a representation per scale, as AWT
+/// builds it from the JVM app's multi-resolution image.
+#[cfg(target_os = "macos")]
+fn status_item_image() -> anyhow::Result<objc2::rc::Retained<objc2::runtime::AnyObject>> {
+    use objc2::msg_send;
+    use objc2::rc::Retained;
+    use objc2::runtime::{AnyClass, AnyObject};
+    use objc2_core_foundation::CGSize;
+    let (Some(image_class), Some(rep_class), Some(data_class)) =
+        (AnyClass::get(c"NSImage"), AnyClass::get(c"NSBitmapImageRep"), AnyClass::get(c"NSData"))
+    else {
+        anyhow::bail!("tray icon: AppKit classes missing");
+    };
+    let points = CGSize { width: TRAY_POINTS.into(), height: TRAY_POINTS.into() };
+    // SAFETY: plain AppKit calls on the main thread; `init` hands back the one reference `alloc` made.
+    unsafe {
+        let allocated: *mut AnyObject = msg_send![image_class, alloc];
+        let image: *mut AnyObject = msg_send![allocated, initWithSize: points];
+        let image = Retained::from_raw(image).ok_or_else(|| anyhow::anyhow!("tray icon: no NSImage"))?;
+        for scale in TRAY_SCALES {
+            let side = (TRAY_POINTS * scale).ceil() as u32;
+            let mut png = Vec::new();
+            tray_logo(side)?.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)?;
+            let data: Retained<AnyObject> =
+                msg_send![data_class, dataWithBytes: png.as_ptr().cast::<std::ffi::c_void>(), length: png.len()];
+            let representation: Option<Retained<AnyObject>> = msg_send![rep_class, imageRepWithData: &*data];
+            let representation =
+                representation.ok_or_else(|| anyhow::anyhow!("tray icon: the {side} px raster did not decode"))?;
+            let _: () = msg_send![&*representation, setSize: points];
+            let _: () = msg_send![&*image, addRepresentation: &*representation];
+        }
+        Ok(image)
     }
 }
 
@@ -1067,18 +1217,26 @@ impl Tray {
         log: Logger,
     ) -> anyhow::Result<(Self, futures::channel::mpsc::UnboundedReceiver<TrayCommand>)> {
         use ksni::TrayMethods;
-        let image = image::load_from_memory(TRAY_PNG)?.into_rgba8();
-        let (width, height) = image.dimensions();
-        let argb = image.pixels().flat_map(|pixel| {
-            let [red, green, blue, alpha] = pixel.0;
-            [alpha, red, green, blue]
-        });
-        let icon = ksni::Icon { width: width as i32, height: height as i32, data: argb.collect() };
+        let mut sides: Vec<u32> = TRAY_LINUX_BASES
+            .iter()
+            .flat_map(|base| TRAY_SCALES.iter().map(move |scale| (base * scale).ceil() as u32))
+            .collect();
+        sides.sort_unstable();
+        sides.dedup();
+        let mut icons = Vec::with_capacity(sides.len());
+        for side in sides {
+            let logo = tray_logo(side)?;
+            let argb = logo.pixels().flat_map(|pixel| {
+                let [red, green, blue, alpha] = pixel.0;
+                [alpha, red, green, blue]
+            });
+            icons.push(ksni::Icon { width: side as i32, height: side as i32, data: argb.collect() });
+        }
         let (sender, receiver) = futures::channel::mpsc::unbounded();
         let state = std::sync::Arc::new(std::sync::Mutex::new(TrayState::default()));
         let available = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let handle = std::sync::Arc::new(std::sync::Mutex::new(None));
-        let sni = SniTray { state: state.clone(), commands: sender, available: available.clone(), icons: vec![icon] };
+        let sni = SniTray { state: state.clone(), commands: sender, available: available.clone(), icons };
         let (slot, registered) = (handle.clone(), available.clone());
         tokio.spawn(async move {
             match sni.spawn().await {

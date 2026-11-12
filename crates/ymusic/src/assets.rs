@@ -88,7 +88,7 @@ gpui_kit::assets::icon_assets!(
 /// SponsorBlock's mark (the JVM app's ic_sponsor_block), a monochrome icon tinted by its text color.
 pub const SPONSOR_BLOCK_ICON: &str = "brand/sponsor-block.svg";
 
-const LOGO_SVG: &str = include_str!("../assets/ymusic-logo.svg");
+pub const LOGO_SVG: &str = include_str!("../assets/ymusic-logo.svg");
 const LOGO_PREFIX: &str = "brand/ymusic-logo@";
 
 /// The app logo, full color, for `img()`, rasterized at `device_px` square: gpui draws an SVG image
