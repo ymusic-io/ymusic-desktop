@@ -1,0 +1,207 @@
+name: linux
+
+# The Linux packages: the .deb the JVM app's updater installs over its own, and an AppImage, for
+# x86_64 and arm64 (tools/package-linux.sh). Run by a release tag, as YMusicV4's release workflow
+# (git tag release-v4.1.0 && git push <remote> release-v4.1.0), or by hand from the Actions tab.
+# Everything builds in an ubuntu:22.04 container: the binaries then need glibc 2.35, not the runner's.
+on:
+  push:
+    tags: ['release-*', 'prerelease-*']
+  workflow_dispatch:
+    inputs:
+      ymusic_v4_ref:
+        description: YMusicV4 ref (C sources, engine bundles, strings, version line)
+        default: master
+      version_name:
+        description: versionName override (empty = YMusicV4's ymusic.versionName)
+        default: ''
+      version_code:
+        description: versionCode override (empty = YMusicV4's desktopVersionCode)
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  YMUSIC_V4_REPO: ymusic-io/YMusicV4
+  YMUSIC_V4_REF: ${{ inputs.ymusic_v4_ref || 'master' }}
+  # The ffmpeg-build commit YMusicV4's release links against; bumping it rebuilds each pack once.
+  FFMPEG_BUILD_REPO: ymusic-io/ffmpeg-build
+  FFMPEG_BUILD_REF: 4d2dc9ae0c73dc5f01733f18af070412013a6a93
+  RUST_TOOLCHAIN: 1.99.1
+  # Pinned AppImage tooling, checked by SHA-256 (appimagetool would otherwise fetch the runtime's
+  # moving "continuous" build).
+  APPIMAGETOOL_VERSION: '1.9.1'
+  APPIMAGE_RUNTIME_VERSION: '20251108'
+
+jobs:
+  # engine.js / player.js are YMusicV4's Gradle build (esbuild, then the Closure Compiler): on the
+  # runner, which has the JDK and the Android SDK that project's configuration expects.
+  engine-js:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: ${{ env.YMUSIC_V4_REPO }}
+          ref: ${{ env.YMUSIC_V4_REF }}
+          path: YMusicV4
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+      - uses: gradle/actions/setup-gradle@0b6dd653ba04f4f93bf581ec31e66cbd7dcb644d # v4
+      - working-directory: YMusicV4
+        run: ./gradlew -Pproduction=true :engine-js:closureJs :engine-js:closurePlayerJs
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: engine-js
+          path: |
+            YMusicV4/engine-js/build/dist/engine.js
+            YMusicV4/engine-js/build/dist/player.js
+          if-no-files-found: error
+
+  ffmpeg:
+    name: ffmpeg ${{ matrix.slug }}
+    runs-on: ${{ matrix.runner }}
+    container: ubuntu:22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { slug: linux-x86_64, runner: ubuntu-24.04 }
+          - { slug: linux-arm64, runner: ubuntu-24.04-arm }
+    steps:
+      - run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends git ca-certificates curl zstd \
+            build-essential nasm automake autoconf libtool pkg-config meson ninja-build python3 patchelf zlib1g-dev
+      - id: cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ffmpeg-build/out/${{ matrix.slug }}
+          key: ffmpeg-${{ matrix.slug }}-ubuntu22.04-${{ env.FFMPEG_BUILD_REF }}
+      - if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: ${{ env.FFMPEG_BUILD_REPO }}
+          ref: ${{ env.FFMPEG_BUILD_REF }}
+          path: ffmpeg-build
+          submodules: recursive
+          fetch-depth: 1
+      - if: steps.cache.outputs.cache-hit != 'true'
+        working-directory: ffmpeg-build
+        run: |
+          git config --global --add safe.directory '*'
+          scripts/build-desktop.sh || {
+            for log in .deps/.build/*/config.log; do
+              [ -f "$log" ] && { echo "::group::$log"; tail -n 80 "$log"; echo "::endgroup::"; }
+            done
+            exit 1
+          }
+
+  linux:
+    name: linux ${{ matrix.slug }}
+    needs: [engine-js, ffmpeg]
+    runs-on: ${{ matrix.runner }}
+    container: ubuntu:22.04
+    env:
+      # Only whether secrets.enc can be opened: the passphrase itself goes to the Restore secrets step alone.
+      HAS_SECRETS: ${{ secrets.SECRETS_PASSPHRASE != '' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { slug: linux-x86_64, runner: ubuntu-24.04, appimage: x86_64,
+              appimagetool_sha256: ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0,
+              runtime_sha256: 2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d }
+          - { slug: linux-arm64, runner: ubuntu-24.04-arm, appimage: aarch64,
+              appimagetool_sha256: f0837e7448a0c1e4e650a93bb3e85802546e60654ef287576f46c71c126a9158,
+              runtime_sha256: 00cbdfcf917cc6c0ff6d3347d59e0ca1f7f45a6df1a428a0d6d8a78664d87444 }
+    steps:
+      - run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends git ca-certificates curl zstd \
+            build-essential pkg-config patchelf file openssl libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
+            libxcb1-dev libfreetype-dev libfontconfig-dev libpulse-dev
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          path: ymusic-desktop
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: ${{ env.YMUSIC_V4_REPO }}
+          ref: ${{ env.YMUSIC_V4_REF }}
+          path: YMusicV4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: engine-js
+          path: YMusicV4/engine-js/build/dist
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ffmpeg-build/out/${{ matrix.slug }}
+          key: ffmpeg-${{ matrix.slug }}-ubuntu22.04-${{ env.FFMPEG_BUILD_REF }}
+          fail-on-cache-miss: true
+
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs |
+            sh -s -- -y --profile minimal --default-toolchain "$RUST_TOOLCHAIN"
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: cargo-${{ matrix.slug }}-${{ hashFiles('ymusic-desktop/Cargo.lock') }}
+          restore-keys: cargo-${{ matrix.slug }}-
+
+      - name: Fetch the AppImage tooling
+        run: |
+          mkdir -p "$RUNNER_TEMP/appimage"
+          cd "$RUNNER_TEMP/appimage"
+          curl -fsSL -o appimagetool "https://github.com/AppImage/appimagetool/releases/download/$APPIMAGETOOL_VERSION/appimagetool-${{ matrix.appimage }}.AppImage"
+          curl -fsSL -o runtime "https://github.com/AppImage/type2-runtime/releases/download/$APPIMAGE_RUNTIME_VERSION/runtime-${{ matrix.appimage }}"
+          printf '%s  appimagetool\n%s  runtime\n' "${{ matrix.appimagetool_sha256 }}" "${{ matrix.runtime_sha256 }}" | sha256sum -c -
+          chmod +x appimagetool
+
+      # YMusicV4's secrets.enc → secrets.properties, whose keys are the ones this build reads from
+      # secret.properties. Without SECRETS_PASSPHRASE the app builds on its defaults: embedded
+      # bundles, no service, no self-update, no Sentry.
+      - name: Restore secrets
+        if: env.HAS_SECRETS == 'true'
+        env:
+          SECRETS_PASSPHRASE: ${{ secrets.SECRETS_PASSPHRASE }}
+        run: |
+          YMusicV4/decrypt.sh -f
+          cp YMusicV4/secrets.properties ymusic-desktop/secret.properties
+
+      - name: Package the .deb and the AppImage
+        working-directory: ymusic-desktop
+        env:
+          VERSION_NAME: ${{ inputs.version_name }}
+          VERSION_CODE: ${{ inputs.version_code }}
+        run: |
+          [ -n "$VERSION_NAME" ] && export YMUSIC_VERSION_NAME="$VERSION_NAME"
+          [ -n "$VERSION_CODE" ] && export YMUSIC_VERSION_CODE="$VERSION_CODE"
+          APPIMAGETOOL="$RUNNER_TEMP/appimage/appimagetool" APPIMAGE_RUNTIME="$RUNNER_TEMP/appimage/runtime" \
+            tools/package-linux.sh --deb --appimage --out "$GITHUB_WORKSPACE/dist"
+
+      - name: Discard secrets
+        if: always()
+        run: rm -rf ymusic-desktop/secret.properties YMusicV4/secrets.properties YMusicV4/signing
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ matrix.slug }}-packages
+          path: |
+            dist/*.deb
+            dist/*.AppImage
+          if-no-files-found: error
