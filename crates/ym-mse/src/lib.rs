@@ -27,7 +27,8 @@ impl Default for Tone {
 }
 
 use std::ffi::{CStr, c_char, c_int, c_void};
-use std::sync::{Mutex, OnceLock};
+use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::{Arc, PoisonError, RwLock};
 
 unsafe extern "C" {
     fn mse_host_create() -> *mut c_void;
@@ -119,17 +120,28 @@ impl Drop for Presenter {
     }
 }
 
+/// Runs Rust code on a C caller's stack, where a panic must not unwind: the panic hook has
+/// already reported it, and only this call's work is lost.
+fn contain_panic(callback: impl FnOnce()) {
+    let _ = catch_unwind(AssertUnwindSafe(callback));
+}
+
 unsafe extern "C" fn on_cpu_frame(user: *mut c_void, width: c_int, height: c_int, bgra: *const u8) {
     if bgra.is_null() || width <= 0 || height <= 0 {
         return;
     }
+    // SAFETY: `user` is the box `Presenter::cpu` handed over, freed only by the later `release`.
     let sink = unsafe { &*user.cast::<FrameSink>() };
+    // SAFETY: CPU mode passes tightly packed BGRA rows that stay valid through this call.
     let pixels = unsafe { std::slice::from_raw_parts(bgra, width as usize * height as usize * 4) };
-    sink(width as u32, height as u32, pixels);
+    contain_panic(|| sink(width as u32, height as u32, pixels));
 }
 
 unsafe extern "C" fn release_cpu_sink(user: *mut c_void) {
-    drop(unsafe { Box::from_raw(user.cast::<FrameSink>()) });
+    // SAFETY: the sink's last call (or a failed create's cleanup): `user` is the box from
+    // `Presenter::cpu`, reclaimed exactly once.
+    let sink = unsafe { Box::from_raw(user.cast::<FrameSink>()) };
+    contain_panic(|| drop(sink));
 }
 
 /// One native MSE host. Attach it to the player's QuickJS runtime before the bundle evaluates;
@@ -209,26 +221,25 @@ impl Drop for MseHost {
     }
 }
 
-type EventSink = Box<dyn Fn(&str) + Send + Sync>;
-type LogSink = Box<dyn Fn(i32, &str) + Send + Sync>;
+type EventSink = Arc<dyn Fn(&str) + Send + Sync>;
+type LogSink = Arc<dyn Fn(i32, &str) + Send + Sync>;
 
-fn event_sink() -> &'static Mutex<Option<EventSink>> {
-    static SINK: OnceLock<Mutex<Option<EventSink>>> = OnceLock::new();
-    SINK.get_or_init(Mutex::default)
-}
+static EVENT_SINK: RwLock<Option<EventSink>> = RwLock::new(None);
+static LOG_SINK: RwLock<Option<LogSink>> = RwLock::new(None);
 
-fn log_sink() -> &'static Mutex<Option<LogSink>> {
-    static SINK: OnceLock<Mutex<Option<LogSink>>> = OnceLock::new();
-    SINK.get_or_init(Mutex::default)
+/// A clone of the current sink, so it runs without the lock held.
+fn current<T: ?Sized>(sink: &RwLock<Option<Arc<T>>>) -> Option<Arc<T>> {
+    sink.read().unwrap_or_else(PoisonError::into_inner).clone()
 }
 
 unsafe extern "C" fn on_event(name: *const c_char) {
     if name.is_null() {
         return;
     }
+    // SAFETY: C passes a NUL-terminated name that stays valid through this call.
     let name = unsafe { CStr::from_ptr(name) }.to_string_lossy();
-    if let Some(sink) = event_sink().lock().unwrap().as_ref() {
-        sink(&name);
+    if let Some(sink) = current(&EVENT_SINK) {
+        contain_panic(|| sink(&name));
     }
 }
 
@@ -236,20 +247,23 @@ unsafe extern "C" fn on_log(level: c_int, message: *const c_char) {
     if message.is_null() {
         return;
     }
+    // SAFETY: C passes a NUL-terminated line that stays valid through this call.
     let message = unsafe { CStr::from_ptr(message) }.to_string_lossy();
-    if let Some(sink) = log_sink().lock().unwrap().as_ref() {
-        sink(level, &message);
+    if let Some(sink) = current(&LOG_SINK) {
+        contain_panic(|| sink(level, &message));
     }
 }
 
 /// Process-wide: where C's host→JS events (`mse_ended`) go. The last setter wins.
 pub fn set_event_sink(sink: impl Fn(&str) + Send + Sync + 'static) {
-    *event_sink().lock().unwrap() = Some(Box::new(sink));
+    *EVENT_SINK.write().unwrap_or_else(PoisonError::into_inner) = Some(Arc::new(sink));
+    // SAFETY: `on_event` has the callback's C signature and lives for the process.
     unsafe { mse_host_set_js_event(Some(on_event)) };
 }
 
 /// Process-wide: C's notable lines, level 0 debug … 3 error. The last setter wins.
 pub fn set_log_sink(sink: impl Fn(i32, &str) + Send + Sync + 'static) {
-    *log_sink().lock().unwrap() = Some(Box::new(sink));
+    *LOG_SINK.write().unwrap_or_else(PoisonError::into_inner) = Some(Arc::new(sink));
+    // SAFETY: `on_log` has the callback's C signature and lives for the process.
     unsafe { mse_set_log_callback(Some(on_log)) };
 }
