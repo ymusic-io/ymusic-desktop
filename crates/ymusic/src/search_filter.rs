@@ -4,12 +4,15 @@
 use std::rc::Rc;
 
 use gpui_kit::component::button::{Button, ButtonVariants};
-use gpui_kit::component::{ActiveTheme, Disableable, Selectable, Sizable, StyledExt, WindowExt, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme, Selectable, Sizable, StyledExt, WindowExt, h_flex, v_flex};
 use gpui_kit::*;
 use ym_engine::yt::YtFilterGroup;
 use ym_i18n::{Str, t};
 
 use crate::a11y::FocusList;
+use crate::elevated_dialog::{
+    DEFAULT_WIDTH, ROW_HORIZONTAL, button_bar, chrome, press, scroll_body, text_button, title_bar,
+};
 
 type OnSelect = Rc<dyn Fn(String, &mut Window, &mut App)>;
 
@@ -38,12 +41,8 @@ impl SearchFilter {
                 focused_first: false,
             }
         });
-        let height = (f32::from(window.viewport_size().height) - 200.).clamp(200., 560.);
-        window.open_dialog(cx, move |dialog, _, _| {
-            dialog
-                .title(t(Str::SearchFilterTitle))
-                .width(px(460.))
-                .child(div().max_h(px(height)).flex().flex_col().child(view.clone()))
+        window.open_dialog(cx, move |dialog, window, _| {
+            chrome(dialog, DEFAULT_WIDTH, window).on_ok(|_, _, _| false).child(view.clone())
         });
     }
 }
@@ -53,7 +52,7 @@ impl Render for SearchFilter {
         let theme = cx.theme().clone();
         let mut stop = 0;
         let mut first_enabled = None;
-        let mut column = v_flex().px_2().pb_2();
+        let mut column = v_flex().w_full().px(px(ROW_HORIZONTAL)).pt_2().pb_4();
         for (group_index, group) in self.groups.iter().enumerate() {
             column = column.child(
                 div()
@@ -61,7 +60,7 @@ impl Render for SearchFilter {
                     .role(Role::Heading)
                     .pt_4()
                     .pb_2()
-                    .text_xs()
+                    .text_size(px(12.))
                     .font_bold()
                     .text_color(theme.muted_foreground)
                     .child(group.title.to_uppercase()),
@@ -70,23 +69,22 @@ impl Render for SearchFilter {
             for option in &group.options {
                 let params = option.params.clone();
                 let on_select = self.on_select.clone();
-                let mut pill = Button::new(("filter-option", stop))
+                let pill = Button::new(("filter-option", stop))
                     .small()
                     .rounded_full()
                     .label(option.label.clone())
-                    .selected(option.selected)
-                    .disabled(option.disabled);
-                pill = if option.selected { pill.primary() } else { pill.outline() };
-                let pill = pill.on_click(move |_, window, cx| {
+                    .selected(option.selected);
+                let pill = if option.selected { pill.primary() } else { pill.outline() };
+                let select = move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
                     window.close_dialog(cx);
                     if let Some(params) = params.clone() {
                         on_select(params, window, cx);
                     }
-                });
+                };
                 if first_enabled.is_none() && !option.disabled {
                     first_enabled = Some(stop);
                 }
-                pills = pills.child(self.focus.button(stop, pill, cx));
+                pills = pills.child(press(&self.focus, stop, pill, !option.disabled, select, cx));
                 stop += 1;
             }
             column = column.child(pills);
@@ -97,28 +95,18 @@ impl Render for SearchFilter {
             let first = self.focus.handle(first_enabled.unwrap_or(cancel), cx);
             window.defer(cx, move |window, cx| window.focus(&first, cx));
         }
+        let dismiss = press(
+            &self.focus,
+            cancel,
+            text_button("filter-cancel", t(Str::DialogCancel), false, true, cx),
+            true,
+            |_, window, cx| window.close_dialog(cx),
+            cx,
+        );
         self.focus
-            .container(v_flex().min_h_0(), 0..cancel + 1, cx)
-            .child(
-                div()
-                    .id("filter-groups")
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .track_scroll(&self.scroll)
-                    .child(column),
-            )
-            .child(
-                h_flex().justify_end().pt_2().child(
-                    self.focus.button(
-                        cancel,
-                        Button::new("filter-cancel")
-                            .small()
-                            .label(t(Str::DialogCancel))
-                            .on_click(|_, window, cx| window.close_dialog(cx)),
-                        cx,
-                    ),
-                ),
-            )
+            .container(v_flex().w_full(), 0..cancel + 1, cx)
+            .child(title_bar(t(Str::SearchFilterTitle), cx))
+            .child(scroll_body("filter-groups", &self.scroll, column, window, cx))
+            .child(button_bar(dismiss, cx))
     }
 }

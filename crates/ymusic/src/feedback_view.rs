@@ -6,12 +6,15 @@ use std::rc::Rc;
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{InputEvent, Textarea, TextareaState};
-use gpui_kit::component::{ActiveTheme, Disableable, Icon, Sizable, StyledExt, WindowExt, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme, Icon, Sizable, StyledExt, WindowExt, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use ym_i18n::{Str, t, tf};
 
-use crate::a11y::KeyboardFocusable;
+use crate::a11y::{FocusList, KeyboardFocusable};
+use crate::elevated_dialog::{
+    ConfirmDialog, DEFAULT_WIDTH, ROW_HORIZONTAL, button_bar, chrome, press, text_button, title_bar,
+};
 use crate::graph::{AppGraph, on_core};
 use crate::settings_view::HOVER_ALPHA;
 use crate::telemetry::{AppLogs, CRASH_REPORTS_KEY, crash_reports_allowed, feedback_available};
@@ -84,24 +87,18 @@ impl FeedbackView {
         if crash_reports_allowed(cx.global::<AppGraph>().settings.as_ref()) {
             return Some(MessageDialog::open(prefill, on_sent, window, cx));
         }
-        let prefill = std::cell::RefCell::new(prefill);
-        window.open_alert_dialog(cx, move |alert, _, _| {
-            let on_sent = on_sent.clone();
-            let prefill = prefill.borrow().clone();
-            alert
-                .title(t(Str::FeedbackReportsOffTitle))
-                .description(format!("{}\n\n{}", t(Str::FeedbackReportsOffMessage), t(Str::FeedbackReportsOffNote)))
-                .ok_text(t(Str::FeedbackContinue))
-                .cancel_text(t(Str::DialogCancel))
-                .show_cancel(true)
-                .on_ok(move |_, window, cx| {
-                    crate::settings_view::save_setting(CRASH_REPORTS_KEY, "true".to_owned(), cx);
-                    let (on_sent, prefill) = (on_sent.clone(), prefill.clone());
-                    window.defer(cx, move |window, cx| {
-                        MessageDialog::open(prefill, on_sent, window, cx);
-                    });
-                    true
-                })
+        ConfirmDialog::new(
+            t(Str::FeedbackReportsOffTitle),
+            t(Str::FeedbackReportsOffMessage),
+            t(Str::FeedbackContinue),
+        )
+        .note(t(Str::FeedbackReportsOffNote))
+        .open(window, cx, move |window, cx| {
+            crate::settings_view::save_setting(CRASH_REPORTS_KEY, "true".to_owned(), cx);
+            let (on_sent, prefill) = (on_sent.clone(), prefill.clone());
+            window.defer(cx, move |window, cx| {
+                MessageDialog::open(prefill, on_sent, window, cx);
+            });
         });
         None
     }
@@ -136,7 +133,7 @@ pub struct MessageDialog {
     message: Entity<TextareaState>,
     on_sent: Rc<dyn Fn(&mut App)>,
     focused: bool,
-    cancel: FocusHandle,
+    focus: FocusList,
     _subscription: Subscription,
 }
 
@@ -155,26 +152,17 @@ impl MessageDialog {
                     .default_value(prefill.unwrap_or_default())
             });
             let subscription = cx.subscribe_in(&message, window, |_: &mut Self, _, _: &InputEvent, _, cx| cx.notify());
-            Self { message, on_sent, focused: false, cancel: cx.focus_handle(), _subscription: subscription }
+            Self { message, on_sent, focused: false, focus: FocusList::modal(None, cx), _subscription: subscription }
         });
         let dialog_view = view.clone();
-        window.open_dialog(cx, move |dialog, _, _| {
+        window.open_dialog(cx, move |dialog, window, _| {
             let submit = dialog_view.clone();
-            dialog
-                .title(t(Str::FeedbackSentryTitle))
-                .width(px(480.))
-                .overlay_closable(false)
-                .child(dialog_view.clone())
-                .on_ok(move |_, window, cx| {
-                    submit.update(cx, |view, cx| {
-                        if view.cancel.is_focused(window) {
-                            window.close_dialog(cx);
-                        } else {
-                            view.send(window, cx);
-                        }
-                    });
+            chrome(dialog, DEFAULT_WIDTH, window).overlay_closable(false).child(dialog_view.clone()).on_ok(
+                move |_, window, cx| {
+                    submit.update(cx, |view, cx| view.send(window, cx));
                     false
-                })
+                },
+            )
         });
         view
     }
@@ -220,33 +208,45 @@ impl Render for MessageDialog {
         }
         let theme = cx.theme().clone();
         let blank = self.trimmed(cx).is_empty();
+        let buttons = h_flex()
+            .child(press(
+                &self.focus,
+                0,
+                text_button("feedback-message-cancel", t(Str::DialogCancel), false, true, cx),
+                true,
+                |_, window, cx| window.close_dialog(cx),
+                cx,
+            ))
+            .child(press(
+                &self.focus,
+                1,
+                text_button("feedback-message-send", t(Str::FeedbackSentrySend), true, !blank, cx),
+                !blank,
+                cx.listener(|view, _, window, cx| view.send(window, cx)),
+                cx,
+            ));
         v_flex()
-            .gap_2()
-            .px_4()
-            .pb_2()
-            .child(div().text_sm().text_color(theme.muted_foreground).child(t(Str::FeedbackSentryLabel)))
-            .child(Textarea::new(&self.message))
-            .child(div().text_xs().text_color(theme.muted_foreground).child(t(Str::FeedbackSentryNote)))
+            .w_full()
+            .child(title_bar(t(Str::FeedbackSentryTitle), cx))
             .child(
-                h_flex()
-                    .justify_end()
+                v_flex()
+                    .w_full()
+                    .px(px(ROW_HORIZONTAL))
+                    .py_2()
                     .gap_2()
-                    .pt_2()
                     .child(
-                        Button::new("feedback-message-cancel")
-                            .track_focus(&self.cancel)
-                            .outline()
-                            .label(t(Str::DialogCancel))
-                            .on_click(|_, window, cx| window.close_dialog(cx)),
+                        div().text_size(px(12.)).text_color(theme.muted_foreground).child(t(Str::FeedbackSentryLabel)),
                     )
+                    .child(Textarea::new(&self.message).aria_label(t(Str::FeedbackSentryLabel)))
                     .child(
-                        Button::new("feedback-message-send")
-                            .primary()
-                            .label(t(Str::FeedbackSentrySend))
-                            .disabled(blank)
-                            .on_click(cx.listener(|view, _, window, cx| view.send(window, cx))),
+                        div()
+                            .text_size(px(13.))
+                            .line_height(px(18.))
+                            .text_color(theme.muted_foreground)
+                            .child(t(Str::FeedbackSentryNote)),
                     ),
             )
+            .child(button_bar(buttons, cx))
     }
 }
 

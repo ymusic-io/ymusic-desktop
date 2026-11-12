@@ -19,13 +19,17 @@ use ym_i18n::{Str, t, tf};
 
 use crate::a11y::FocusList;
 use crate::action_icon::{HIT, action_icon};
+use crate::elevated_dialog::{ConfirmDialog, button_bar, chrome, press, scroll_body, text_button, title_bar};
 use crate::feed::{FeedSource, Navigate, error_text, thumb_for};
 use crate::graph::{AppGraph, on_core};
+use crate::settings_view::HOVER_ALPHA;
 use crate::spinner::Spinner;
 
 const LIKE: &str = "LIKE";
 const DISLIKE: &str = "DISLIKE";
 const INDIFFERENT: &str = "INDIFFERENT";
+/// The dialog's width: room for the description and the comment threads.
+const DIALOG_WIDTH: f32 = 720.;
 /// A comment box grows to this many rows, then scrolls.
 const COMMENT_MAX_ROWS: usize = 6;
 /// Rows of description shown until it is expanded.
@@ -95,13 +99,8 @@ impl VideoDetailsView {
     pub fn open(video_id: String, window: &mut Window, cx: &mut App) -> Entity<Self> {
         let view = cx.new(|cx| Self::new(video_id, window, cx));
         let panel = view.clone();
-        let height = (f32::from(window.viewport_size().height) - 200.).clamp(240., 760.);
-        window.open_dialog(cx, move |dialog, _, _| {
-            dialog
-                .title(t(Str::VideoDetails))
-                .width(px(720.))
-                .overlay_closable(false)
-                .child(div().h(px(height)).child(panel.clone()))
+        window.open_dialog(cx, move |dialog, window, _| {
+            chrome(dialog, DIALOG_WIDTH, window).overlay_closable(false).on_ok(|_, _, _| false).child(panel.clone())
         });
         view
     }
@@ -160,8 +159,11 @@ impl VideoDetailsView {
             this.update(cx, |view, cx| {
                 match result {
                     Some(Ok(details)) => {
-                        view.like_status =
-                            if details.like_status.is_empty() { INDIFFERENT.to_owned() } else { details.like_status.clone() };
+                        view.like_status = if details.like_status.is_empty() {
+                            INDIFFERENT.to_owned()
+                        } else {
+                            details.like_status.clone()
+                        };
                         if let Some(token) = details.comments_continuation.clone() {
                             view.reload_comments(token, cx);
                         }
@@ -338,32 +340,27 @@ impl VideoDetailsView {
     fn confirm_delete(&mut self, comment: YtComment, window: &mut Window, cx: &mut Context<Self>) {
         let Some(token) = comment.delete_token.clone() else { return };
         let view = cx.entity().downgrade();
-        window.open_alert_dialog(cx, move |alert, _, _| {
-            let (view, token, id) = (view.clone(), token.clone(), comment.id.clone());
-            alert
-                .title(t(Str::VideoDetailsDeleteTitle))
-                .description(t(Str::VideoDetailsDeleteMessage))
-                .ok_text(t(Str::VideoDetailsDelete))
-                .cancel_text(t(Str::DialogCancel))
-                .show_cancel(true)
-                .on_ok(move |_, window, cx| {
-                    let (token, id) = (token.clone(), id.clone());
-                    view.update(cx, |view, cx| {
-                        view.action(token, window, cx, move |view, failed, window| {
-                            if failed {
-                                return;
-                            }
-                            view.comments.comments.retain(|comment| comment.id != id);
-                            for list in view.replies.values_mut() {
-                                list.comments.retain(|comment| comment.id != id);
-                            }
-                            view.replies.remove(&id);
-                            let _ = window;
-                        });
-                    })
-                    .ok();
-                    true
-                })
+        ConfirmDialog::new(
+            t(Str::VideoDetailsDeleteTitle),
+            t(Str::VideoDetailsDeleteMessage),
+            t(Str::VideoDetailsDelete),
+        )
+        .open(window, cx, move |window, cx| {
+            let (token, id) = (token.clone(), comment.id.clone());
+            view.update(cx, |view, cx| {
+                view.action(token, window, cx, move |view, failed, window| {
+                    if failed {
+                        return;
+                    }
+                    view.comments.comments.retain(|comment| comment.id != id);
+                    for list in view.replies.values_mut() {
+                        list.comments.retain(|comment| comment.id != id);
+                    }
+                    view.replies.remove(&id);
+                    let _ = window;
+                });
+            })
+            .ok();
         });
     }
 
@@ -382,7 +379,8 @@ impl VideoDetailsView {
         self.replying_to = if self.replying_to.as_ref() == Some(&comment.id) { None } else { Some(comment.id.clone()) };
         self.post_error = None;
         if self.replying_to.is_some() {
-            let placeholder = comment.reply_placeholder.clone().unwrap_or_else(|| t(Str::VideoDetailsCommentHint).to_owned());
+            let placeholder =
+                comment.reply_placeholder.clone().unwrap_or_else(|| t(Str::VideoDetailsCommentHint).to_owned());
             self.reply_input.update(cx, |input, cx| {
                 input.set_value(String::new(), window, cx);
                 input.set_placeholder(placeholder, window, cx);
@@ -430,7 +428,8 @@ impl VideoDetailsView {
         let request = match draft {
             Draft::Comment => {
                 let Some(token) = self.header.as_ref().and_then(|header| header.create_token.clone()) else { return };
-                on_core(cx, async move { engine.create_comment(&token, &text, &log).await.map(Posted::Comment) }).boxed_local()
+                on_core(cx, async move { engine.create_comment(&token, &text, &log).await.map(Posted::Comment) })
+                    .boxed_local()
             }
             Draft::Reply => {
                 let Some(parent) = self.replying_to.as_ref().and_then(|id| self.find_comment(id)) else { return };
@@ -443,8 +442,11 @@ impl VideoDetailsView {
             Draft::Edit => {
                 let Some(comment) = self.editing.as_ref().and_then(|id| self.find_comment(id)) else { return };
                 let Some(token) = comment.edit_token.clone() else { return };
-                on_core(cx, async move { engine.edit_comment(&token, &text, &log).await.map(|_| Posted::Edit(comment.id)) })
-                    .boxed_local()
+                on_core(
+                    cx,
+                    async move { engine.edit_comment(&token, &text, &log).await.map(|_| Posted::Edit(comment.id)) },
+                )
+                .boxed_local()
             }
         };
         self.posting = Some(draft);
@@ -463,7 +465,8 @@ impl VideoDetailsView {
                                 Str::VideoDetailsPosted
                             }
                             Posted::Reply(parent, reply) => {
-                                let continuation = view.find_comment(&parent).and_then(|parent| parent.replies_continuation);
+                                let continuation =
+                                    view.find_comment(&parent).and_then(|parent| parent.replies_continuation);
                                 view.replies
                                     .entry(parent)
                                     .or_insert_with(|| CommentList { continuation, ..CommentList::default() })
@@ -516,9 +519,11 @@ impl VideoDetailsView {
         let frame = div().size(px(size)).flex_shrink_0().rounded_full().overflow_hidden().bg(cx.theme().secondary);
         match thumb_for(thumbs, (size * 2.) as i32) {
             Some(url) => frame.child(img(url).size_full().object_fit(ObjectFit::Cover)),
-            None => frame.flex().items_center().justify_center().child(
-                Icon::new(Lucide::User).size(px(size / 2.)).text_color(cx.theme().muted_foreground),
-            ),
+            None => frame
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(Icon::new(Lucide::User).size(px(size / 2.)).text_color(cx.theme().muted_foreground)),
         }
     }
 
@@ -550,7 +555,12 @@ impl VideoDetailsView {
                         .child(div().font_bold().text_center().line_clamp(2).child(factoid.value.clone()))
                         .when(!factoid.label.is_empty(), |cell| {
                             cell.child(
-                                div().text_xs().text_center().truncate().text_color(theme.muted_foreground).child(factoid.label.clone()),
+                                div()
+                                    .text_xs()
+                                    .text_center()
+                                    .truncate()
+                                    .text_color(theme.muted_foreground)
+                                    .child(factoid.label.clone()),
                             )
                         }),
                 );
@@ -565,14 +575,18 @@ impl VideoDetailsView {
                     .gap_4()
                     .items_center()
                     .rounded(px(8.))
-                    .when(url.is_some(), |row| row.cursor_pointer().hover(|style| style.bg(theme.secondary)))
+                    .when(url.is_some(), |row| {
+                        row.cursor_pointer().hover(|style| style.bg(theme.primary.opacity(HOVER_ALPHA)))
+                    })
                     .child(Self::avatar(&details.channel_thumbs, 40., cx))
                     .child(
                         v_flex()
                             .min_w_0()
                             .child(div().text_sm().font_semibold().truncate().child(name.clone()))
                             .when_some(details.subscribers.clone(), |column, subscribers| {
-                                column.child(div().text_xs().text_color(theme.muted_foreground).truncate().child(subscribers))
+                                column.child(
+                                    div().text_xs().text_color(theme.muted_foreground).truncate().child(subscribers),
+                                )
                             }),
                     )
                     .on_click(cx.listener(move |view, _, window, cx| {
@@ -584,8 +598,16 @@ impl VideoDetailsView {
         }
         let liked = self.like_status == LIKE;
         let disliked = self.like_status == DISLIKE;
-        let like_count = if liked { details.like_count_liked.clone().or(details.like_count.clone()) } else { details.like_count.clone() };
-        let like_label = [Some(t(Str::VideoDetailsLike).to_owned()), like_count.clone()].into_iter().flatten().collect::<Vec<_>>().join(", ");
+        let like_count = if liked {
+            details.like_count_liked.clone().or(details.like_count.clone())
+        } else {
+            details.like_count.clone()
+        };
+        let like_label = [Some(t(Str::VideoDetailsLike).to_owned()), like_count.clone()]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join(", ");
         let rating = Self::pill(cx)
             .child(
                 self.stop(
@@ -630,17 +652,19 @@ impl VideoDetailsView {
                     .bg(theme.secondary)
                     .child(div().text_sm().when(!open, |text| text.line_clamp(DESCRIPTION_LINES)).child(shown))
                     .when(long, |column| {
-                        column.child(self.stop(
-                            Button::new("details-description")
-                                .ghost()
-                                .xsmall()
-                                .label(t(if open { Str::ShowLess } else { Str::ShowMore }))
-                                .on_click(cx.listener(|view, _, _, cx| {
-                                    view.description_open = !view.description_open;
-                                    cx.notify();
-                                })),
-                            cx,
-                        ))
+                        column.child(
+                            self.stop(
+                                Button::new("details-description")
+                                    .ghost()
+                                    .xsmall()
+                                    .label(t(if open { Str::ShowLess } else { Str::ShowMore }))
+                                    .on_click(cx.listener(|view, _, _, cx| {
+                                        view.description_open = !view.description_open;
+                                        cx.notify();
+                                    })),
+                                cx,
+                            ),
+                        )
                     }),
             );
         }
@@ -703,7 +727,8 @@ impl VideoDetailsView {
     fn render_comment(&self, comment: &YtComment, indent: bool, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme().clone();
         let id = SharedString::from(format!("comment-{}", comment.id));
-        let byline = [comment.author.clone(), comment.published.clone()].into_iter().flatten().collect::<Vec<_>>().join(" · ");
+        let byline =
+            [comment.author.clone(), comment.published.clone()].into_iter().flatten().collect::<Vec<_>>().join(" · ");
         let author = comment.author.clone().zip(comment.author_channel_url.clone());
         let mut body = v_flex().flex_1().min_w_0().gap_1();
         if let Some(pinned) = &comment.pinned {
@@ -718,7 +743,8 @@ impl VideoDetailsView {
             );
         }
         let open_author = author.clone();
-        let byline_element = div().id(SharedString::from(format!("{id}-author"))).role(Role::Link).aria_label(byline.clone());
+        let byline_element =
+            div().id(SharedString::from(format!("{id}-author"))).role(Role::Link).aria_label(byline.clone());
         let byline_element = if open_author.is_some() { self.stop_item(byline_element, cx) } else { byline_element };
         body = body.child(
             byline_element
@@ -737,7 +763,9 @@ impl VideoDetailsView {
         if self.editing.as_ref() == Some(&comment.id) {
             body = body.child(self.render_field(Draft::Edit, cx));
         } else {
-            body = body.child(div().text_sm().child(self.text_of(comment))).child(self.render_actions(comment, !indent, cx));
+            body = body
+                .child(div().text_sm().child(self.text_of(comment)))
+                .child(self.render_actions(comment, !indent, cx));
         }
         let own = comment.edit_token.is_some() || comment.delete_token.is_some();
         let menu_comment = comment.clone();
@@ -754,27 +782,36 @@ impl VideoDetailsView {
             .when(own, |row| {
                 let index = self.next_stop();
                 let more_id = SharedString::from(format!("{id}-more"));
-                row.child(self.focus.wrap(
-                    index,
-                    action_icon(more_id, IconName::EllipsisVertical, t(Str::CdMore))
-                        .track_focus(&self.focus.handle(index, cx))
-                        .dropdown_menu_with_anchor(Anchor::TopRight, move |mut menu, _, _| {
-                            if menu_comment.edit_token.is_some() {
-                                let (view, comment) = (view.clone(), menu_comment.clone());
-                                menu = menu.item(PopupMenuItem::new(t(Str::VideoDetailsEdit)).on_click(move |_, window, cx| {
-                                    view.update(cx, |view, cx| view.start_edit(&comment, window, cx)).ok();
-                                }));
-                            }
-                            if menu_comment.delete_token.is_some() {
-                                let (view, comment) = (view.clone(), menu_comment.clone());
-                                menu = menu.item(PopupMenuItem::new(t(Str::VideoDetailsDelete)).on_click(move |_, window, cx| {
-                                    view.update(cx, |view, cx| view.confirm_delete(comment.clone(), window, cx)).ok();
-                                }));
-                            }
-                            menu
-                        }),
-                    cx,
-                ))
+                row.child(
+                    self.focus.wrap(
+                        index,
+                        action_icon(more_id, IconName::EllipsisVertical, t(Str::CdMore))
+                            .track_focus(&self.focus.handle(index, cx))
+                            .dropdown_menu_with_anchor(Anchor::TopRight, move |mut menu, _, _| {
+                                if menu_comment.edit_token.is_some() {
+                                    let (view, comment) = (view.clone(), menu_comment.clone());
+                                    menu = menu.item(PopupMenuItem::new(t(Str::VideoDetailsEdit)).on_click(
+                                        move |_, window, cx| {
+                                            view.update(cx, |view, cx| view.start_edit(&comment, window, cx)).ok();
+                                        },
+                                    ));
+                                }
+                                if menu_comment.delete_token.is_some() {
+                                    let (view, comment) = (view.clone(), menu_comment.clone());
+                                    menu = menu.item(PopupMenuItem::new(t(Str::VideoDetailsDelete)).on_click(
+                                        move |_, window, cx| {
+                                            view.update(cx, |view, cx| {
+                                                view.confirm_delete(comment.clone(), window, cx)
+                                            })
+                                            .ok();
+                                        },
+                                    ));
+                                }
+                                menu
+                            }),
+                        cx,
+                    ),
+                )
             })
             .into_any_element()
     }
@@ -792,47 +829,60 @@ impl VideoDetailsView {
         let mut row = h_flex().gap_1().items_center().text_xs().text_color(theme.muted_foreground);
         if can_like {
             let target = comment.clone();
-            let label = [Some(t(Str::VideoDetailsLike).to_owned()), count.clone()].into_iter().flatten().collect::<Vec<_>>().join(", ");
-            row = row.child(self.stop(
-                Button::new(SharedString::from(format!("like-{id}")))
-                    .ghost()
-                    .xsmall()
-                    .icon(Icon::new(Lucide::ThumbsUp))
-                    .when_some(count.clone(), |button, count| button.label(count))
-                    .selected(liked)
-                    .accessibility_label(label)
-                    .on_click(cx.listener(move |view, _, window, cx| view.rate_comment(&target, LIKE, window, cx))),
-                cx,
-            ));
+            let label = [Some(t(Str::VideoDetailsLike).to_owned()), count.clone()]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+                .join(", ");
+            row = row.child(
+                self.stop(
+                    Button::new(SharedString::from(format!("like-{id}")))
+                        .ghost()
+                        .xsmall()
+                        .icon(Icon::new(Lucide::ThumbsUp))
+                        .when_some(count.clone(), |button, count| button.label(count))
+                        .selected(liked)
+                        .accessibility_label(label)
+                        .on_click(cx.listener(move |view, _, window, cx| view.rate_comment(&target, LIKE, window, cx))),
+                    cx,
+                ),
+            );
         } else if let Some(count) = count {
-            row = row.child(h_flex().gap_1().items_center().child(Icon::new(Lucide::ThumbsUp).size(px(14.))).child(count));
+            row = row
+                .child(h_flex().gap_1().items_center().child(Icon::new(Lucide::ThumbsUp).size(px(14.))).child(count));
         }
         if can_dislike {
             let target = comment.clone();
-            row = row.child(self.stop(
-                Button::new(SharedString::from(format!("dislike-{id}")))
-                    .ghost()
-                    .xsmall()
-                    .icon(Icon::new(Lucide::ThumbsDown))
-                    .selected(disliked)
-                    .accessibility_label(t(Str::VideoDetailsDislike))
-                    .on_click(cx.listener(move |view, _, window, cx| view.rate_comment(&target, DISLIKE, window, cx))),
-                cx,
-            ));
+            row = row.child(
+                self.stop(
+                    Button::new(SharedString::from(format!("dislike-{id}")))
+                        .ghost()
+                        .xsmall()
+                        .icon(Icon::new(Lucide::ThumbsDown))
+                        .selected(disliked)
+                        .accessibility_label(t(Str::VideoDetailsDislike))
+                        .on_click(
+                            cx.listener(move |view, _, window, cx| view.rate_comment(&target, DISLIKE, window, cx)),
+                        ),
+                    cx,
+                ),
+            );
         }
         if comment.hearted {
             row = row.child(Icon::new(Lucide::Heart).size(px(14.)).text_color(theme.primary));
         }
         if replyable {
             let target = comment.clone();
-            row = row.child(self.stop(
-                Button::new(SharedString::from(format!("reply-{id}")))
-                    .ghost()
-                    .xsmall()
-                    .label(t(Str::VideoDetailsReply))
-                    .on_click(cx.listener(move |view, _, window, cx| view.open_reply(&target, window, cx))),
-                cx,
-            ));
+            row = row.child(
+                self.stop(
+                    Button::new(SharedString::from(format!("reply-{id}")))
+                        .ghost()
+                        .xsmall()
+                        .label(t(Str::VideoDetailsReply))
+                        .on_click(cx.listener(move |view, _, window, cx| view.open_reply(&target, window, cx))),
+                    cx,
+                ),
+            );
         }
         row.into_any_element()
     }
@@ -859,12 +909,16 @@ impl VideoDetailsView {
                     .gap_2()
                     .items_center()
                     .child(div().text_xs().child(error_text(error)))
-                    .child(self.stop(
-                        Button::new(id).ghost().xsmall().label(t(Str::Retry)).on_click(
-                            cx.listener(move |view, _, _, cx| view.load_more(retry.clone(), true, cx)),
+                    .child(
+                        self.stop(
+                            Button::new(id)
+                                .ghost()
+                                .xsmall()
+                                .label(t(Str::Retry))
+                                .on_click(cx.listener(move |view, _, _, cx| view.load_more(retry.clone(), true, cx))),
+                            cx,
                         ),
-                        cx,
-                    ))
+                    )
                     .into_any_element(),
             );
         }
@@ -873,12 +927,16 @@ impl VideoDetailsView {
         Some(
             div()
                 .pl(px(start))
-                .child(self.stop(
-                    Button::new(id).ghost().xsmall().label(label).on_click(
-                        cx.listener(move |view, _, _, cx| view.load_more(key.clone(), true, cx)),
+                .child(
+                    self.stop(
+                        Button::new(id)
+                            .ghost()
+                            .xsmall()
+                            .label(label)
+                            .on_click(cx.listener(move |view, _, _, cx| view.load_more(key.clone(), true, cx))),
+                        cx,
                     ),
-                    cx,
-                ))
+                )
                 .into_any_element(),
         )
     }
@@ -918,7 +976,9 @@ impl VideoDetailsView {
             if header.create_token.is_some() {
                 top = top.child(self.render_field(Draft::Comment, cx));
             } else {
-                top = top.child(div().text_sm().text_color(theme.muted_foreground).child(t(Str::VideoDetailsSignInToComment)));
+                top = top.child(
+                    div().text_sm().text_color(theme.muted_foreground).child(t(Str::VideoDetailsSignInToComment)),
+                );
             }
         }
         let mut column = v_flex().child(top);
@@ -936,14 +996,16 @@ impl VideoDetailsView {
                 };
                 let target = comment.clone();
                 column = column.child(
-                    div().pl(px(REPLY_INDENT)).child(self.stop(
-                        Button::new(SharedString::from(format!("replies-{}", comment.id)))
-                            .ghost()
-                            .xsmall()
-                            .label(label)
-                            .on_click(cx.listener(move |view, _, _, cx| view.toggle_replies(&target, cx))),
-                        cx,
-                    )),
+                    div().pl(px(REPLY_INDENT)).child(
+                        self.stop(
+                            Button::new(SharedString::from(format!("replies-{}", comment.id)))
+                                .ghost()
+                                .xsmall()
+                                .label(label)
+                                .on_click(cx.listener(move |view, _, _, cx| view.toggle_replies(&target, cx))),
+                            cx,
+                        ),
+                    ),
                 );
             }
             if let Some(list) = self.replies.get(&comment.id) {
@@ -960,7 +1022,8 @@ impl VideoDetailsView {
         if let Some(footer) = self.render_footer(ListKey::Top, Some(t(Str::ShowMore)), cx) {
             column = column.child(footer);
         } else if self.header.is_some() && self.comments.comments.is_empty() {
-            column = column.child(div().p_4().text_sm().text_color(theme.muted_foreground).child(t(Str::VideoDetailsNoComments)));
+            column = column
+                .child(div().p_4().text_sm().text_color(theme.muted_foreground).child(t(Str::VideoDetailsNoComments)));
         }
         column
     }
@@ -975,27 +1038,45 @@ impl Render for VideoDetailsView {
             window.defer(cx, move |window, cx| window.focus(&first, cx));
         }
         let body = match (self.details.clone(), &self.details_error) {
-            (Some(details), _) => {
-                v_flex().child(self.render_header(&details, cx)).child(self.render_comments(&details, cx)).into_any_element()
-            }
+            (Some(details), _) => v_flex()
+                .child(self.render_header(&details, cx))
+                .child(self.render_comments(&details, cx))
+                .into_any_element(),
             (None, Some(error)) => v_flex()
                 .min_h(px(240.))
                 .items_center()
                 .justify_center()
                 .gap_3()
                 .child(div().text_center().child(error_text(error)))
-                .child(self.stop(
-                    Button::new("details-retry").label(t(Str::Retry)).on_click(cx.listener(|view, _, _, cx| view.load(cx))),
-                    cx,
-                ))
+                .child(
+                    self.stop(
+                        Button::new("details-retry")
+                            .label(t(Str::Retry))
+                            .on_click(cx.listener(|view, _, _, cx| view.load(cx))),
+                        cx,
+                    ),
+                )
                 .into_any_element(),
-            (None, None) => h_flex().min_h(px(240.)).justify_center().items_center().child(Spinner::new().large()).into_any_element(),
+            (None, None) => h_flex()
+                .min_h(px(240.))
+                .justify_center()
+                .items_center()
+                .child(Spinner::new().large())
+                .into_any_element(),
         };
-        let stops = self.next_stop.get();
-        self.focus.container(
-            div().id("video-details").size_full().overflow_y_scroll().track_scroll(&self.scroll).pb_4().child(body),
-            0..stops,
+        let close = press(
+            &self.focus,
+            self.next_stop(),
+            text_button("details-close", t(Str::CdClose), true, true, cx),
+            true,
+            |_, window, cx| window.close_dialog(cx),
             cx,
-        )
+        );
+        let stops = self.next_stop.get();
+        self.focus
+            .container(v_flex().id("video-details").w_full(), 0..stops, cx)
+            .child(title_bar(t(Str::VideoDetails), cx))
+            .child(scroll_body("video-details-body", &self.scroll, div().w_full().pb_4().child(body), window, cx))
+            .child(button_bar(close, cx))
     }
 }
