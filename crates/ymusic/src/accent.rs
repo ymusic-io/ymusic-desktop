@@ -275,7 +275,7 @@ impl Render for AccentPicker {
                     stops + 2,
                     &self.hue_slider,
                     SliderStop::new("accent-hue", name),
-                    Slider::new(&self.hue_slider).accessibility_label(name),
+                    Slider::new(&self.hue_slider).bg(picked.hsla()).accessibility_label(name),
                     cx,
                 )))
                 .child(
