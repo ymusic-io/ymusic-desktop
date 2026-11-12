@@ -89,6 +89,10 @@ impl MiniPlayer {
                     };
                     player.seek.update(cx, |slider, cx| slider.set_value(fraction, window, cx));
                 }
+                if player.volume.read(cx).value().end() != shown.volume {
+                    let volume = shown.volume;
+                    player.volume.update(cx, |slider, cx| slider.set_value(volume, window, cx));
+                }
                 player.shown = Some(shown);
                 cx.notify();
             }),
