@@ -20,7 +20,9 @@ pub use video::{VulkanImageAccess, VulkanImageState, VulkanVideoFormat, VulkanVi
     not(target_family = "wasm"),
     any(target_os = "linux", target_os = "freebsd")
 ))]
-pub use vulkan_video::{VideoQueueFamily, VulkanDeviceShare, vulkan_device_share};
+pub use vulkan_video::{
+    VideoQueueFamily, VulkanDeviceShare, on_vulkan_device_share, vulkan_device_share,
+};
 pub use wgpu;
 pub use wgpu_atlas::*;
 pub use wgpu_context::*;

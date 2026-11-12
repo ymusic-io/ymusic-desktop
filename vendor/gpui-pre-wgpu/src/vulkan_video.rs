@@ -102,12 +102,25 @@ impl Drop for QueueGuard<'_> {
     }
 }
 
+type ShareListener = Box<dyn Fn(Option<Arc<VulkanDeviceShare>>) + Send + Sync>;
+
 static SHARE: Mutex<Option<Arc<VulkanDeviceShare>>> = Mutex::new(None);
+static LISTENER: Mutex<Option<ShareListener>> = Mutex::new(None);
 static GENERATION: AtomicU64 = AtomicU64::new(0);
 
 /// The current device gpui renders with, when it decodes video.
 pub fn vulkan_device_share() -> Option<Arc<VulkanDeviceShare>> {
     SHARE.lock().clone()
+}
+
+/// Calls `listener` with the current [`vulkan_device_share`] now, then with each device gpui
+/// opens later (a recovery after a device loss), on the thread that opens it.
+pub fn on_vulkan_device_share(
+    listener: impl Fn(Option<Arc<VulkanDeviceShare>>) + Send + Sync + 'static,
+) {
+    let mut slot = LISTENER.lock();
+    listener(vulkan_device_share());
+    *slot = Some(Box::new(listener));
 }
 
 struct Plan {
@@ -306,7 +319,11 @@ pub(crate) fn publish(adapter: &wgpu::Adapter, device: &Arc<wgpu::Device>, queue
             share.queue_families
         );
     }
-    *SHARE.lock() = share.map(Arc::new);
+    let share = share.map(Arc::new);
+    *SHARE.lock() = share.clone();
+    if let Some(listener) = LISTENER.lock().as_ref() {
+        listener(share);
+    }
 }
 
 fn describe(
