@@ -57,6 +57,20 @@ pub fn init(cx: &mut App) {
     cx.set_global(RovingItems::default());
 }
 
+/// `view` laid out at `style` and drawn from its last frame until it notifies. While an assistive
+/// client is connected it draws every frame instead: gpui builds the accessibility tree in prepaint,
+/// which a reused view skips, so its nodes and the focus would drop out of the tree.
+pub fn cached_view(view: impl Into<AnyView>, style: StyleRefinement, window: &Window) -> AnyElement {
+    let view = view.into();
+    if window.is_a11y_active() {
+        let mut frame = div();
+        *frame.style() = style;
+        frame.child(view).into_any_element()
+    } else {
+        view.cached(style).into_any_element()
+    }
+}
+
 /// Paint this first in the window (before any stop) so stops from earlier frames drop out.
 pub fn frame_marker() -> impl IntoElement {
     canvas(

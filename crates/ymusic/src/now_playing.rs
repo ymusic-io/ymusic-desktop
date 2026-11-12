@@ -1391,7 +1391,7 @@ impl NowPlaying {
         .size_0()
     }
 
-    fn cached_part(&mut self, part: PanePart, cx: &mut Context<Self>) -> AnyElement {
+    fn cached_part(&mut self, part: PanePart, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let slot = match part {
             PanePart::TopBar => 0,
             PanePart::Queue { .. } => 1,
@@ -1428,7 +1428,7 @@ impl NowPlaying {
             style.flex_basis = Some(relative(0.).into());
             style.min_size.height = Some(px(0.).into());
         }
-        entity.cached(style).into_any_element()
+        crate::a11y::cached_view(entity, style, window)
     }
 
     fn render_queue(&self, large: bool, cx: &mut Context<Self>) -> AnyElement {
@@ -1595,10 +1595,10 @@ impl Render for NowPlaying {
         let viewport = window.viewport_size();
         let (width, height) = (f32::from(viewport.width), f32::from(viewport.height));
         let theme = cx.theme().clone();
-        let top_bar = self.cached_part(PanePart::TopBar, cx);
+        let top_bar = self.cached_part(PanePart::TopBar, window, cx);
         if width > height && width >= 640. {
             let pane = (0.3 * width).clamp(320., 480.);
-            let queue = self.cached_part(PanePart::Queue { large: pane >= 380. }, cx);
+            let queue = self.cached_part(PanePart::Queue { large: pane >= 380. }, window, cx);
             let video = self.render_video(&current, true, cx);
             return h_flex()
                 .size_full()
@@ -1618,7 +1618,7 @@ impl Render for NowPlaying {
                 .into_any_element();
         }
         let video = self.render_video(&current, false, cx);
-        let queue = self.cached_part(PanePart::Queue { large: false }, cx);
+        let queue = self.cached_part(PanePart::Queue { large: false }, window, cx);
         let artist = self.artist_line(STOP_CHANNEL, &current, cx);
         v_flex()
             .size_full()

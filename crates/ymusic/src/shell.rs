@@ -1448,28 +1448,30 @@ impl Shell {
     }
 
     /// The section's root surface (below its top bar).
-    fn root_content(&mut self, cx: &mut Context<Self>) -> AnyElement {
+    fn root_content(&mut self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         match self.section {
-            Section::Discover if self.discover_tab == DiscoverTab::Account => page(self.account_view(cx)),
-            Section::Discover => page(self.root(self.discover_tab.source(), cx)),
-            Section::YtMusic if self.music_tab == MusicTab::Library => page(self.music_library_view(cx)),
-            Section::YtMusic => page(self.root(self.music_tab.source(), cx)),
-            Section::Library => page(self.library_view(cx)),
-            Section::PlayAgain => page(self.play_again_view(cx)),
-            Section::Downloads => page(self.downloads_view(cx)),
-            Section::Feedback => page(self.feedback.get_or_insert_with(|| cx.new(|_| FeedbackView::new())).clone()),
-            Section::Settings => page(self.settings_view(cx)),
+            Section::Discover if self.discover_tab == DiscoverTab::Account => page(self.account_view(cx), window),
+            Section::Discover => page(self.root(self.discover_tab.source(), cx), window),
+            Section::YtMusic if self.music_tab == MusicTab::Library => page(self.music_library_view(cx), window),
+            Section::YtMusic => page(self.root(self.music_tab.source(), cx), window),
+            Section::Library => page(self.library_view(cx), window),
+            Section::PlayAgain => page(self.play_again_view(cx), window),
+            Section::Downloads => page(self.downloads_view(cx), window),
+            Section::Feedback => {
+                page(self.feedback.get_or_insert_with(|| cx.new(|_| FeedbackView::new())).clone(), window)
+            }
+            Section::Settings => page(self.settings_view(cx), window),
             Section::Donate | Section::Telegram => div().into_any_element(),
         }
     }
 
     /// The top layer with its own bar, or the section's bar over its root.
-    fn render_main(&mut self, rail_mode: bool, wide: bool, cx: &mut Context<Self>) -> AnyElement {
+    fn render_main(&mut self, rail_mode: bool, wide: bool, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let top = self.stacks.get(&self.section).and_then(|stack| stack.pushed.last());
         match top {
-            Some(Layer::Search(view)) => return page(view.clone()),
-            Some(Layer::LibrarySearch(view)) => return page(view.clone()),
-            Some(Layer::SignIn(view)) => return page(view.clone()),
+            Some(Layer::Search(view)) => return page(view.clone(), window),
+            Some(Layer::LibrarySearch(view)) => return page(view.clone(), window),
+            Some(Layer::SignIn(view)) => return page(view.clone(), window),
             Some(Layer::Feed { view, title }) => {
                 let view = view.clone();
                 // A channel's name arrives with its page header.
@@ -1483,7 +1485,7 @@ impl Shell {
                 return v_flex()
                     .size_full()
                     .child(self.detail_bar(title, None, None, cx))
-                    .child(div().flex_1().min_h_0().child(page(view)))
+                    .child(div().flex_1().min_h_0().child(page(view, window)))
                     .into_any_element();
             }
             Some(Layer::Results { view, query }) => {
@@ -1492,12 +1494,12 @@ impl Shell {
                 return v_flex()
                     .size_full()
                     .child(self.detail_bar(query.clone().into(), Some(query), filter, cx))
-                    .child(div().flex_1().min_h_0().child(page(view)))
+                    .child(div().flex_1().min_h_0().child(page(view, window)))
                     .into_any_element();
             }
             None => {}
         }
-        let content = self.root_content(cx);
+        let content = self.root_content(window, cx);
         let tab_row = match self.section {
             Section::Discover if !wide => Some(self.discover_tabs(false, cx)),
             Section::YtMusic => Some(self.music_tabs(cx)),
@@ -2069,7 +2071,7 @@ impl Render for Shell {
         } else if let Some(view) = signing_in {
             view.into_any_element()
         } else {
-            let main = self.render_main(rail_mode, wide, cx);
+            let main = self.render_main(rail_mode, wide, window, cx);
             h_flex()
                 .size_full()
                 .when(rail_mode, |row| row.child(self.render_rail(expanded, cx)))
@@ -2090,11 +2092,11 @@ impl Render for Shell {
 
 /// A page view drawn from its last frame until it notifies: the player bar's progress ticks redraw
 /// the shell around it four times a second.
-fn page<V: Render>(view: Entity<V>) -> AnyElement {
+fn page<V: Render>(view: Entity<V>, window: &Window) -> AnyElement {
     let mut style = StyleRefinement::default();
     style.size.width = Some(relative(1.).into());
     style.size.height = Some(relative(1.).into());
-    view.cached(style).into_any_element()
+    crate::a11y::cached_view(view, style, window)
 }
 
 /// Writes a setting off the UI thread; a failed write is logged, the UI state stands.
