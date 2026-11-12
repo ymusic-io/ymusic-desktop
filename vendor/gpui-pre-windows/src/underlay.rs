@@ -267,11 +267,13 @@ impl UnderlayVisuals {
     }
 }
 
+/// Whole pixels covering `bounds`: the black backing also fills the pixels gpui's antialiased
+/// edges leave partly transparent around the box.
 fn snap(bounds: Bounds<f32>) -> Bounds<f32> {
-    let left = bounds.origin.x.round();
-    let top = bounds.origin.y.round();
-    let right = (bounds.origin.x + bounds.size.width).round();
-    let bottom = (bounds.origin.y + bounds.size.height).round();
+    let left = bounds.origin.x.floor();
+    let top = bounds.origin.y.floor();
+    let right = (bounds.origin.x + bounds.size.width).ceil();
+    let bottom = (bounds.origin.y + bounds.size.height).ceil();
     Bounds {
         origin: gpui::point(left, top),
         size: gpui::size(right - left, bottom - top),
