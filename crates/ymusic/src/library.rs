@@ -1342,7 +1342,7 @@ pub fn song_cell<V: SongMenuHost>(
         .items_start()
         .cursor_pointer()
         .rounded(px(10.))
-        .hover(|style| style.bg(theme.secondary))
+        .hover(|style| style.bg(theme.primary.opacity(crate::settings_view::HOVER_ALPHA)))
         .child(LibraryView::thumb(
             if item.video_codec.is_some() { Lucide::Film } else { Lucide::Music },
             crate::local_art::art_url(item, crate::local_art::ROW_PX),
@@ -1439,7 +1439,7 @@ impl LibraryView {
             .aria_label(label)
             .cursor_pointer()
             .rounded(px(10.))
-            .hover(|style| style.bg(theme.secondary))
+            .hover(|style| style.bg(theme.primary.opacity(crate::settings_view::HOVER_ALPHA)))
             .when(dimmed, |card| card.opacity(0.4));
         if grid {
             base.flex()
@@ -1545,7 +1545,7 @@ impl LibraryView {
             .px_1()
             .rounded(px(6.))
             .cursor_pointer()
-            .hover(|style| style.bg(theme.secondary))
+            .hover(|style| style.bg(theme.primary.opacity(crate::settings_view::HOVER_ALPHA)))
             .text_sm()
             .truncate()
             .child(label)
