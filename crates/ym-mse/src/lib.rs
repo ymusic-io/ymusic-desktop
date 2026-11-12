@@ -1,8 +1,15 @@
 //! YMusicV4's C Media Source host for the player bundle's `__mse*` natives: demux, decode, the
 //! A/V clock and audio output all live in C; this crate owns one host and its process hooks.
 
+#[cfg(target_os = "linux")]
+mod frames;
 mod local;
 
+#[cfg(target_os = "linux")]
+pub use frames::{
+    Matrix, Picture, PictureKind, PlaneLayout, QueueFamily, QueueLock, VulkanDevice, VulkanFormat, VulkanImageState,
+    decode_on_vulkan,
+};
 pub use local::{Frame, LocalAv, Probe, attached_picture, probe, video_frame};
 
 /// EQ bands' centre frequencies, Hz.
@@ -83,8 +90,8 @@ pub struct CompositionSink {
     pub swap_chain: Box<dyn Fn(SwapChain) + Send + Sync>,
 }
 
-/// Video output: an `AVSampleBufferDisplayLayer` (zero-copy VideoToolbox frames on macOS), or
-/// BGRA pictures handed to a [`FrameSink`].
+/// Video output: an `AVSampleBufferDisplayLayer` (zero-copy VideoToolbox frames on macOS),
+/// pictures as decoded for the app's renderer (Linux), or BGRA pictures handed to a [`FrameSink`].
 pub struct Presenter {
     /// One reference to a live C presenter, released in `Drop`.
     raw: *mut c_void,

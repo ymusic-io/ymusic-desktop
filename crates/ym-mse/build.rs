@@ -17,7 +17,8 @@ const COMMON_C: &[&str] = &[
 ];
 const APPLE_C: &[&str] = &["mse_vt_blit.c", "vpresent_vt.c", "vpipe_hw_vt.c"];
 // libpulse-simple is dlopen'd by aq_pulse.c; only its headers are needed at build time.
-const LINUX_C: &[&str] = &["aq_pulse.c", "mse_hwdev.c", "vpipe_hw_linux.c"];
+// mse_hwdev_vk.c and vpresent_frames.c take the Vulkan headers (libvulkan-dev).
+const LINUX_C: &[&str] = &["aq_pulse.c", "mse_hwdev.c", "mse_hwdev_vk.c", "vpipe_hw_linux.c", "vpresent_frames.c"];
 const WINDOWS_C: &[&str] = &["mse_d3d11.c", "mse_d3d11_dec.c", "vpresent_d3d11.c", "vpipe_hw_d3d11.c", "aq_winmm.c"];
 // d3dcompiler compiles the NV12 shader at runtime, dxguid has the IID_* symbols, winmm is waveOut*.
 const WINDOWS_LIBS: &[&str] = &["d3d11", "dxgi", "d3dcompiler", "dxguid", "winmm"];
