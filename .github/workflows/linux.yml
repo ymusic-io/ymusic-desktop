@@ -129,7 +129,7 @@ jobs:
           apt-get update
           DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends git ca-certificates curl zstd \
             build-essential pkg-config patchelf file openssl libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
-            libxcb1-dev libfreetype-dev libfontconfig-dev libpulse-dev
+            libxcb1-dev libfreetype-dev libfontconfig-dev libpulse-dev libvulkan-dev
 
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
