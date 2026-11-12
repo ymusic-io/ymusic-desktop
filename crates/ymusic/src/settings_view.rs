@@ -28,6 +28,8 @@ use crate::sponsor_block::SPONSOR_BLOCK_KEY;
 use crate::telemetry::STATS_KEY;
 
 pub const THEME_KEY: &str = "app.theme";
+/// The JVM app's hover: the accent at Material's hover alpha (its `AccentRipple`).
+pub const HOVER_ALPHA: f32 = 0.08;
 pub const LANGUAGE_KEY: &str = "app.uiLanguage";
 const CRASH_REPORTS_KEY: &str = "telemetry.crashReports";
 const AUTO_UPDATE_KEY: &str = "update.autoDownload";
@@ -94,9 +96,8 @@ fn apply_theme(choice: &str, accent: &str, cx: &mut App) {
         theme.secondary_foreground = palette.ink;
         theme.muted = palette.placeholder;
         theme.input = palette.outline;
-        // The JVM app's hovers are the accent at Material's 8% hover alpha; the kit halves this
-        // token on a dark ghost button.
-        theme.accent = accent.opacity(if theme.mode.is_dark() { 0.16 } else { 0.08 });
+        // The kit halves this token on a dark ghost button.
+        theme.accent = accent.opacity(if theme.mode.is_dark() { 2. * HOVER_ALPHA } else { HOVER_ALPHA });
         theme.accent_foreground = palette.ink;
         // Adwaita's faint window outline. Corners stay square: gpui clips content to rectangles, so
         // a rounded frame needs every surface touching a bottom corner rounded too.

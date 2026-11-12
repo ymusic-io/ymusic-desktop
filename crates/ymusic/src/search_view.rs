@@ -14,6 +14,7 @@ use ym_i18n::{Str, t};
 use crate::a11y::FocusList;
 use crate::action_icon::action_icon;
 use crate::graph::{AppGraph, on_core};
+use crate::settings_view::HOVER_ALPHA;
 
 const SUGGEST_DEBOUNCE: Duration = Duration::from_millis(250);
 const HISTORY_KEY: &str = "search.history";
@@ -128,7 +129,7 @@ impl SearchView {
             .pr_2()
             .py_1()
             .cursor_pointer()
-            .hover(|style| style.bg(theme.secondary))
+            .hover(|style| style.bg(theme.primary.opacity(HOVER_ALPHA)))
             .child(icon.text_color(theme.muted_foreground))
             .child(div().flex_1().min_w_0().truncate().text_sm().child(text.to_owned()))
             .child(

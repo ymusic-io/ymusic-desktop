@@ -24,6 +24,7 @@ use crate::local_playlist::LocalPlaylistFromDownloads;
 use crate::offline::{OfflineMarks, offline_mark};
 use crate::playlist_download::PlaylistDownload;
 use crate::quick_download::saved_preset;
+use crate::settings_view::HOVER_ALPHA;
 use crate::spinner::{BusyButton, LoadingLine, Spinner};
 use crate::tab_row::tab_row;
 
@@ -1241,7 +1242,7 @@ impl FeedView {
             .aria_label(item_label(item, self.downloaded(item, cx)))
             .cursor_pointer()
             .rounded(px(12.))
-            .hover(|style| style.bg(theme.secondary))
+            .hover(|style| style.bg(theme.primary.opacity(HOVER_ALPHA)))
             .on_click(cx.listener(move |view, _, _, cx| {
                 let queue =
                     queue.as_ref().map(|items| items.iter().filter(|item| item.kind == "video").cloned().collect());

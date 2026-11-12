@@ -8,6 +8,7 @@ use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 
 use crate::a11y::{DragRow, FocusList};
+use crate::settings_view::HOVER_ALPHA;
 
 pub fn tab_row(
     id: &'static str,
@@ -36,7 +37,7 @@ pub fn tab_row(
                 .cursor_pointer()
                 .rounded(px(6.))
                 .text_sm()
-                .hover(|style| style.bg(theme.secondary))
+                .hover(|style| style.bg(theme.primary.opacity(HOVER_ALPHA)))
                 .when(active, |tab| tab.font_semibold().text_color(theme.foreground))
                 .when(!active, |tab| tab.text_color(theme.muted_foreground))
                 .child(label)

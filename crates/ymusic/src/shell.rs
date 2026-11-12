@@ -30,6 +30,7 @@ use crate::play_again::{PlayAgainView, ResumeQueue};
 use crate::play_history::HistoryRecorder;
 use crate::playback::{Playback, QueueItem};
 use crate::search_view::{SearchEvent, SearchMode, SearchView};
+use crate::settings_view::HOVER_ALPHA;
 use crate::settings_view::{LocaleChanged, SettingsView};
 use crate::signin::AccountChanged;
 use crate::signin_dialog::{SignInEvent, SignInView};
@@ -1698,7 +1699,7 @@ impl Shell {
                 .relative()
                 .cursor_pointer()
                 .rounded(px(10.))
-                .hover(|style| style.bg(theme.secondary))
+                .hover(|style| style.bg(theme.primary.opacity(HOVER_ALPHA)))
                 .child(Icon::new(tab.icon()).text_color(if selected { theme.primary } else { theme.muted_foreground }))
                 .when(selected, |cell| {
                     cell.child(div().absolute().bottom_0().left_2().right_2().h(px(2.)).bg(theme.primary))
@@ -1780,7 +1781,7 @@ impl Shell {
             .cursor_pointer()
             .relative()
             .when(selected, |entry| entry.bg(theme.secondary))
-            .hover(|style| style.bg(theme.secondary))
+            .hover(|style| style.bg(theme.primary.opacity(HOVER_ALPHA)))
             .on_click(cx.listener(move |shell, _, _, cx| shell.select_section(section, cx)));
         let position = Section::groups(self.guest).iter().flatten().position(|entry| *entry == section);
         let entry = self.nav_focus.item(position.unwrap_or(0), entry, cx);

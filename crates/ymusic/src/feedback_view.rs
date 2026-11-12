@@ -13,6 +13,7 @@ use ym_i18n::{Str, t, tf};
 
 use crate::a11y::KeyboardFocusable;
 use crate::graph::{AppGraph, on_core};
+use crate::settings_view::HOVER_ALPHA;
 use crate::telemetry::{AppLogs, CRASH_REPORTS_KEY, crash_reports_allowed, feedback_available};
 
 const FEEDBACK_EMAIL: &str = "feedback@ymusic.io";
@@ -299,7 +300,7 @@ impl Render for FeedbackView {
                 .border_1()
                 .border_color(theme.border)
                 .cursor_pointer()
-                .hover(|style| style.bg(theme.secondary))
+                .hover(|style| style.bg(theme.primary.opacity(HOVER_ALPHA)))
                 .child(
                     div()
                         .size(px(40.))
@@ -396,7 +397,7 @@ impl Render for FeedbackView {
                         .text_sm()
                         .font_semibold()
                         .text_color(theme.primary)
-                        .hover(|style| style.bg(theme.secondary))
+                        .hover(|style| style.bg(theme.primary.opacity(HOVER_ALPHA)))
                         .child(t(Str::FeedbackSentryLink))
                         .on_click(cx.listener(|view, _, window, cx| {
                             view.write_message(None, window, cx);

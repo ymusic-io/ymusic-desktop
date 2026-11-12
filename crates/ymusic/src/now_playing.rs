@@ -1570,7 +1570,7 @@ impl NowPlaying {
                     .items_center()
                     .cursor_pointer()
                     .when(active, |row| row.bg(theme.primary.opacity(0.1)))
-                    .hover(|style| style.bg(theme.primary.opacity(0.08)))
+                    .hover(|style| style.bg(theme.primary.opacity(crate::settings_view::HOVER_ALPHA)))
                     .when(dragging == Some(position), |row| {
                         row.bg(theme.popover).shadow(vec![BoxShadow {
                             color: black().opacity(0.25),

@@ -14,6 +14,7 @@ use crate::a11y::{DragRow, FocusList};
 use crate::action_icon::action_icon;
 use crate::feed::{FeedView, feed_width, thumb_for};
 use crate::graph::{AppGraph, on_core};
+use crate::settings_view::HOVER_ALPHA;
 use crate::signin::AccountChanged;
 use crate::spinner::Spinner;
 
@@ -360,7 +361,7 @@ impl Render for AccountHeader {
                 .flex()
                 .items_center()
                 .cursor_pointer()
-                .hover(|style| style.bg(theme.secondary))
+                .hover(|style| style.bg(theme.primary.opacity(HOVER_ALPHA)))
                 .map(|entry| {
                     if chips {
                         entry

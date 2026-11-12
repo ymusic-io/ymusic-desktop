@@ -19,6 +19,7 @@ use crate::library::{
     song_columns,
 };
 use crate::playback::QueueItem;
+use crate::settings_view::HOVER_ALPHA;
 
 pub enum LibrarySearchEvent {
     Back,
@@ -165,7 +166,7 @@ impl LibrarySearchView {
             .items_start()
             .cursor_pointer()
             .rounded(px(10.))
-            .hover(|style| style.bg(theme.secondary))
+            .hover(|style| style.bg(theme.primary.opacity(HOVER_ALPHA)))
             .child(LibraryView::thumb(icon, art, None, cx))
             .child(
                 v_flex()
@@ -264,7 +265,7 @@ impl Render for LibrarySearchView {
                 .px_4()
                 .py_3()
                 .cursor_pointer()
-                .hover(|style| style.bg(theme.secondary))
+                .hover(|style| style.bg(theme.primary.opacity(HOVER_ALPHA)))
                 .text_sm()
                 .font_semibold()
                 .text_color(theme.primary)
