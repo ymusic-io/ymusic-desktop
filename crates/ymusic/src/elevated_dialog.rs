@@ -46,7 +46,7 @@ pub fn body_max_height(window: &Window) -> Pixels {
 }
 
 pub fn bar_color(cx: &App) -> Hsla {
-    cx.theme().muted
+    cx.global::<crate::settings_view::ChromeTones>().dialog
 }
 
 pub fn title_bar(title: impl Into<SharedString>, cx: &App) -> Div {

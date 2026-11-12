@@ -60,7 +60,7 @@ fn apply_theme(choice: &str, accent: &str, cx: &mut App) {
     let on_accent = white();
     let amoled = choice == "amoled";
     let ui_font = linux_ui_font(cx);
-    let mut tones = ChromeTones { flat: black(), lifted: black() };
+    let mut tones = ChromeTones { flat: black(), lifted: black(), dialog: black() };
     let mut stack = StackTones { near: black(), far: black(), tab: black() };
     Theme::update(cx, |theme| {
         if let Some(font) = ui_font {
@@ -108,18 +108,22 @@ fn apply_theme(choice: &str, accent: &str, cx: &mut App) {
         if cfg!(target_os = "linux") {
             theme.window_border = if theme.mode.is_dark() { white().opacity(0.07) } else { black().opacity(0.15) };
         }
-        tones = ChromeTones { flat: palette.surface, lifted: palette.surface_elevated };
+        // On dark the full elevated lift reads too strongly against the body (ElevatedBarDialog).
+        let dialog = if theme.mode.is_dark() { palette.surface_dim } else { palette.surface_elevated };
+        tones = ChromeTones { flat: palette.surface, lifted: palette.surface_elevated, dialog };
         stack = StackTones { near: palette.stack_near, far: palette.stack_far, tab: palette.stack_tab };
     });
     cx.set_global(tones);
     cx.set_global(stack);
 }
 
-/// The bars' grounds: flat over a page at its top, lifted while the page is scrolled from it.
+/// The bars' grounds: flat over a page at its top, lifted while the page is scrolled from it, and a
+/// dialog's title and button bars.
 #[derive(Clone, Copy)]
 pub struct ChromeTones {
     pub flat: Hsla,
     pub lifted: Hsla,
+    pub dialog: Hsla,
 }
 
 impl Global for ChromeTones {}
