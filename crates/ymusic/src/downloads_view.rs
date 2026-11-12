@@ -82,6 +82,7 @@ pub struct DownloadsView {
     scroll: ScrollHandle,
     focus: FocusList,
     chip_focus: FocusList,
+    fab_focus: FocusList,
     chip_drag: DragRow,
     /// Sign-in-required failures to re-run once the account signs in.
     retry_after_sign_in: Vec<String>,
@@ -129,6 +130,7 @@ impl DownloadsView {
             scroll: scroll.clone(),
             focus: FocusList::new(Some(scroll.clone())),
             chip_focus: FocusList::new(Some(scroll)),
+            fab_focus: FocusList::new(None),
             chip_drag: DragRow::default(),
             retry_after_sign_in: Vec::new(),
             _changes: changes,
@@ -796,15 +798,15 @@ impl Render for DownloadsView {
             .size_full()
             .child(div().id("downloads-scroll").size_full().overflow_y_scroll().track_scroll(&self.scroll).child(grid))
             .when_some(fab, |frame, (label, icon, pause)| {
-                frame.child(div().absolute().right_4().bottom_4().child(
+                let fab =
                     Button::new("downloads-fab").primary().large().rounded(px(16.)).icon(icon).label(label).on_click(
                         cx.listener(
                             move |view, _, _, _| {
                                 if pause { view.service.pause_all() } else { view.service.resume_all() }
                             },
                         ),
-                    ),
-                ))
+                    );
+                frame.child(div().absolute().right_4().bottom_4().child(self.fab_focus.button(0, fab, cx)))
             })
             .into_any_element()
     }

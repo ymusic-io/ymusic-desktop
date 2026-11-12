@@ -16,7 +16,7 @@ use ym_engine::yt::{YtFeedItem, YtFeedPage, YtFilterGroup, YtPageHeader, YtSecti
 use ym_engine::{DynamicEngine, EngineError, ErrorKind};
 use ym_i18n::{Str, t, tf};
 
-use crate::a11y::{DragRow, FocusList, focusable};
+use crate::a11y::{DragRow, FocusList};
 use crate::action_icon::{HIT, action_icon, sized_action_icon};
 use crate::download_dialog::DownloadTarget;
 use crate::graph::{AppGraph, on_core};
@@ -253,6 +253,7 @@ pub struct FeedView {
     /// The filter chips, then the page's Show more.
     chips: FocusList,
     tabs: FocusList,
+    actions: FocusList,
     /// Drawn above the page, scrolling with it, in place of the page's own header (the Account
     /// tab's card, which already shows who the page belongs to).
     top: Option<AnyView>,
@@ -303,8 +304,9 @@ impl FeedView {
             header_busy: false,
             focus: FocusList::new(Some(scroll.clone())),
             controls: FocusList::new(Some(scroll.clone())),
-            chips: FocusList::new(Some(scroll)),
+            chips: FocusList::new(Some(scroll.clone())),
             tabs: FocusList::new(None),
+            actions: FocusList::new(Some(scroll)),
             top: None,
             chips_drag: DragRow::default(),
             tabs_drag: DragRow::default(),
@@ -809,38 +811,44 @@ impl FeedView {
             actions = actions.child(if self.header_busy {
                 Spinner::new().into_any_element()
             } else {
-                action_icon("playlist-save", Icon::new(if saved { Lucide::ListCheck } else { Lucide::ListPlus }), label)
-                    .selected(saved)
-                    .on_click(cx.listener(|view, _, window, cx| view.toggle_saved(window, cx)))
-                    .into_any_element()
+                let save = action_icon(
+                    "playlist-save",
+                    Icon::new(if saved { Lucide::ListCheck } else { Lucide::ListPlus }),
+                    label,
+                )
+                .selected(saved)
+                .on_click(cx.listener(|view, _, window, cx| view.toggle_saved(window, cx)));
+                self.actions.button(ACTION_SAVE, save, cx).into_any_element()
             });
         }
-        actions = actions.child(
-            action_icon("playlist-share", Icon::new(Lucide::Share2), t(Str::CdShare))
-                .disabled(share.is_none())
-                .on_click(move |_, window, cx| {
-                    if let Some(link) = share.clone() {
-                        cx.write_to_clipboard(ClipboardItem::new_string(link));
-                        window.push_notification(t(Str::LinkCopied), cx);
-                    }
-                }),
-        );
-        actions = actions.child(
-            action_icon("playlist-download", Icon::new(Lucide::Download), t(Str::CdDownload))
-                .disabled(!has_videos)
-                .on_click(cx.listener(|view, _, window, cx| {
-                    view.open_playlist_dialog(false, window, cx);
-                })),
-        );
-        actions = actions.child(
-            action_icon("playlist-local", Icon::new(Lucide::LibraryBig), t(Str::LocalPlaylistCreate))
-                .disabled(!has_videos)
-                .on_click(cx.listener(|view, _, window, cx| {
-                    view.open_playlist_dialog(true, window, cx);
-                })),
-        );
+        let share = action_icon("playlist-share", Icon::new(Lucide::Share2), t(Str::CdShare))
+            .disabled(share.is_none())
+            .on_click(move |_, window, cx| {
+                if let Some(link) = share.clone() {
+                    cx.write_to_clipboard(ClipboardItem::new_string(link));
+                    window.push_notification(t(Str::LinkCopied), cx);
+                }
+            });
+        actions = actions.child(self.actions.button(ACTION_SHARE, share, cx));
+        let download = action_icon("playlist-download", Icon::new(Lucide::Download), t(Str::CdDownload))
+            .disabled(!has_videos)
+            .on_click(cx.listener(|view, _, window, cx| {
+                view.open_playlist_dialog(false, window, cx);
+            }));
+        actions = actions.child(self.actions.button(ACTION_DOWNLOAD, download, cx));
+        let local = action_icon("playlist-local", Icon::new(Lucide::LibraryBig), t(Str::LocalPlaylistCreate))
+            .disabled(!has_videos)
+            .on_click(cx.listener(|view, _, window, cx| {
+                view.open_playlist_dialog(true, window, cx);
+            }));
+        actions = actions.child(self.actions.button(ACTION_LOCAL, local, cx));
         actions = actions.child(div().flex_1()).child(
-            focusable(div().id("playlist-shuffle").role(Role::Button).aria_label(t(Str::ShuffleAll)), cx)
+            self.actions
+                .item(
+                    ACTION_SHUFFLE,
+                    div().id("playlist-shuffle").role(Role::Button).aria_label(t(Str::ShuffleAll)),
+                    cx,
+                )
                 .size(px(46.))
                 .flex_shrink_0()
                 .rounded_full()
@@ -886,7 +894,8 @@ impl FeedView {
             let label = t(if subscribed { Str::Subscribed } else { Str::Subscribe });
             let pill = Button::new("subscribe").rounded_full().label(label).busy(self.header_busy);
             let pill = if subscribed { pill.outline() } else { pill.primary() };
-            pill.on_click(cx.listener(|view, _, window, cx| view.toggle_subscribed(window, cx)))
+            let pill = pill.on_click(cx.listener(|view, _, window, cx| view.toggle_subscribed(window, cx)));
+            self.actions.button(ACTION_SUBSCRIBE, pill, cx)
         });
         v_flex()
             .when_some(banner, |column, url| {
@@ -940,20 +949,28 @@ impl FeedView {
             .py_2()
             .gap_2()
             .child(
-                Button::new("play-all")
-                    .primary()
-                    .rounded_full()
-                    .icon(Lucide::Play)
-                    .label(t(Str::PlayAll))
-                    .on_click(cx.listener(|view, _, _, cx| view.play_all(false, cx))),
+                self.actions.button(
+                    ACTION_PLAY_ALL,
+                    Button::new("play-all")
+                        .primary()
+                        .rounded_full()
+                        .icon(Lucide::Play)
+                        .label(t(Str::PlayAll))
+                        .on_click(cx.listener(|view, _, _, cx| view.play_all(false, cx))),
+                    cx,
+                ),
             )
             .child(
-                Button::new("shuffle-all")
-                    .outline()
-                    .rounded_full()
-                    .icon(Lucide::Shuffle)
-                    .label(t(Str::ShuffleAll))
-                    .on_click(cx.listener(|view, _, _, cx| view.play_all(true, cx))),
+                self.actions.button(
+                    ACTION_SHUFFLE_ALL,
+                    Button::new("shuffle-all")
+                        .outline()
+                        .rounded_full()
+                        .icon(Lucide::Shuffle)
+                        .label(t(Str::ShuffleAll))
+                        .on_click(cx.listener(|view, _, _, cx| view.play_all(true, cx))),
+                    cx,
+                ),
             )
             .into_any_element()
     }
@@ -1000,6 +1017,19 @@ struct Bands {
 const CARD_MAX: f32 = 324.;
 /// The sort menu, after any chip.
 const CHIPS_SORT: usize = 63;
+/// The page header's, the empty state's and the error states' buttons, as arrow stops.
+const ACTION_SAVE: usize = 0;
+const ACTION_SHARE: usize = 1;
+const ACTION_DOWNLOAD: usize = 2;
+const ACTION_LOCAL: usize = 3;
+const ACTION_SHUFFLE: usize = 4;
+const ACTION_SUBSCRIBE: usize = 5;
+const ACTION_PLAY_ALL: usize = 6;
+const ACTION_SHUFFLE_ALL: usize = 7;
+const ACTION_RELOAD: usize = 8;
+const ACTION_SEARCH: usize = 9;
+const ACTION_RETRY: usize = 10;
+const ACTION_RETRY_MORE: usize = 11;
 /// The page's Show more, after any chip.
 const CHIPS_SHOW_MORE: usize = 64;
 const ROW_GAP: f32 = 16.;
@@ -1609,14 +1639,16 @@ impl FeedView {
             .label(t(Str::Reload))
             .on_click(cx.listener(|view, _, _, cx| view.reload(cx)));
         let actions = if self.source == FeedSource::Home {
-            h_flex().gap_2().child(reload.outline().icon(Lucide::RefreshCw)).child(
-                pill(Button::new("empty-search"))
-                    .primary()
-                    .label(t(Str::SearchVideos))
-                    .on_click(cx.listener(|_, _, _, cx| cx.emit(RequestSearch))),
-            )
+            let search = pill(Button::new("empty-search"))
+                .primary()
+                .label(t(Str::SearchVideos))
+                .on_click(cx.listener(|_, _, _, cx| cx.emit(RequestSearch)));
+            h_flex()
+                .gap_2()
+                .child(self.actions.button(ACTION_RELOAD, reload.outline().icon(Lucide::RefreshCw), cx))
+                .child(self.actions.button(ACTION_SEARCH, search, cx))
         } else {
-            h_flex().child(reload.primary())
+            h_flex().child(self.actions.button(ACTION_RELOAD, reload.primary(), cx))
         };
         div()
             .flex_1()
@@ -1708,9 +1740,13 @@ impl Render for FeedView {
                         .p_6()
                         .child(div().text_center().child(message))
                         .child(
-                            Button::new("retry")
-                                .label(t(Str::Retry))
-                                .on_click(cx.listener(|view, _, _, cx| view.reload(cx))),
+                            self.actions.button(
+                                ACTION_RETRY,
+                                Button::new("retry")
+                                    .label(t(Str::Retry))
+                                    .on_click(cx.listener(|view, _, _, cx| view.reload(cx))),
+                                cx,
+                            ),
                         ),
                 )
                 .into_any_element();
@@ -1793,10 +1829,16 @@ impl Render for FeedView {
         } else if let Some(error) = &self.more_failed {
             column = column.child(
                 v_flex().items_center().gap_2().py_4().child(div().text_sm().child(error_text(error))).child(
-                    Button::new("retry-more").small().label(t(Str::Retry)).on_click(cx.listener(|view, _, _, cx| {
-                        view.more_failed = None;
-                        view.load_more(cx);
-                    })),
+                    self.actions.button(
+                        ACTION_RETRY_MORE,
+                        Button::new("retry-more").small().label(t(Str::Retry)).on_click(cx.listener(
+                            |view, _, _, cx| {
+                                view.more_failed = None;
+                                view.load_more(cx);
+                            },
+                        )),
+                        cx,
+                    ),
                 ),
             );
         } else if self.page.continuation.is_some() {

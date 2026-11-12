@@ -33,6 +33,7 @@ pub struct PlayAgainView {
     error: Option<String>,
     scroll: ScrollHandle,
     focus: FocusList,
+    retry_focus: FocusList,
 }
 
 impl EventEmitter<ResumeQueue> for PlayAgainView {}
@@ -46,6 +47,7 @@ impl PlayAgainView {
             error: None,
             scroll: scroll.clone(),
             focus: FocusList::new(Some(scroll)),
+            retry_focus: FocusList::new(None),
         };
         view.refresh(cx);
         view
@@ -294,9 +296,11 @@ impl Render for PlayAgainView {
                 .justify_center()
                 .gap_3()
                 .child(div().text_color(theme.danger).child(error))
-                .child(
+                .child(self.retry_focus.button(
+                    0,
                     Button::new("reload").label(t(Str::Retry)).on_click(cx.listener(|view, _, _, cx| view.refresh(cx))),
-                )
+                    cx,
+                ))
                 .into_any_element();
         }
         if self.sessions.is_empty() {
