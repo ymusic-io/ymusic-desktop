@@ -1294,8 +1294,7 @@ pub fn frame(content: AnyElement, window: &mut Window, cx: &mut App) -> AnyEleme
         .border_color(theme.border)
         .on_close_window(|_, window, cx| close_from_title_bar(window, cx))
         .child(title);
-    let content =
-        v_flex().size_full().bg(theme.background).child(bar).child(div().flex_1().min_h_0().child(content));
+    let content = v_flex().size_full().bg(theme.background).child(bar).child(div().flex_1().min_h_0().child(content));
     window_border().shadow_size(px(0.)).child(content).into_any_element()
 }
 
