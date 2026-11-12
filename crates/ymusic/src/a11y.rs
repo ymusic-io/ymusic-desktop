@@ -31,6 +31,18 @@ struct Slot {
     /// Window bounds as last painted, and the frame that painted it.
     bounds: Cell<Bounds<Pixels>>,
     painted: Cell<u64>,
+    /// The visible part of the list's scroll container then, which clips what the stop shows.
+    viewport: Cell<Option<Bounds<Pixels>>>,
+}
+
+impl Slot {
+    /// What shows of the stop, `None` when it is scrolled out of its list's viewport.
+    fn visible(&self) -> Option<Bounds<Pixels>> {
+        let bounds = self.bounds.get();
+        let Some(viewport) = self.viewport.get() else { return Some(bounds) };
+        let shown = bounds.intersect(&viewport);
+        (shown.size.width > px(0.) && shown.size.height > px(0.)).then_some(shown)
+    }
 }
 
 /// Every focus stop on screen, for geometric arrow moves.
@@ -162,11 +174,16 @@ fn step(direction: Direction, window: &mut Window, cx: &mut App) -> bool {
             .min_by(|left, right| area(left).total_cmp(&area(right)))
     });
     let Some(current) = current else { return false };
-    let from = current.bounds.get();
+    let from = current.visible().unwrap_or_else(|| current.bounds.get());
+    // A stop scrolled out of view is reached only from its own list, which then scrolls to it.
+    let reachable = |slot: &Rc<Slot>| match slot.visible() {
+        Some(shown) => Some(shown),
+        None => (slot.viewport.get() == current.viewport.get()).then(|| slot.bounds.get()),
+    };
     let best = slots
         .iter()
         .filter(|slot| !Rc::ptr_eq(slot, current) && slot.group == current.group)
-        .filter_map(|slot| rank(from, slot.bounds.get(), direction).map(|rank| (rank, slot)))
+        .filter_map(|slot| reachable(slot).and_then(|to| rank(from, to, direction)).map(|rank| (rank, slot)))
         .min_by(|(left, _), (right, _)| left.partial_cmp(right).unwrap_or(std::cmp::Ordering::Equal));
     let Some((_, target)) = best else { return false };
     let mut handle = target.handle.clone();
@@ -268,6 +285,7 @@ impl FocusList {
                 was_focused: Cell::new(false),
                 bounds: Cell::new(Bounds::default()),
                 painted: Cell::new(0),
+                viewport: Cell::new(None),
             });
             RovingItems::register(cx, &slot);
             slots.push(slot);
@@ -288,6 +306,7 @@ impl FocusList {
             was_focused: Cell::new(false),
             bounds: Cell::new(Bounds::default()),
             painted: Cell::new(0),
+            viewport: Cell::new(None),
         });
         RovingItems::register(cx, &slot);
         self.slots.borrow_mut()[index] = slot.clone();
@@ -314,6 +333,7 @@ impl FocusList {
             move |bounds, _, window, cx| {
                 slot.bounds.set(bounds);
                 slot.painted.set(cx.global::<RovingItems>().frame.get());
+                slot.viewport.set(scroll.as_ref().map(ScrollHandle::bounds));
                 let focused = slot.handle.is_focused(window);
                 if focused && !slot.was_focused.get() {
                     for scroll in inner.iter().chain(scroll.iter()) {
