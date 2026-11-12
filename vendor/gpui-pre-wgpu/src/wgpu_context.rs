@@ -310,12 +310,16 @@ impl WgpuContext {
             adapter.get_info().backend
         );
         let backend = WgpuBackend::Native(adapter.get_info().backend);
+        let device = Arc::new(device);
+        let queue = Arc::new(queue);
+        #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+        crate::vulkan_video::publish(&adapter, &device, &queue);
 
         Self {
             instance,
             adapter,
-            device: Arc::new(device),
-            queue: Arc::new(queue),
+            device,
+            queue,
             backend,
             dual_source_blending,
             color_texture_format,
@@ -456,15 +460,36 @@ impl WgpuContext {
             .using_resolution(adapter.limits())
             .using_alignment(adapter.limits());
 
+        let descriptor = wgpu::DeviceDescriptor {
+            label: Some("gpui_device"),
+            required_features,
+            required_limits,
+            memory_hints: wgpu::MemoryHints::MemoryUsage,
+            trace: wgpu::Trace::Off,
+            experimental_features: wgpu::ExperimentalFeatures::disabled(),
+        };
+        #[cfg(all(
+            not(target_family = "wasm"),
+            any(target_os = "linux", target_os = "freebsd")
+        ))]
+        if adapter.get_info().backend == wgpu::Backend::Vulkan {
+            match crate::vulkan_video::open_device(adapter, &descriptor) {
+                Ok(Some((device, queue))) => {
+                    return Ok((
+                        device,
+                        queue,
+                        dual_source_blending,
+                        color_atlas_texture_format,
+                    ));
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    log::warn!("Opening the device without Vulkan video decode: {error:#}");
+                }
+            }
+        }
         let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor {
-                label: Some("gpui_device"),
-                required_features,
-                required_limits,
-                memory_hints: wgpu::MemoryHints::MemoryUsage,
-                trace: wgpu::Trace::Off,
-                experimental_features: wgpu::ExperimentalFeatures::disabled(),
-            })
+            .request_device(&descriptor)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to create wgpu device: {e}"))?;
 

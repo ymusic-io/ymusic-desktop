@@ -1,9 +1,19 @@
 mod cosmic_text_system;
+#[cfg(all(
+    not(target_family = "wasm"),
+    any(target_os = "linux", target_os = "freebsd")
+))]
+mod vulkan_video;
 mod wgpu_atlas;
 mod wgpu_context;
 mod wgpu_renderer;
 
 pub use cosmic_text_system::*;
+#[cfg(all(
+    not(target_family = "wasm"),
+    any(target_os = "linux", target_os = "freebsd")
+))]
+pub use vulkan_video::{VideoQueueFamily, VulkanDeviceShare, vulkan_device_share};
 pub use wgpu;
 pub use wgpu_atlas::*;
 pub use wgpu_context::*;

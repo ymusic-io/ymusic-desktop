@@ -195,6 +195,11 @@ struct WgpuResources {
     path_intermediate_view: Option<wgpu::TextureView>,
     path_msaa_texture: Option<wgpu::Texture>,
     path_msaa_view: Option<wgpu::TextureView>,
+    #[cfg(all(
+        not(target_family = "wasm"),
+        any(target_os = "linux", target_os = "freebsd")
+    ))]
+    video_share: Option<Arc<crate::VulkanDeviceShare>>,
 }
 
 struct CachedTextureBindGroup {
@@ -203,6 +208,21 @@ struct CachedTextureBindGroup {
 }
 
 impl WgpuResources {
+    /// Holds off a video decoder that shares the render queue.
+    fn lock_queue(&self) -> impl Sized + '_ {
+        #[cfg(all(
+            not(target_family = "wasm"),
+            any(target_os = "linux", target_os = "freebsd")
+        ))]
+        let guard = self.video_share.as_ref().map(|share| share.queue_guard());
+        #[cfg(not(all(
+            not(target_family = "wasm"),
+            any(target_os = "linux", target_os = "freebsd")
+        )))]
+        let guard = ();
+        guard
+    }
+
     fn invalidate_intermediate_textures(&mut self) {
         self.path_intermediate_texture = None;
         self.path_intermediate_view = None;
@@ -1232,6 +1252,7 @@ impl WgpuRenderer {
             return false;
         }
 
+        let _queue = core.resources.lock_queue();
         core.resources.queue.present(frame);
         true
     }
@@ -1361,6 +1382,11 @@ impl WgpuRendererCore {
             ],
         });
         let max_texture_size = device.limits().max_texture_dimension_2d;
+        #[cfg(all(
+            not(target_family = "wasm"),
+            any(target_os = "linux", target_os = "freebsd")
+        ))]
+        let video_share = crate::vulkan_device_share().filter(|share| share.owns(&device));
 
         Self {
             resources: WgpuResources {
@@ -1378,6 +1404,11 @@ impl WgpuRendererCore {
                 path_intermediate_view: None,
                 path_msaa_texture: None,
                 path_msaa_view: None,
+                #[cfg(all(
+                    not(target_family = "wasm"),
+                    any(target_os = "linux", target_os = "freebsd")
+                ))]
+                video_share,
             },
             atlas,
             path_globals_offset,
@@ -1496,6 +1527,7 @@ impl WgpuRendererCore {
         self.record_frame(scene, target_view, clear_color)
             .inspect_err(|_| {
                 // Queue writes are staged before encoding; flush them even if the frame fails.
+                let _queue = self.resources.lock_queue();
                 self.resources.queue.submit(std::iter::empty());
             })
     }
@@ -1641,6 +1673,7 @@ impl WgpuRendererCore {
             }
         }
 
+        let _queue = self.resources().lock_queue();
         let submission = self
             .resources()
             .queue
