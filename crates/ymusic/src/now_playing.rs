@@ -17,8 +17,8 @@ use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use ym_i18n::{Str, t, tf};
 
-use crate::action_icon::{HIT, glyph_action_icon, lucide_size, sized_action_icon};
 use crate::a11y::{FocusList, KeyboardFocusable};
+use crate::action_icon::{HIT, glyph_action_icon, lucide_size, sized_action_icon};
 use crate::audio_only::AudioOnlyArt;
 use crate::download_dialog::DownloadTarget;
 use crate::graph::{AppGraph, on_core};
@@ -733,7 +733,8 @@ impl NowPlaying {
         };
         let (translations, tracks): (Vec<CaptionTrack>, Vec<CaptionTrack>) =
             playback.caption_tracks.iter().cloned().partition(|track| track.kind == AUTO_TRANSLATE_KIND);
-        let on_track = tracks.iter().chain(&translations).find(|track| is_on(track)).map(|track| track.display_name.clone());
+        let on_track =
+            tracks.iter().chain(&translations).find(|track| is_on(track)).map(|track| track.display_name.clone());
         let state = on_track.unwrap_or_else(|| t(Str::CaptionsOff).to_owned());
         let label = format!("{}, {state}", t(Str::CdCaptions));
         let target = self.playback.clone();
@@ -750,15 +751,16 @@ impl NowPlaying {
                     );
                     let pick = |track: &CaptionTrack| {
                         let (playback, id) = (target.clone(), track.vss_id.clone());
-                        PopupMenuItem::new(track.display_name.clone())
-                            .checked(is_on(track))
-                            .on_click(move |_, _, cx| playback.update(cx, |playback, cx| playback.select_caption(id.clone(), cx)))
+                        PopupMenuItem::new(track.display_name.clone()).checked(is_on(track)).on_click(
+                            move |_, _, cx| playback.update(cx, |playback, cx| playback.select_caption(id.clone(), cx)),
+                        )
                     };
                     for track in &tracks {
                         menu = menu.item(pick(track));
                     }
                     if !translations.is_empty() {
-                        let current = translations.iter().find(|track| is_on(track)).map(|track| track.display_name.clone());
+                        let current =
+                            translations.iter().find(|track| is_on(track)).map(|track| track.display_name.clone());
                         let title = match current {
                             Some(name) => format!("{} · {name}", t(Str::CaptionsAutoTranslate)),
                             None => t(Str::CaptionsAutoTranslate).to_owned(),
@@ -797,32 +799,41 @@ impl NowPlaying {
             );
         }
         if failure.retry {
-            actions = actions.child(action("np-error-retry", t(Str::Retry)).on_click(
-                cx.listener(|view, _, _, cx| view.playback.update(cx, |playback, cx| playback.retry(cx))),
-            ));
+            actions =
+                actions.child(action("np-error-retry", t(Str::Retry)).on_click(
+                    cx.listener(|view, _, _, cx| view.playback.update(cx, |playback, cx| playback.retry(cx))),
+                ));
         }
         Some(
-            div().absolute().left_0().right_0().bottom(px(if controls { strip } else { 44. })).flex().justify_center().px_4().child(
-                v_flex()
-                    .items_center()
-                    .max_w(px(560.))
-                    .px(px(14.))
-                    .py_2()
-                    .rounded(px(8.))
-                    .bg(black().opacity(0.8))
-                    .child(
-                        div()
-                            .id("np-error")
-                            .role(Role::Alert)
-                            .aria_label(failure.text())
-                            .text_color(white())
-                            .text_size(px(13.))
-                            .text_center()
-                            .line_clamp(2)
-                            .child(failure.text()),
-                    )
-                    .child(actions),
-            ),
+            div()
+                .absolute()
+                .left_0()
+                .right_0()
+                .bottom(px(if controls { strip } else { 44. }))
+                .flex()
+                .justify_center()
+                .px_4()
+                .child(
+                    v_flex()
+                        .items_center()
+                        .max_w(px(560.))
+                        .px(px(14.))
+                        .py_2()
+                        .rounded(px(8.))
+                        .bg(black().opacity(0.8))
+                        .child(
+                            div()
+                                .id("np-error")
+                                .role(Role::Alert)
+                                .aria_label(failure.text())
+                                .text_color(white())
+                                .text_size(px(13.))
+                                .text_center()
+                                .line_clamp(2)
+                                .child(failure.text()),
+                        )
+                        .child(actions),
+                ),
         )
     }
 
@@ -875,11 +886,14 @@ impl NowPlaying {
         for (_, text) in &entries {
             column = column.child(div().pb(px(CAPTION_GAP)).child(crate::caption_style::cue(text.clone(), look)));
         }
-        let frames = canvas(|_, _, _| {}, move |_, _, window, _| {
-            if animating {
-                window.request_animation_frame();
-            }
-        })
+        let frames = canvas(
+            |_, _, _| {},
+            move |_, _, window, _| {
+                if animating {
+                    window.request_animation_frame();
+                }
+            },
+        )
         .absolute()
         .size_0();
         let window_box = div().relative().h(px(box_height)).overflow_hidden().child(column).child(frames);

@@ -75,8 +75,10 @@ fn rename_database(old: &Path, new: &Path) -> std::io::Result<()> {
 /// the older file's data must not be dropped in its favour.
 fn holds_no_tables(path: &Path) -> bool {
     let open = rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY);
-    open.and_then(|connection| connection.query_row("SELECT count(*) FROM sqlite_master", [], |row| row.get::<_, i64>(0)))
-        .is_ok_and(|count| count == 0)
+    open.and_then(|connection| {
+        connection.query_row("SELECT count(*) FROM sqlite_master", [], |row| row.get::<_, i64>(0))
+    })
+    .is_ok_and(|count| count == 0)
 }
 
 fn remove_database(path: &Path) -> std::io::Result<()> {
