@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use tokio::runtime::Handle;
 use ym_common::log::{Level, Logger};
-use ym_engine::{DynamicEngine, EngineConfig, EngineError};
+use ym_engine::{DynamicEngine, EngineConfig, EngineError, MseAttachment};
 use ym_mse::MseHost;
 use ym_remote_config::{BundleSource, VerifiedBundle};
 
@@ -71,7 +71,8 @@ impl YoutubeSessions {
     async fn boot(&self) -> Result<YoutubeSession, EngineError> {
         let host = Arc::new(MseHost::create().ok_or_else(|| EngineError::site("R90002", "mse_host_create failed"))?);
         let mut config = self.config.clone();
-        config.mse = Some(host.attach_pointers());
+        let (raw, vtable) = host.attach_pointers();
+        config.mse = Some(MseAttachment { host: raw, vtable, owner: host.clone() });
         let mse_log = self.log.fork("mse");
         ym_mse::set_log_sink(move |level, message| {
             mse_log.log(if level >= 2 { Level::Warn } else { Level::Info }, message, None);

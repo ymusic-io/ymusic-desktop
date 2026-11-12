@@ -21,7 +21,7 @@ pub mod yt;
 
 pub use cache::{CacheEntry, CacheError, CacheMeta, Clock, DiskCacheStore, PutError};
 pub use cookie::{CookieJar, CookiePersist, MemoryCookieJar, PersistentCookieJar};
-pub use engine::{DynamicEngine, EngineConfig, MainResolver};
+pub use engine::{DynamicEngine, EngineConfig, MainResolver, MseAttachment};
 pub use error::{EngineError, ErrorDetails, ErrorKind, WireError};
 pub use http_cache::{DEFAULT_HTTP_CACHE_BYTES, HttpCache};
 pub use logs::ParkedLoggers;

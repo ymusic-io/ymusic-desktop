@@ -1,3 +1,4 @@
+use std::any::Any;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::ffi::{CStr, CString, c_char, c_int, c_void};
@@ -307,15 +308,22 @@ impl QuickJsRuntime {
         }
     }
 
-    /// Binds the `:mse` host and vtable. Call before [`Self::eval_engine`].
+    /// Binds the `:mse` host and vtable. Call before [`Self::eval_engine`]. JS calls straight into
+    /// the host, so the engine keeps `owner` until its C engine is freed.
     ///
     /// # Safety
-    /// `host` and `vtable` must stay valid until detached or the runtime is closed.
-    pub async unsafe fn attach_mse_host(&self, host: usize, vtable: usize) -> Result<(), PipeError> {
+    /// `host` and `vtable` must stay valid as long as `owner` lives.
+    pub async unsafe fn attach_mse_host(
+        &self,
+        host: usize,
+        vtable: usize,
+        owner: Arc<dyn Any + Send + Sync>,
+    ) -> Result<(), PipeError> {
         self.shared
             .call(move |engine| {
-                // SAFETY: on the engine thread before teardown, so `native` is live (Engine::native); the caller vouches for both pointers.
-                unsafe { ffi::qjs_set_mse_host(engine.native.get(), host as *mut c_void, vtable as *const c_void) }
+                // SAFETY: on the engine thread before teardown, so `native` is live (Engine::native); `owner` keeps both pointers valid and the engine holds it until after qjs_close.
+                unsafe { ffi::qjs_set_mse_host(engine.native.get(), host as *mut c_void, vtable as *const c_void) };
+                engine.mse_owner.replace(Some(owner));
             })
             .await
     }
@@ -544,6 +552,8 @@ struct Engine {
     /// The C engine, live until `teardown` nulls it. Only jobs and pipe tasks reach it, and those
     /// run on this thread's loop, which ends at teardown.
     native: Cell<*mut ffi::QjsEngine>,
+    /// What keeps the attached MSE host alive; released only after `teardown` closed `native`.
+    mse_owner: RefCell<Option<Arc<dyn Any + Send + Sync>>>,
     state: RefCell<State>,
     shared: Weak<Shared>,
     on_log: Option<LogHandler>,
@@ -568,6 +578,7 @@ fn engine_thread(
     local.block_on(&runtime, async move {
         let engine = Rc::new(Engine {
             native: Cell::new(ptr::null_mut()),
+            mse_owner: RefCell::new(None),
             state: RefCell::new(State { next_id: 1, ..State::default() }),
             shared,
             on_log,
@@ -983,5 +994,6 @@ impl Engine {
         }
         // SAFETY: the live engine, closed once: `native` was swapped for null above.
         unsafe { ffi::qjs_close(native) };
+        drop(self.mse_owner.take());
     }
 }

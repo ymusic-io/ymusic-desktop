@@ -1,3 +1,4 @@
+use std::any::Any;
 use std::sync::{Arc, OnceLock};
 
 use serde::Deserialize;
@@ -29,15 +30,23 @@ pub struct EngineConfig {
     pub cache: Option<Arc<DiskCacheStore>>,
     /// The `http` protocol's disk cache, one per session folder, shared by every engine.
     pub http_cache: Option<Arc<HttpCache>>,
-    /// The player bundle's native MSE host and `__mse*` vtable, attached before the eval. The
-    /// host must outlive the engine.
-    pub mse: Option<(usize, usize)>,
+    /// The player bundle's native MSE host, attached before the eval.
+    pub mse: Option<MseAttachment>,
     /// Resolves the main engine at each call, for the player bundle's `host/main/*` proxy (so it
     /// follows engine swaps).
     pub main: Option<MainResolver>,
     /// Serves the bundle's tagged media requests (the player cache); `None` sends them to the
     /// network with the tag removed.
     pub media_proxy: Option<Arc<dyn MediaProxy>>,
+}
+
+/// A native MSE host and its `__mse*` vtable, for the player bundle's natives.
+#[derive(Clone)]
+pub struct MseAttachment {
+    pub host: usize,
+    pub vtable: usize,
+    /// Keeps `host` and `vtable` valid; the engine holds it until its C engine is freed.
+    pub owner: Arc<dyn Any + Send + Sync>,
 }
 
 /// One booted `engine.js` and the host protocols it is served.
@@ -86,9 +95,9 @@ impl DynamicEngine {
         if let Some(main) = config.main {
             crate::main_proxy::install(&runtime, main, parked.clone());
         }
-        if let Some((host, vtable)) = config.mse {
-            // SAFETY: the caller keeps the host alive past this engine (EngineConfig::mse).
-            unsafe { runtime.attach_mse_host(host, vtable) }.await.map_err(load_failure)?;
+        if let Some(mse) = config.mse {
+            // SAFETY: `owner` keeps the host and vtable valid (MseAttachment::owner).
+            unsafe { runtime.attach_mse_host(mse.host, mse.vtable, mse.owner) }.await.map_err(load_failure)?;
         }
         if let Err(error) = runtime.eval_engine(script).await {
             runtime.close().await;

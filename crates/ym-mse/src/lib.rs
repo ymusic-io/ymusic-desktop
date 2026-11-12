@@ -154,8 +154,8 @@ unsafe extern "C" fn release_cpu_sink(user: *mut c_void) {
     contain_panic(|| drop(sink));
 }
 
-/// One native MSE host. Attach it to the player's QuickJS runtime before the bundle evaluates;
-/// destroy it only after that runtime is closed (JS calls straight into it).
+/// One native MSE host. Attach it to the player's QuickJS runtime before the bundle evaluates,
+/// handing the runtime a reference to hold: JS calls straight into it.
 pub struct MseHost {
     /// A live C host from `mse_host_create`, destroyed in `Drop`.
     raw: *mut c_void,
@@ -239,8 +239,8 @@ impl MseHost {
 
 impl Drop for MseHost {
     fn drop(&mut self) {
-        // SAFETY: the last use of `raw`; whoever attached it to a runtime promised
-        // (`attach_mse_host`) to keep it alive past that runtime.
+        // SAFETY: the last use of `raw`; a runtime it is attached to holds a reference until its
+        // C engine is closed (`attach_mse_host`).
         unsafe { mse_host_destroy(self.raw) }
     }
 }
