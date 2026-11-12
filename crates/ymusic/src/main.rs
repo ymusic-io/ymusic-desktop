@@ -65,6 +65,8 @@ mod telemetry;
 mod tray_popup;
 mod video_details;
 mod video_layer;
+#[cfg(target_os = "linux")]
+mod video_surface;
 #[cfg(target_os = "windows")]
 mod win_title_bar;
 #[cfg(target_os = "windows")]
@@ -284,6 +286,8 @@ fn main() {
             cx.new(|cx| gpui_kit::base::Root::new(launch, window, cx).bg(transparent_black()))
         })
         .expect("open main window");
+        #[cfg(target_os = "linux")]
+        crate::video_surface::share_render_device(&log.fork("video"));
         cx.activate(true);
     });
     drop(tokio);

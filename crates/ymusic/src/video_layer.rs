@@ -1,23 +1,28 @@
 //! The surface video presents into. macOS: an `AVSampleBufferDisplayLayer` hosted by a native
 //! view placed BEHIND the gpui view, inside the transparent window; gpui leaves the video box
-//! unpainted (a hole), so its controls, captions and dialogs draw over the video. Elsewhere: CPU
-//! pictures painted by gpui as the box's background image.
+//! unpainted (a hole), so its controls, captions and dialogs draw over the video. Linux: a surface
+//! in gpui's scene (`video_surface.rs`). Elsewhere: CPU pictures painted by gpui as the box's
+//! background image.
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 use std::cell::{Cell, RefCell};
 #[cfg(target_os = "macos")]
 use std::ffi::c_void;
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 use std::sync::atomic::{AtomicBool, Ordering};
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 use std::sync::{Arc, Mutex, PoisonError};
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
+pub use crate::video_surface::VideoLayer;
+use gpui_kit::Window;
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 use gpui_kit::prelude::FluentBuilder;
-use gpui_kit::{Bounds, Pixels, Window};
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(target_os = "linux"))]
+use gpui_kit::{Bounds, Pixels};
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 use gpui_kit::{Div, ObjectFit, ParentElement, RenderImage, Stateful, Styled, StyledImage, black, img};
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 use ym_mse::Presenter;
 
 #[cfg(target_os = "macos")]
@@ -132,7 +137,7 @@ impl Drop for VideoLayer {
 }
 
 /// CPU pictures drawn by gpui as an image: Wayland cannot embed a child surface under gpui's.
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 pub struct VideoLayer {
     /// The newest picture, written on a decode thread.
     latest: Arc<Mutex<Option<Arc<RenderImage>>>>,
@@ -144,7 +149,7 @@ pub struct VideoLayer {
     fit: Cell<(u32, u32)>,
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 impl VideoLayer {
     pub fn attach(window: &Window) -> Option<Self> {
         Some(Self {

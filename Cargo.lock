@@ -3066,6 +3066,7 @@ name = "gpui-pre-wgpu"
 version = "0.3.12"
 dependencies = [
  "anyhow",
+ "ash",
  "bytemuck",
  "cosmic-text",
  "etagere",
@@ -9811,6 +9812,7 @@ dependencies = [
  "embed-resource",
  "futures",
  "gpui-kit",
+ "gpui-pre-wgpu",
  "gpui-pre-windows",
  "image",
  "ksni",
