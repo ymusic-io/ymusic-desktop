@@ -40,6 +40,7 @@ struct Shown {
     state: PlayState,
     second: i64,
     duration_ms: i64,
+    buffered_second: i64,
     has_next: bool,
     loop_mode: LoopMode,
     shuffle: bool,
@@ -56,6 +57,7 @@ impl Shown {
             state: playback.state.clone(),
             second: playback.position_ms / 1000,
             duration_ms: playback.duration_ms,
+            buffered_second: playback.buffered_ms / 1000,
             has_next: playback.has_next(),
             loop_mode: playback.nav.loop_mode,
             shuffle: playback.nav.shuffle,
@@ -248,6 +250,7 @@ impl MiniPlayer {
         let theme = cx.theme().clone();
         let state = playback.state.clone();
         let (position, duration) = (playback.position_ms, playback.duration_ms);
+        let buffered = playback.buffered_fraction();
         let has_next = playback.has_next();
         let (loop_mode, shuffle) = (playback.nav.loop_mode, playback.nav.shuffle);
         let sleep_remaining = playback.sleep_remaining();
@@ -367,7 +370,10 @@ impl MiniPlayer {
                             })),
                             ..SliderStop::new("bar-seek", t(Str::A11yPlaybackPosition))
                         };
-                        let slider = Slider::new(&self.seek).accessibility_label(t(Str::A11yPlaybackPosition));
+                        let slider = div()
+                            .relative()
+                            .child(crate::playback::buffered_band(buffered, theme.primary))
+                            .child(Slider::new(&self.seek).accessibility_label(t(Str::A11yPlaybackPosition)));
                         self.focus.slider(STOP_SEEK, &self.seek, stop, slider, cx).flex_1()
                     })
                     .child(div().text_xs().font_semibold().text_color(theme.muted_foreground).child(clock(duration))),

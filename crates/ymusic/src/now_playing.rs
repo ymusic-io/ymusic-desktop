@@ -751,7 +751,13 @@ impl NowPlaying {
                 OVERLAY_SEEK,
                 &self.seek,
                 seek_stop,
-                Slider::new(&self.seek).h(px(20.)).accessibility_label(t(Str::A11yPlaybackPosition)),
+                div()
+                    .relative()
+                    .child(crate::playback::buffered_band(
+                        self.playback.read(cx).buffered_fraction(),
+                        cx.theme().primary,
+                    ))
+                    .child(Slider::new(&self.seek).h(px(20.)).accessibility_label(t(Str::A11yPlaybackPosition))),
                 cx,
             )
             .block_mouse_except_scroll();

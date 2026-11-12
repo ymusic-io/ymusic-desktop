@@ -243,6 +243,8 @@ pub struct Playback {
     pub state: PlayState,
     pub position_ms: i64,
     pub duration_ms: i64,
+    /// How far a streamed item is loaded; 0 for a local file, which needs no loading line.
+    pub buffered_ms: i64,
     loading_video: Option<String>,
     gain: f32,
     /// The local item's attenuate-only loudness gain.
@@ -313,6 +315,7 @@ impl Playback {
             state: PlayState::Idle,
             position_ms: 0,
             duration_ms: 0,
+            buffered_ms: 0,
             loading_video: None,
             quality_options: Vec::new(),
             viewport: None,
@@ -1087,6 +1090,7 @@ impl Playback {
         let Some(item) = self.current().cloned() else { return };
         self.state = PlayState::Buffering;
         self.position_ms = 0;
+        self.buffered_ms = 0;
         self.duration_ms = item.duration_ms.unwrap_or(0);
         cx.notify();
         match item.source {
@@ -1323,6 +1327,7 @@ impl Playback {
             if video_id.is_some() && video_id == current {
                 self.loading_video = None;
                 self.position_ms = field_i64(progress, &["progress", "positionMs"]);
+                self.buffered_ms = field_i64(progress, &["bufferedMs"]);
                 let duration = field_i64(progress, &["duration", "durationMs"]);
                 if duration > 0 {
                     self.duration_ms = duration;
@@ -1460,4 +1465,22 @@ impl Playback {
 
 fn field_i64(object: &Value, names: &[&str]) -> i64 {
     names.iter().find_map(|name| object.get(*name).and_then(Value::as_i64)).unwrap_or(0)
+}
+
+impl Playback {
+    /// The loaded share of a streamed item, for the seek bars' loading band.
+    pub fn buffered_fraction(&self) -> f32 {
+        if self.duration_ms > 0 { (self.buffered_ms as f32 / self.duration_ms as f32).clamp(0., 1.) } else { 0. }
+    }
+}
+
+/// A seek bar's loaded band: the accent at the JVM SlimSeekBar's 35% under the slider's track,
+/// `fraction` of the way along.
+pub fn buffered_band(fraction: f32, accent: Hsla) -> Div {
+    div()
+        .absolute()
+        .inset_0()
+        .flex()
+        .items_center()
+        .child(div().h(px(6.)).rounded_full().w(relative(fraction)).bg(accent.opacity(0.35)))
 }
