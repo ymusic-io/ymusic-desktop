@@ -94,12 +94,18 @@ pub fn boot_failed(log: &ym_common::log::Logger, error: &ym_engine::EngineError)
     std::process::exit(1);
 }
 
+/// Debug builds' data dir as a launch argument, ahead of `YMUSIC_DATA_DIR`: a Jump List task is a
+/// shell link, which sets no environment.
+pub const DEV_DATA_DIR_ARG: &str = "--data-dir=";
+
 fn main() {
     ym_i18n::use_system_locale();
     // Debug runs can be pointed at a throwaway data dir for automated checks.
     let data_dir = if cfg!(debug_assertions) {
-        std::env::var_os("YMUSIC_DATA_DIR")
-            .map(std::path::PathBuf::from)
+        std::env::args_os()
+            .skip(1)
+            .find_map(|arg| arg.to_str()?.strip_prefix(DEV_DATA_DIR_ARG).map(std::path::PathBuf::from))
+            .or_else(|| std::env::var_os("YMUSIC_DATA_DIR").map(std::path::PathBuf::from))
             .unwrap_or_else(|| dirs::data_local_dir().unwrap_or_else(std::env::temp_dir).join("YMusicRust"))
     } else {
         crate::data_files::release_data_dir()

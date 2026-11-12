@@ -49,6 +49,22 @@ enum Update {
     Clear(futures::channel::oneshot::Sender<()>),
 }
 
+/// What a task runs: this executable, which in a debug build also needs this run's data dir to find
+/// the running app.
+struct Launcher {
+    exe: PathBuf,
+    data_dir_arg: Option<String>,
+}
+
+impl Launcher {
+    fn arguments(&self, command: Command) -> String {
+        match &self.data_dir_arg {
+            Some(data_dir) => format!("{} {data_dir}", command.player_arg()),
+            None => command.player_arg(),
+        }
+    }
+}
+
 /// The running app's Jump List; tasks change with [`JumpList::update`], and quitting clears them (a
 /// pinned button keeps its list after exit, and tasks for a closed app would only relaunch it).
 pub struct JumpList {
@@ -67,12 +83,15 @@ impl JumpList {
                 return;
             }
         };
+        let data_dir_arg =
+            cfg!(debug_assertions).then(|| quoted(&format!("{}{}", crate::DEV_DATA_DIR_ARG, data_dir.display())));
+        let launcher = Launcher { exe, data_dir_arg };
         let (updates, receiver) = std::sync::mpsc::channel();
         let icon_dir = data_dir.join("jumplist");
         let thread_log = log.clone();
         let spawned = std::thread::Builder::new()
             .name("jump-list".into())
-            .spawn(move || run(&exe, &icon_dir, &receiver, &thread_log));
+            .spawn(move || run(&launcher, &icon_dir, &receiver, &thread_log));
         if let Err(error) = spawned {
             log.warn("jump list: its thread did not start", Some(&error));
             return;
@@ -105,7 +124,7 @@ impl JumpList {
     }
 }
 
-fn run(exe: &Path, icon_dir: &Path, updates: &Receiver<Update>, log: &Logger) {
+fn run(launcher: &Launcher, icon_dir: &Path, updates: &Receiver<Update>, log: &Logger) {
     // SAFETY: initializes COM for this thread, which makes every COM call below.
     if let Err(error) = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }.ok() {
         log.warn("jump list: COM did not initialize", Some(&error));
@@ -118,7 +137,7 @@ fn run(exe: &Path, icon_dir: &Path, updates: &Receiver<Update>, log: &Logger) {
             update = newer;
         }
         match update {
-            Update::Tasks(tasks) if shown.as_ref() != Some(&tasks) => match set(exe, &tasks, &icons) {
+            Update::Tasks(tasks) if shown.as_ref() != Some(&tasks) => match set(launcher, &tasks, &icons) {
                 Ok(()) => shown = Some(tasks),
                 Err(error) => log.warn("jump list update failed", Some(&error)),
             },
@@ -134,7 +153,7 @@ fn run(exe: &Path, icon_dir: &Path, updates: &Receiver<Update>, log: &Logger) {
     }
 }
 
-fn set(exe: &Path, tasks: &[Task], icons: &[(&'static str, PathBuf)]) -> windows::core::Result<()> {
+fn set(launcher: &Launcher, tasks: &[Task], icons: &[(&'static str, PathBuf)]) -> windows::core::Result<()> {
     // SAFETY: COM calls on this apartment thread, with interfaces it created and owns.
     unsafe {
         let list: ICustomDestinationList = CoCreateInstance(&DestinationList, None, CLSCTX_INPROC_SERVER)?;
@@ -143,7 +162,7 @@ fn set(exe: &Path, tasks: &[Task], icons: &[(&'static str, PathBuf)]) -> windows
         let collection: IObjectCollection = CoCreateInstance(&EnumerableObjectCollection, None, CLSCTX_INPROC_SERVER)?;
         for task in tasks {
             let icon = icons.iter().find(|(name, _)| *name == task.icon).map(|(_, path)| path.as_path());
-            collection.AddObject(&shell_link(exe, task, icon)?)?;
+            collection.AddObject(&shell_link(launcher, task, icon)?)?;
         }
         list.AddUserTasks(&collection)?;
         list.CommitList()
@@ -159,18 +178,24 @@ fn clear() -> windows::core::Result<()> {
 }
 
 /// `icon`: an .ico for the task, else the executable's own icon.
-fn shell_link(exe: &Path, task: &Task, icon: Option<&Path>) -> windows::core::Result<IShellLinkW> {
+fn shell_link(launcher: &Launcher, task: &Task, icon: Option<&Path>) -> windows::core::Result<IShellLinkW> {
     // SAFETY: COM calls on this apartment thread; the strings outlive each call.
     unsafe {
         let link: IShellLinkW = CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER)?;
-        link.SetPath(&HSTRING::from(exe.as_os_str()))?;
-        link.SetArguments(&HSTRING::from(task.command.player_arg()))?;
-        link.SetIconLocation(&HSTRING::from(icon.unwrap_or(exe).as_os_str()), 0)?;
+        link.SetPath(&HSTRING::from(launcher.exe.as_os_str()))?;
+        link.SetArguments(&HSTRING::from(launcher.arguments(task.command)))?;
+        link.SetIconLocation(&HSTRING::from(icon.unwrap_or(&launcher.exe).as_os_str()), 0)?;
         let store: IPropertyStore = link.cast()?;
         store.SetValue(&PKEY_TITLE, &PROPVARIANT::from(task.title.as_str()))?;
         store.Commit()?;
         Ok(link)
     }
+}
+
+/// `arg` as one command-line argument under `CommandLineToArgvW`'s rules; paths hold no `"`.
+fn quoted(arg: &str) -> String {
+    let trailing_backslashes = arg.len() - arg.trim_end_matches('\\').len();
+    format!("\"{arg}{}\"", "\\".repeat(trailing_backslashes))
 }
 
 /// Each glyph as an .ico of PNGs, rewritten only when its bytes change; a failed one falls back to
