@@ -1581,7 +1581,7 @@ impl LibraryView {
                         self.crumb_focus.item_in(depth + 1, link, row.clone(), cx).into_any_element()
                     });
                 }
-                bar.child(self.crumb_drag.wrap(crumbs).flex_1().min_w_0()).child(self.rescan_button(cx))
+                bar.child(self.crumb_drag.wrap(crumbs).min_w_0()).child(self.rescan_button(cx))
             }
             (Tab::Playlists, _, None) => bar.child(
                 self.tool_focus.button(
