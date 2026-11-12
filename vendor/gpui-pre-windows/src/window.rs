@@ -908,7 +908,7 @@ impl PlatformWindow for WindowsWindow {
     }
 
     fn is_subpixel_rendering_supported(&self) -> bool {
-        true
+        !self.state.underlay.shown()
     }
 
     fn set_title(&mut self, title: &str) {

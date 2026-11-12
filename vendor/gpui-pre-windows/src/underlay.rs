@@ -1,6 +1,7 @@
 //! Content under gpui's own DirectComposition visual, in the same window: a composition swap chain
 //! another D3D11 device presents into shows wherever gpui leaves its frame transparent, under
-//! gpui's controls and with no airspace. While one shows, gpui clears to transparent.
+//! gpui's controls and with no airspace. While one shows, gpui clears to transparent and draws
+//! text in grayscale (subpixel text writes no alpha).
 
 use std::{cell::RefCell, ffi::c_void};
 
