@@ -10,7 +10,7 @@ use gpui_kit::*;
 use ym_engine::yt::YtAccountInfo;
 use ym_i18n::{Str, t};
 
-use crate::a11y::{DragRow, FocusList, KeyboardFocusable};
+use crate::a11y::{DragRow, FocusList};
 use crate::action_icon::action_icon;
 use crate::feed::{FeedView, feed_width, thumb_for};
 use crate::graph::{AppGraph, on_core};
@@ -36,6 +36,7 @@ pub struct AccountView {
     /// None until the first check answers.
     account: Option<YtAccountInfo>,
     sign_in_focus: FocusHandle,
+    preface_focus: FocusList,
 }
 
 impl EventEmitter<AccountChanged> for AccountView {}
@@ -48,7 +49,13 @@ impl AccountView {
             header.update(cx, |header, _| header.owner = Some(view));
             header
         });
-        let mut account = Self { feed, header, account: None, sign_in_focus: cx.focus_handle().tab_stop(true) };
+        let mut account = Self {
+            feed,
+            header,
+            account: None,
+            sign_in_focus: cx.focus_handle().tab_stop(true),
+            preface_focus: FocusList::new(None),
+        };
         account.refresh(cx);
         account
     }
@@ -174,12 +181,13 @@ impl AccountView {
             .child(features)
             .child(div().h(px(28.)))
             .child(
-                div()
-                    .id("signin-button")
-                    .role(Role::Button)
-                    .aria_label(t(Str::SigninButton))
-                    .track_focus(&self.sign_in_focus)
-                    .keyboard_focusable(theme.ring)
+                self.preface_focus
+                    .item_for(
+                        0,
+                        &self.sign_in_focus,
+                        div().id("signin-button").role(Role::Button).aria_label(t(Str::SigninButton)),
+                        cx,
+                    )
                     .w_full()
                     .py(px(14.))
                     .rounded(px(8.))

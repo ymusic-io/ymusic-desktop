@@ -61,6 +61,8 @@ const OVERLAY_SPEED: usize = 7;
 const OVERLAY_CAPTIONS: usize = 8;
 const OVERLAY_FULLSCREEN: usize = 9;
 const OVERLAY_SEEK: usize = 10;
+const OVERLAY_SIGN_IN: usize = 11;
+const OVERLAY_RETRY: usize = 12;
 const MENU_CAPTIONS: u8 = 1;
 const MENU_QUALITY: u8 = 2;
 const MENU_MORE: u8 = 4;
@@ -849,15 +851,22 @@ impl NowPlaying {
         let mut actions = h_flex().gap_1().items_center();
         if failure.needs_sign_in() {
             actions = actions.child(
-                action("np-error-signin", t(Str::SigninButton))
-                    .on_click(cx.listener(|_, _, _, cx| cx.emit(NowPlayingEvent::SignIn))),
+                self.overlay_focus.button(
+                    OVERLAY_SIGN_IN,
+                    action("np-error-signin", t(Str::SigninButton))
+                        .on_click(cx.listener(|_, _, _, cx| cx.emit(NowPlayingEvent::SignIn))),
+                    cx,
+                ),
             );
         }
         if failure.retry {
-            actions =
-                actions.child(action("np-error-retry", t(Str::Retry)).on_click(
+            actions = actions.child(self.overlay_focus.button(
+                OVERLAY_RETRY,
+                action("np-error-retry", t(Str::Retry)).on_click(
                     cx.listener(|view, _, _, cx| view.playback.update(cx, |playback, cx| playback.retry(cx))),
-                ));
+                ),
+                cx,
+            ));
         }
         Some(
             div()
