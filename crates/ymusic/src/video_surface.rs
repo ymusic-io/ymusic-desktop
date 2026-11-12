@@ -18,10 +18,15 @@ use gpui_wgpu::{
 use ym_common::log::Logger;
 use ym_mse::{Matrix, Picture, PictureKind, PlaneLayout, Presenter, VulkanFormat};
 
-/// Hands gpui's render device to the decoder, once the first window has opened it; a renderer
-/// without Vulkan video (GL, no decode queue) leaves decoding in software.
-pub fn share_render_device(log: &Logger) {
-    let Some(share) = gpui_wgpu::vulkan_device_share() else {
+/// Hands gpui's render device to the decoder once the first window has opened it, and again
+/// after each device recovery; a renderer without Vulkan video (GL, no decode queue) leaves
+/// decoding in software.
+pub fn follow_render_device(log: Logger) {
+    gpui_wgpu::on_vulkan_device_share(move |share| share_render_device(share, &log));
+}
+
+fn share_render_device(share: Option<Arc<VulkanDeviceShare>>, log: &Logger) {
+    let Some(share) = share else {
         log.info("video: the renderer has no Vulkan decode, software decoding");
         ym_mse::decode_on_vulkan(None);
         return;
