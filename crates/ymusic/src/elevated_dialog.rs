@@ -1,7 +1,7 @@
 //! The JVM app's `ElevatedBarDialog` chrome on a gpui-kit dialog: the title and the button bar on a
 //! raised ground behind dividers, a full-bleed body between them that scrolls under the bars (a
-//! shadow edge shows there is more), square-ish corners and no close button. Every dialog of the
-//! app wears it.
+//! shadow edge shows there is more), the surface's 4px corners and no close button. Every dialog
+//! of the app wears it.
 
 use std::rc::Rc;
 
@@ -23,6 +23,7 @@ pub const ROW_HORIZONTAL: f32 = 24.;
 pub const ROW_VERTICAL: f32 = 12.;
 const WIDE_GUTTER: f32 = 24.;
 const SHADOW: f32 = 6.;
+const CORNER: f32 = 4.;
 
 /// `dialog` as the chrome for a body at most `max_width` wide; the view draws the bars itself.
 pub fn chrome(dialog: Dialog, max_width: f32, window: &Window) -> Dialog {
@@ -32,7 +33,7 @@ pub fn chrome(dialog: Dialog, max_width: f32, window: &Window) -> Dialog {
         .p_0()
         .gap_0()
         .border_0()
-        .rounded(px(4.))
+        .rounded(px(CORNER))
         .overflow_hidden()
         .close_button(false)
         .centered()
@@ -59,6 +60,7 @@ pub fn title_bar_with(title: impl Into<SharedString>, action: Option<impl IntoEl
     v_flex()
         .w_full()
         .flex_shrink_0()
+        .rounded_t(px(CORNER))
         .bg(bar_color(cx))
         .child(
             h_flex()
@@ -91,6 +93,7 @@ pub fn button_bar(content: impl IntoElement, cx: &App) -> Div {
     v_flex()
         .w_full()
         .flex_shrink_0()
+        .rounded_b(px(CORNER))
         .bg(bar_color(cx))
         .child(div().h(px(1.)).w_full().bg(theme.border))
         .child(h_flex().w_full().px(px(12.)).py(px(2.)).justify_end().items_center().child(content))
