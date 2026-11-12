@@ -197,7 +197,7 @@ impl PlayAgainView {
                     .flex_shrink_0()
                     .rounded(px(6.))
                     .overflow_hidden()
-                    .bg(theme.secondary)
+                    .bg(theme.muted)
                     .when(current == Some(offset), |tile| tile.border_1().border_color(theme.primary))
                     .when_some(thumb.clone(), |tile, url| {
                         tile.child(
@@ -240,6 +240,7 @@ impl PlayAgainView {
         self.focus
             .item(position, base, cx)
             .rounded(px(6.))
+            .bg(theme.secondary)
             .border_1()
             .border_color(theme.border)
             .pl_4()
@@ -258,7 +259,7 @@ impl PlayAgainView {
                             .flex_shrink_0()
                             .rounded(px(10.))
                             .overflow_hidden()
-                            .bg(theme.secondary)
+                            .bg(theme.muted)
                             .when_some(session.thumbnail_url.clone(), |frame, url| {
                                 frame.child(
                                     img(SharedString::from(url))
