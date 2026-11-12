@@ -1206,9 +1206,10 @@ impl Playback {
     {
         let Some(session) = self.session.clone() else { return };
         let log = cx.global::<AppGraph>().log.fork("playback");
-        let done = on_core(cx, run(session.engine.clone(), log));
+        let done = on_core(cx, run(session.engine.clone(), log.clone()));
         cx.spawn(async move |this, cx| {
             if let Some(Err(error)) = done.await {
+                log.capture_error("player command failed", &error);
                 this.update(cx, |playback, cx| {
                     playback.state = PlayState::Failed(PlaybackFailure::engine(&error));
                     cx.notify();
@@ -1225,6 +1226,7 @@ impl Playback {
         }
         self.booting = true;
         let sessions = cx.global::<AppGraph>().youtube.clone();
+        let log = cx.global::<AppGraph>().log.fork("playback");
         let boot = on_core(cx, async move { sessions.get().await });
         cx.spawn(async move |this, cx| {
             let result = boot.await;
@@ -1248,7 +1250,10 @@ impl Playback {
                             });
                         }
                     }
-                    Some(Err(error)) => playback.state = PlayState::Failed(PlaybackFailure::engine(&error)),
+                    Some(Err(error)) => {
+                        log.capture_error("the player session did not boot", &error);
+                        playback.state = PlayState::Failed(PlaybackFailure::engine(&error));
+                    }
                     None => {}
                 }
                 cx.notify();

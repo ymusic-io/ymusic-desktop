@@ -83,11 +83,13 @@ impl YoutubeSessions {
             let engine = match DynamicEngine::create(script, config.clone()).await {
                 Ok(engine) => Arc::new(engine),
                 Err(error) => {
+                    self.log.warn("a player bundle did not load", Some(&error));
                     last_error = Some(error);
                     continue;
                 }
             };
             if let Err(error) = engine.health_check().await {
+                self.log.warn("a player bundle failed its health check", Some(&error));
                 engine.close().await;
                 last_error = Some(error);
                 continue;
