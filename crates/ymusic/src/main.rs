@@ -67,6 +67,8 @@ mod video_details;
 mod video_layer;
 #[cfg(target_os = "windows")]
 mod win_title_bar;
+#[cfg(target_os = "windows")]
+mod win_video_layer;
 mod youtube_session;
 mod yt_playlist;
 
@@ -253,9 +255,10 @@ fn main() {
             } else {
                 WindowKind::Normal
             },
-            // The video view sits behind gpui's, so the window and Root stay unpainted and the
-            // Shell paints everything but the video box. Windows paints its video in gpui, and its
-            // transparent mode (an accent policy) would blacken the native caption.
+            // The video sits behind gpui's view (Windows: a DirectComposition underlay), so Root
+            // stays unpainted and the Shell paints everything but the video box. Windows stays
+            // opaque, as its transparent mode (an accent policy) would blacken the native caption;
+            // gpui clears to transparent there while the underlay shows.
             window_background: if cfg!(target_os = "windows") {
                 WindowBackgroundAppearance::Opaque
             } else {
@@ -272,13 +275,7 @@ fn main() {
                 Some((locked, inputs, log_setup)) => Launch::locked(locked, inputs, log_setup, window, cx),
                 None => Launch::shell(window, cx),
             });
-            // An opaque Windows window clears to white wherever nothing paints.
-            let ground = if cfg!(target_os = "windows") {
-                gpui_kit::component::ActiveTheme::theme(cx).background
-            } else {
-                transparent_black()
-            };
-            cx.new(|cx| gpui_kit::base::Root::new(launch, window, cx).bg(ground))
+            cx.new(|cx| gpui_kit::base::Root::new(launch, window, cx).bg(transparent_black()))
         })
         .expect("open main window");
         cx.activate(true);

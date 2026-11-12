@@ -28,7 +28,10 @@ use crate::playback::{
 };
 use crate::queue_nav::LoopMode;
 use crate::sponsor_block::SponsorBlock;
+#[cfg(not(target_os = "windows"))]
 use crate::video_layer::VideoLayer;
+#[cfg(target_os = "windows")]
+use crate::win_video_layer::VideoLayer;
 
 const CONTROLS_HIDE_AFTER: Duration = Duration::from_secs(3);
 const SKIP_MS: i64 = 10_000;

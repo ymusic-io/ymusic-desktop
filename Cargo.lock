@@ -9815,6 +9815,7 @@ dependencies = [
  "embed-resource",
  "futures",
  "gpui-kit",
+ "gpui-pre-windows",
  "image",
  "ksni",
  "libc",
