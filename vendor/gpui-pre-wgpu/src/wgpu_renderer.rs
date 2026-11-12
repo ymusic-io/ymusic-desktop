@@ -82,13 +82,6 @@ impl From<Bounds<ScaledPixels>> for PodBounds {
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
-struct SurfaceParams {
-    bounds: PodBounds,
-    content_mask: PodBounds,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable)]
 struct GammaParams {
     gamma_ratios: [f32; 4],
     grayscale_enhanced_contrast: f32,
@@ -133,7 +126,6 @@ struct WgpuPipelines {
     mono_sprites: wgpu::RenderPipeline,
     subpixel_sprites: Option<wgpu::RenderPipeline>,
     poly_sprites: wgpu::RenderPipeline,
-    #[allow(dead_code)]
     surfaces: wgpu::RenderPipeline,
 }
 
@@ -195,6 +187,7 @@ struct WgpuResources {
     path_intermediate_view: Option<wgpu::TextureView>,
     path_msaa_texture: Option<wgpu::Texture>,
     path_msaa_view: Option<wgpu::TextureView>,
+    video: crate::video::VideoSurfaces,
     #[cfg(all(
         not(target_family = "wasm"),
         any(target_os = "linux", target_os = "freebsd")
@@ -631,9 +624,7 @@ impl WgpuRendererCore {
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
-                        min_binding_size: NonZeroU64::new(
-                            std::mem::size_of::<SurfaceParams>() as u64
-                        ),
+                        min_binding_size: NonZeroU64::new(crate::video::SURFACE_PARAMS_SIZE),
                     },
                     count: None,
                 },
@@ -661,6 +652,16 @@ impl WgpuRendererCore {
                     binding: 3,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
                     count: None,
                 },
             ],
@@ -1404,6 +1405,7 @@ impl WgpuRendererCore {
                 path_intermediate_view: None,
                 path_msaa_texture: None,
                 path_msaa_view: None,
+                video: Default::default(),
                 #[cfg(all(
                     not(target_family = "wasm"),
                     any(target_os = "linux", target_os = "freebsd")
@@ -1554,6 +1556,17 @@ impl WgpuRendererCore {
                 )
             })?;
         self.prepare_texture_bind_groups(scene);
+        let mut surfaces = self.prepare_surfaces(scene);
+        #[cfg(all(
+            not(target_family = "wasm"),
+            any(target_os = "linux", target_os = "freebsd")
+        ))]
+        let barriers = surfaces.record_barriers(&self.resources().device);
+        #[cfg(not(all(
+            not(target_family = "wasm"),
+            any(target_os = "linux", target_os = "freebsd")
+        )))]
+        let barriers: Option<wgpu::CommandBuffer> = None;
 
         let mut encoder =
             self.resources()
@@ -1666,19 +1679,45 @@ impl WgpuRendererCore {
                             &mut pass,
                         )?;
                     }
-                    // Surfaces are macOS-only for video playback and are not
-                    // implemented by the WGPU renderer.
-                    PrimitiveBatch::Surfaces(_surfaces) => {}
+                    PrimitiveBatch::Surfaces(range) => crate::video::draw_surfaces(
+                        &surfaces,
+                        range,
+                        &self.resources().pipelines.surfaces,
+                        &self.resources().globals_bind_group,
+                        &mut pass,
+                    ),
                 }
             }
         }
 
         let _queue = self.resources().lock_queue();
+        #[cfg(all(
+            not(target_family = "wasm"),
+            any(target_os = "linux", target_os = "freebsd")
+        ))]
+        surfaces.before_submit(&self.resources().queue);
         let submission = self
             .resources()
             .queue
-            .submit(std::iter::once(encoder.finish()));
+            .submit(barriers.into_iter().chain(std::iter::once(encoder.finish())));
+        drop(surfaces);
         Ok(submission)
+    }
+
+    fn prepare_surfaces(&mut self, scene: &Scene) -> crate::video::PreparedSurfaces {
+        let resources = &mut self.resources;
+        let context = crate::video::SurfaceContext {
+            device: &resources.device,
+            queue: &resources.queue,
+            layout: &resources.bind_group_layouts.surfaces,
+            sampler: &resources.atlas_sampler,
+            #[cfg(all(
+                not(target_family = "wasm"),
+                any(target_os = "linux", target_os = "freebsd")
+            ))]
+            share: resources.video_share.as_deref(),
+        };
+        resources.video.prepare(&context, scene)
     }
 
     fn write_instances(

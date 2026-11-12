@@ -236,10 +236,9 @@ pub(crate) fn open_device(
     let Some(plan) = plan(adapter) else {
         return Ok(None);
     };
-    let mut required_features = descriptor.required_features;
-    if adapter.features().contains(wgpu::Features::TEXTURE_FORMAT_NV12) {
-        required_features |= wgpu::Features::TEXTURE_FORMAT_NV12;
-    }
+    let required_features = descriptor.required_features
+        | (adapter.features()
+            & (wgpu::Features::TEXTURE_FORMAT_NV12 | wgpu::Features::TEXTURE_FORMAT_P010));
     let mut sync2 = vk::PhysicalDeviceSynchronization2Features::default().synchronization2(true);
     let mut vp9 = Vp9Features::new(true);
     let open = {

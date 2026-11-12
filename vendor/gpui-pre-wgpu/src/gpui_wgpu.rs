@@ -1,4 +1,5 @@
 mod cosmic_text_system;
+mod video;
 #[cfg(all(
     not(target_family = "wasm"),
     any(target_os = "linux", target_os = "freebsd")
@@ -9,6 +10,12 @@ mod wgpu_context;
 mod wgpu_renderer;
 
 pub use cosmic_text_system::*;
+pub use video::{PlaneLayout, VideoColor, VideoMatrix, VideoPlanes, VideoSource, WgpuVideoFrame};
+#[cfg(all(
+    not(target_family = "wasm"),
+    any(target_os = "linux", target_os = "freebsd")
+))]
+pub use video::{VulkanImageAccess, VulkanImageState, VulkanVideoFormat, VulkanVideoImage};
 #[cfg(all(
     not(target_family = "wasm"),
     any(target_os = "linux", target_os = "freebsd")

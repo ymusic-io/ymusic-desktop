@@ -1315,19 +1315,20 @@ fn fs_poly_sprite(input: PolySpriteVarying) -> @location(0) vec4<f32> {
 struct SurfaceParams {
     bounds: Bounds,
     content_mask: Bounds,
+    // (Y, Cb, Cr, 1) to non-linear RGB: the picture's matrix and range.
+    color: mat4x4<f32>,
+    // Visible size over the planes' size.
+    uv_scale: vec2<f32>,
+    // 2: Y + CbCr, 3: Y + Cb + Cr.
+    planes: u32,
+    pad: u32,
 }
 
 @group(1) @binding(0) var<uniform> surface_locals: SurfaceParams;
 @group(1) @binding(1) var t_y: texture_2d<f32>;
 @group(1) @binding(2) var t_cb_cr: texture_2d<f32>;
 @group(1) @binding(3) var s_surface: sampler;
-
-const ycbcr_to_RGB = mat4x4<f32>(
-    vec4<f32>( 1.0000f,  1.0000f,  1.0000f, 0.0),
-    vec4<f32>( 0.0000f, -0.3441f,  1.7720f, 0.0),
-    vec4<f32>( 1.4020f, -0.7141f,  0.0000f, 0.0),
-    vec4<f32>(-0.7010f,  0.5291f, -0.8860f, 1.0),
-);
+@group(1) @binding(4) var t_cr: texture_2d<f32>;
 
 struct SurfaceVarying {
     @builtin(position) position: vec4<f32>,
@@ -1353,10 +1354,12 @@ fn fs_surface(input: SurfaceVarying) -> @location(0) vec4<f32> {
         return vec4<f32>(0.0);
     }
 
-    let y_cb_cr = vec4<f32>(
-        textureSampleLevel(t_y, s_surface, input.texture_position, 0.0).r,
-        textureSampleLevel(t_cb_cr, s_surface, input.texture_position, 0.0).rg,
-        1.0);
-
-    return ycbcr_to_RGB * y_cb_cr;
+    let uv = input.texture_position * surface_locals.uv_scale;
+    let y = textureSampleLevel(t_y, s_surface, uv, 0.0).r;
+    var cb_cr = textureSampleLevel(t_cb_cr, s_surface, uv, 0.0).rg;
+    if (surface_locals.planes == 3u) {
+        cb_cr.y = textureSampleLevel(t_cr, s_surface, uv, 0.0).r;
+    }
+    let rgb = surface_locals.color * vec4<f32>(y, cb_cr, 1.0);
+    return vec4<f32>(saturate(rgb.rgb), 1.0);
 }
