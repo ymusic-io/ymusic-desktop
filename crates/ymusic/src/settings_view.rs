@@ -1,5 +1,6 @@
 //! Settings: appearance, playback, downloads, account, privacy and about.
 
+use std::cell::Cell;
 use std::path::PathBuf;
 
 use gpui_kit::component::button::{Button, ButtonVariants};
@@ -14,6 +15,7 @@ use ym_engine::yt::{YtAccountInfo, YtLocales};
 use ym_i18n::{Str, t, tf};
 use ym_settings::SettingsStore;
 
+use crate::a11y::FocusList;
 use crate::accent::{ACCENT_KEY, AccentPicker, accent_color};
 use crate::caption_style::{CaptionLook, CaptionStyleDialog};
 use crate::downloads::download_folder;
@@ -149,6 +151,7 @@ pub struct SettingsView {
     /// Bytes the player cache holds, read off the UI thread; 0 until the first answer.
     cache_used: i64,
     scroll: ScrollHandle,
+    focus: FocusList,
 }
 
 impl EventEmitter<LocaleChanged> for SettingsView {}
@@ -156,6 +159,7 @@ impl EventEmitter<AccountChanged> for SettingsView {}
 
 impl SettingsView {
     pub fn new(playback: Entity<crate::playback::Playback>, cx: &mut Context<Self>) -> Self {
+        let scroll = ScrollHandle::new();
         let mut view = Self {
             playback,
             account: None,
@@ -163,7 +167,8 @@ impl SettingsView {
             locales: None,
             locales_loading: false,
             cache_used: 0,
-            scroll: ScrollHandle::new(),
+            scroll: scroll.clone(),
+            focus: FocusList::new(Some(scroll)),
         };
         view.refresh_account(cx);
         view.load_locales(cx);
@@ -381,6 +386,10 @@ fn section(label: &'static str, rows: Vec<AnyElement>, cx: &App) -> impl IntoEle
 }
 
 fn row(title: impl Into<SharedString>, hint: Option<String>, control: impl IntoElement, cx: &App) -> AnyElement {
+    row_body(title, hint, control, cx).into_any_element()
+}
+
+fn row_body(title: impl Into<SharedString>, hint: Option<String>, control: impl IntoElement, cx: &App) -> Div {
     let theme = cx.theme();
     h_flex()
         .gap_4()
@@ -393,7 +402,6 @@ fn row(title: impl Into<SharedString>, hint: Option<String>, control: impl IntoE
             }),
         )
         .child(div().flex_shrink_0().child(control))
-        .into_any_element()
 }
 
 fn language_name(tag: &str) -> String {
@@ -432,52 +440,48 @@ fn language_name(tag: &str) -> String {
     if tag.len() > base.len() { format!("{name} ({})", &tag[base.len() + 1..]) } else { name.to_owned() }
 }
 
-fn link_row(id: &'static str, title: &'static str, url: String, cx: &App) -> AnyElement {
-    row(
-        title,
-        None,
-        Button::new(id)
+impl SettingsView {
+    fn link_row(&self, index: usize, id: &'static str, title: &'static str, url: String, cx: &App) -> AnyElement {
+        let button = Button::new(id)
             .small()
             .ghost()
             .icon(IconName::ExternalLink)
             .accessibility_label(title)
             .tooltip(url.clone())
-            .on_click(move |_, _, cx| cx.open_url(&url)),
-        cx,
-    )
-}
+            .on_click(move |_, _, cx| cx.open_url(&url));
+        row(title, None, self.focus.button(index, button, cx), cx)
+    }
 
-impl SettingsView {
     fn toggle(
         &self,
-        id: &'static str,
+        index: usize,
         key: &'static str,
         title: &'static str,
         hint: &'static str,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let checked = saved(cx.global::<AppGraph>().settings.as_ref(), key) != "false";
-        self.toggle_with(id, key, title, hint, checked, cx)
+        self.toggle_with(index, key, title, hint, checked, cx)
     }
 
+    /// A row that is the switch: the whole row is the stop and the click target.
     fn toggle_with(
         &self,
-        id: &'static str,
+        index: usize,
         key: &'static str,
         title: &'static str,
         hint: &'static str,
         checked: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        row(
-            title,
-            Some(hint.to_owned()),
-            Switch::new(id)
-                .checked(checked)
-                .accessibility_label(title)
-                .on_click(cx.listener(move |view, checked: &bool, _, cx| view.put(key, checked.to_string(), cx))),
-            cx,
-        )
+        let body = row_body(title, Some(hint.to_owned()), Switch::new(key).checked(checked).tab_stop(false), cx)
+            .id(SharedString::from(format!("{key}-row")))
+            .role(Role::Switch)
+            .aria_label(title)
+            .aria_toggled(if checked { Toggled::True } else { Toggled::False })
+            .cursor_pointer()
+            .on_click(cx.listener(move |view, _, _, cx| view.put(key, (!checked).to_string(), cx)));
+        self.focus.item(index, body, cx).into_any_element()
     }
 }
 
@@ -504,6 +508,8 @@ impl Render for SettingsView {
         let cache_saved = graph.player_cache.as_ref().map(|cache| cache.hit_bytes());
         let cache_max_mb = crate::player_cache::saved_max_mb(settings.as_ref());
 
+        let stops = Cell::new(0);
+        let next = || stops.replace(stops.get() + 1);
         let theme_label = t(match theme_choice.as_str() {
             "light" => Str::SettingsThemeLight,
             "dark" => Str::SettingsThemeDark,
@@ -511,8 +517,13 @@ impl Render for SettingsView {
             _ => Str::SettingsThemeSystem,
         });
         let entity = cx.entity().downgrade();
-        let theme_menu =
-            Button::new("theme").small().ghost().label(theme_label).dropdown_menu(move |mut menu, _, _| {
+        let theme_stop = next();
+        let theme_menu = Button::new("theme")
+            .small()
+            .ghost()
+            .label(theme_label)
+            .track_focus(&self.focus.handle(theme_stop, cx))
+            .dropdown_menu(move |mut menu, _, _| {
                 for (choice, label) in [
                     ("", Str::SettingsThemeSystem),
                     ("light", Str::SettingsThemeLight),
@@ -526,6 +537,7 @@ impl Render for SettingsView {
                 }
                 menu
             });
+        let theme_menu = self.focus.wrap(theme_stop, theme_menu, cx);
 
         let entity = cx.entity().downgrade();
         let accent_button = Button::new("accent")
@@ -544,12 +556,18 @@ impl Render for SettingsView {
                     cx,
                 );
             });
+        let accent_button = self.focus.button(next(), accent_button, cx);
 
         let language_label =
             if language.is_empty() { t(Str::SettingsThemeSystem).to_owned() } else { language_name(&language) };
         let entity = cx.entity().downgrade();
-        let language_menu =
-            Button::new("language").small().ghost().label(language_label).dropdown_menu(move |mut menu, _, _| {
+        let language_stop = next();
+        let language_menu = Button::new("language")
+            .small()
+            .ghost()
+            .label(language_label)
+            .track_focus(&self.focus.handle(language_stop, cx))
+            .dropdown_menu(move |mut menu, _, _| {
                 menu = menu.scrollable(true).max_h(px(360.));
                 let system = entity.clone();
                 menu = menu.item(PopupMenuItem::new(t(Str::SettingsThemeSystem)).on_click(move |_, window, cx| {
@@ -563,6 +581,7 @@ impl Render for SettingsView {
                 }
                 menu
             });
+        let language_menu = self.focus.wrap(language_stop, language_menu, cx);
 
         let region_label = self
             .locales
@@ -583,20 +602,19 @@ impl Render for SettingsView {
             .label(region_label)
             .busy(self.locales.is_none() && self.locales_loading)
             .on_click(cx.listener(|_, _, window, cx| RegionPicker::open(cx.entity(), window, cx)));
+        let region_button = self.focus.button(next(), region_button, cx);
 
-        let account_control: AnyElement = match &self.account {
+        let account_control = match &self.account {
             Some(account) if account.signed_in => Button::new("sign-out")
                 .small()
                 .label(t(Str::AccountSignOut))
                 .busy(self.signing_out)
-                .on_click(cx.listener(|view, _, _, cx| view.sign_out(cx)))
-                .into_any_element(),
+                .on_click(cx.listener(|view, _, _, cx| view.sign_out(cx))),
             _ => Button::new("sign-in")
                 .small()
                 .primary()
                 .label(t(Str::SigninButton))
-                .on_click(|_, window, cx| window.dispatch_action(Box::new(crate::shortcuts::OpenSignIn), cx))
-                .into_any_element(),
+                .on_click(|_, window, cx| window.dispatch_action(Box::new(crate::shortcuts::OpenSignIn), cx)),
         };
         let account_title = match &self.account {
             Some(account) if account.signed_in => {
@@ -624,29 +642,31 @@ impl Render for SettingsView {
             row(
                 t(Str::SettingsSound),
                 Some(t(Str::SettingsSoundHint).to_owned()),
-                Button::new("sound").small().ghost().label(t(Str::SoundTitle)).on_click(cx.listener(
-                    |view, _, window, cx| crate::sound_panel::SoundPanel::open(view.playback.clone(), window, cx),
-                )),
+                self.focus.button(
+                    next(),
+                    Button::new("sound").small().ghost().label(t(Str::SoundTitle)).on_click(cx.listener(
+                        |view, _, window, cx| crate::sound_panel::SoundPanel::open(view.playback.clone(), window, cx),
+                    )),
+                    cx,
+                ),
                 cx,
             ),
             row(
                 t(Str::SettingsCaptionStyle),
                 Some(t(Str::SettingsCaptionStyleHint).to_owned()),
-                Button::new("caption-style")
-                    .small()
-                    .ghost()
-                    .accessibility_label(t(Str::SettingsCaptionStyle))
-                    .child(crate::caption_style::sample(caption_look))
-                    .on_click(|_, window, cx| CaptionStyleDialog::open(window, cx)),
+                self.focus.button(
+                    next(),
+                    Button::new("caption-style")
+                        .small()
+                        .ghost()
+                        .accessibility_label(t(Str::SettingsCaptionStyle))
+                        .child(crate::caption_style::sample(caption_look))
+                        .on_click(|_, window, cx| CaptionStyleDialog::open(window, cx)),
+                    cx,
+                ),
                 cx,
             ),
-            self.toggle(
-                "sponsor-block",
-                SPONSOR_BLOCK_KEY,
-                t(Str::SettingsSponsorBlock),
-                t(Str::SettingsSponsorBlockHint),
-                cx,
-            ),
+            self.toggle(next(), SPONSOR_BLOCK_KEY, t(Str::SettingsSponsorBlock), t(Str::SettingsSponsorBlockHint), cx),
         ];
         if let Some(saved) = cache_saved {
             let summary = if cache_max_mb > 0 {
@@ -662,11 +682,13 @@ impl Render for SettingsView {
                 t(Str::SettingsPlayerCacheOff).to_owned()
             };
             let entity = cx.entity().downgrade();
+            let cache_stop = next();
             let menu = Button::new("player-cache")
                 .small()
                 .ghost()
                 .label(crate::player_cache::max_label(cache_max_mb))
                 .accessibility_label(t(Str::SettingsPlayerCache))
+                .track_focus(&self.focus.handle(cache_stop, cx))
                 .dropdown_menu(move |mut menu, _, _| {
                     for max_mb in crate::player_cache::SIZE_CHOICES_MB {
                         let view = entity.clone();
@@ -680,6 +702,7 @@ impl Render for SettingsView {
                     }
                     menu
                 });
+            let menu = self.focus.wrap(cache_stop, menu, cx);
             playback.push(row(t(Str::SettingsPlayerCache), Some(summary), menu, cx));
         }
         let downloads = vec![row(
@@ -689,40 +712,43 @@ impl Render for SettingsView {
                     .map(|folder| folder.display().to_string())
                     .unwrap_or_else(|| t(Str::DownloadLocationNotSet).to_owned()),
             ),
-            Button::new("download-folder")
-                .small()
-                .ghost()
-                .label(t(Str::MenuDownloadLocation))
-                .on_click(cx.listener(|view, _, window, cx| view.choose_folder(window, cx))),
+            self.focus.button(
+                next(),
+                Button::new("download-folder")
+                    .small()
+                    .ghost()
+                    .label(t(Str::MenuDownloadLocation))
+                    .on_click(cx.listener(|view, _, window, cx| view.choose_folder(window, cx))),
+                cx,
+            ),
             cx,
         )];
         let downloads = downloads.into_iter().chain([row(
             t(Str::SettingsQuickDownload),
             None,
-            Button::new("quick-download")
-                .small()
-                .ghost()
-                .label(crate::quick_download::saved_preset(cx).label())
-                .on_click(|_, window, cx| crate::quick_download::QuickPresetEditor::open(window, cx)),
+            self.focus.button(
+                next(),
+                Button::new("quick-download")
+                    .small()
+                    .ghost()
+                    .label(crate::quick_download::saved_preset(cx).label())
+                    .on_click(|_, window, cx| crate::quick_download::QuickPresetEditor::open(window, cx)),
+                cx,
+            ),
             cx,
         )]);
         let downloads: Vec<AnyElement> = downloads.collect();
+        let account_control = self.focus.button(next(), account_control, cx);
         let account = vec![row(account_title, account_hint, account_control, cx)];
         let privacy = vec![
-            self.toggle(
-                "crash-reports",
-                CRASH_REPORTS_KEY,
-                t(Str::SettingsCrashReports),
-                t(Str::SettingsCrashReportsHint),
-                cx,
-            ),
-            self.toggle("stats", STATS_KEY, t(Str::SettingsStats), t(Str::SettingsStatsHint), cx),
+            self.toggle(next(), CRASH_REPORTS_KEY, t(Str::SettingsCrashReports), t(Str::SettingsCrashReportsHint), cx),
+            self.toggle(next(), STATS_KEY, t(Str::SettingsStats), t(Str::SettingsStatsHint), cx),
         ];
         let mut about = vec![row(t(Str::SettingsVersions), Some(versions), div(), cx)];
         // Installing still waits for a tap.
         if can_update {
             about.push(self.toggle(
-                "auto-update",
+                next(),
                 AUTO_UPDATE_KEY,
                 t(Str::SettingsAutoUpdate),
                 t(Str::SettingsAutoUpdateHint),
@@ -730,23 +756,27 @@ impl Render for SettingsView {
             ));
         }
         about.extend([
-            link_row("changelog", t(Str::SettingsChangelog), changelog_url, cx),
-            link_row("source", t(Str::SettingsSourceCode), source_url, cx),
-            link_row("terms", t(Str::SettingsTerms), terms_url, cx),
+            self.link_row(next(), "changelog", t(Str::SettingsChangelog), changelog_url, cx),
+            self.link_row(next(), "source", t(Str::SettingsSourceCode), source_url, cx),
+            self.link_row(next(), "terms", t(Str::SettingsTerms), terms_url, cx),
             row(
                 t(Str::SettingsLicenses),
                 None,
-                Button::new("licenses")
-                    .small()
-                    .ghost()
-                    .icon(IconName::ChevronRight)
-                    .accessibility_label(t(Str::SettingsLicenses))
-                    .on_click(|_, window, cx| Licenses::open(window, cx)),
+                self.focus.button(
+                    next(),
+                    Button::new("licenses")
+                        .small()
+                        .ghost()
+                        .icon(IconName::ChevronRight)
+                        .accessibility_label(t(Str::SettingsLicenses))
+                        .on_click(|_, window, cx| Licenses::open(window, cx)),
+                    cx,
+                ),
                 cx,
             ),
         ]);
         let debug = vec![self.toggle_with(
-            "show-fps",
+            next(),
             SHOW_FPS_KEY,
             t(Str::SettingsShowFps),
             t(Str::SettingsShowFpsHint),
@@ -764,6 +794,7 @@ impl Render for SettingsView {
             .child(section(t(Str::SettingsSectionPrivacy), privacy, cx))
             .child(section(t(Str::SettingsSectionAbout), about, cx))
             .child(section(t(Str::SettingsDebug), debug, cx));
+        let content = self.focus.container(content, 0..stops.get(), cx);
 
         div().id("settings-scroll").size_full().overflow_y_scroll().track_scroll(&self.scroll).child(content)
     }
