@@ -1,7 +1,6 @@
 //! Settings dialogs that are lists: the content region picker and the open source licenses.
 
-use gpui_kit::component::button::Button;
-use gpui_kit::component::{ActiveTheme, Sizable, StyledExt, WindowExt, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme, StyledExt, WindowExt, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder;
 use std::rc::Rc;
 
@@ -10,19 +9,37 @@ use gpui_kit::*;
 use ym_i18n::{Str, t};
 
 use crate::a11y::FocusList;
-use crate::settings_view::SettingsView;
+use crate::elevated_dialog::{
+    DEFAULT_WIDTH, ROW_HORIZONTAL, ROW_VERTICAL, button_bar, chrome, press, scroll_body, text_button, title_bar,
+};
+use crate::settings_view::{HOVER_ALPHA, SettingsView};
 use crate::spinner::Spinner;
 
-fn list_height(window: &Window) -> f32 {
-    (f32::from(window.viewport_size().height) - 200.).clamp(240., 620.)
+fn close_button(index: usize, focus: &FocusList, label: &'static str, cx: &App) -> Div {
+    press(
+        focus,
+        index,
+        text_button("list-close", label, false, true, cx),
+        true,
+        |_, window, cx| window.close_dialog(cx),
+        cx,
+    )
 }
 
-fn close_button(index: usize, focus: &FocusList, label: &'static str, cx: &App) -> Div {
-    h_flex().justify_end().pt_2().child(focus.button(
-        index,
-        Button::new("list-close").small().label(label).on_click(|_, window, cx| window.close_dialog(cx)),
-        cx,
-    ))
+/// The list dialog's column: the title, the scrolling `list` and the bar with `dismiss`.
+fn list_dialog<V: 'static>(
+    title: &'static str,
+    list: impl IntoElement,
+    dismiss: Div,
+    scroll: &ScrollHandle,
+    window: &Window,
+    cx: &mut Context<V>,
+) -> Div {
+    v_flex()
+        .w_full()
+        .child(title_bar(title, cx))
+        .child(scroll_body("dialog-list", scroll, list, window, cx))
+        .child(button_bar(dismiss, cx))
 }
 
 /// The regions YouTube offers, labelled in the content language; the current one is marked.
@@ -47,10 +64,7 @@ impl RegionPicker {
                 _observe: observe,
             }
         });
-        let height = list_height(window);
-        window.open_dialog(cx, move |dialog, _, _| {
-            dialog.title(t(Str::SettingsContentRegion)).width(px(420.)).child(div().h(px(height)).child(view.clone()))
-        });
+        window.open_dialog(cx, move |dialog, window, _| chrome(dialog, DEFAULT_WIDTH, window).child(view.clone()));
     }
 }
 
@@ -86,12 +100,13 @@ impl Render for RegionPicker {
                 .role(Role::RadioButton)
                 .aria_label(region.label.clone())
                 .aria_toggled(if is_selected { Toggled::True } else { Toggled::False })
-                .px_4()
-                .py(px(10.))
-                .rounded(px(6.))
+                .w_full()
+                .px(px(ROW_HORIZONTAL))
+                .py(px(ROW_VERTICAL))
                 .cursor_pointer()
-                .hover(|style| style.bg(theme.secondary))
-                .text_sm()
+                .hover(|style| style.bg(theme.primary.opacity(HOVER_ALPHA)))
+                .text_size(px(14.))
+                .text_color(theme.foreground)
                 .when(is_selected, |row| row.font_semibold().text_color(theme.primary))
                 .child(region.label.clone())
                 .on_click(move |_, window, cx| pick(window, cx))
@@ -103,10 +118,9 @@ impl Render for RegionPicker {
             list = list.child(h_flex().justify_center().py_6().child(Spinner::new()));
         }
         let close = regions.len();
-        self.focus
-            .container(v_flex().size_full(), 0..close + 1, cx)
-            .child(div().id("regions").flex_1().min_h_0().overflow_y_scroll().track_scroll(&self.scroll).child(list))
-            .child(close_button(close, &self.focus, t(Str::DialogCancel), cx))
+        let dismiss = close_button(close, &self.focus, t(Str::DialogCancel), cx);
+        let column = list_dialog(t(Str::SettingsContentRegion), list, dismiss, &self.scroll, window, cx);
+        self.focus.container(column, 0..close + 1, cx)
     }
 }
 
@@ -167,10 +181,7 @@ impl Licenses {
             let scroll = ScrollHandle::new();
             Self { focus: FocusList::modal(Some(scroll.clone()), cx), scroll, focused_first: false }
         });
-        let height = list_height(window);
-        window.open_dialog(cx, move |dialog, _, _| {
-            dialog.title(t(Str::SettingsLicenses)).width(px(520.)).child(div().h(px(height)).child(view.clone()))
-        });
+        window.open_dialog(cx, move |dialog, window, _| chrome(dialog, DEFAULT_WIDTH, window).child(view.clone()));
     }
 }
 
@@ -182,8 +193,13 @@ impl Render for Licenses {
             window.defer(cx, move |window, cx| window.focus(&first, cx));
         }
         let theme = cx.theme().clone();
-        let mut list = v_flex().child(
-            div().px_4().pb_3().text_xs().text_color(theme.muted_foreground).child(t(Str::SettingsLicensesIntro)),
+        let mut list = v_flex().w_full().child(
+            div()
+                .px(px(ROW_HORIZONTAL))
+                .py(px(ROW_VERTICAL))
+                .text_size(px(12.))
+                .text_color(theme.muted_foreground)
+                .child(t(Str::SettingsLicensesIntro)),
         );
         for (index, component) in COMPONENTS.iter().enumerate() {
             let url = component.url;
@@ -191,23 +207,28 @@ impl Render for Licenses {
                 .id(("license", index))
                 .role(Role::Link)
                 .aria_label(format!("{}, {}", component.name, component.license))
+                .w_full()
                 .gap_4()
-                .px_4()
+                .px(px(ROW_HORIZONTAL))
                 .py_2()
                 .items_center()
-                .rounded(px(6.))
                 .cursor_pointer()
-                .hover(|style| style.bg(theme.secondary))
-                .child(div().flex_1().min_w_0().text_sm().child(component.name))
-                .child(div().flex_shrink_0().text_xs().text_color(theme.muted_foreground).child(component.license))
+                .hover(|style| style.bg(theme.primary.opacity(HOVER_ALPHA)))
+                .child(div().flex_1().min_w_0().text_size(px(13.)).child(component.name))
+                .child(
+                    div()
+                        .flex_shrink_0()
+                        .text_size(px(12.))
+                        .text_color(theme.muted_foreground)
+                        .child(component.license),
+                )
                 .on_click(move |_, _, cx| cx.open_url(url))
                 .on_action(move |_: &Confirm, _, cx| cx.open_url(url));
             list = list.child(self.focus.item(index, row, cx));
         }
         let close = COMPONENTS.len();
-        self.focus
-            .container(v_flex().size_full(), 0..close + 1, cx)
-            .child(div().id("licenses").flex_1().min_h_0().overflow_y_scroll().track_scroll(&self.scroll).child(list))
-            .child(close_button(close, &self.focus, t(Str::CdClose), cx))
+        let dismiss = close_button(close, &self.focus, t(Str::CdClose), cx);
+        let column = list_dialog(t(Str::SettingsLicenses), list, dismiss, &self.scroll, window, cx);
+        self.focus.container(column, 0..close + 1, cx)
     }
 }

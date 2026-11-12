@@ -3,9 +3,8 @@
 
 use gpui_kit::base::actions::Confirm;
 use gpui_kit::base::slider::{SliderEvent, SliderState};
-use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::slider::Slider;
-use gpui_kit::component::{ActiveTheme, Icon, IconName, Sizable, StyledExt, WindowExt, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme, Icon, IconName, StyledExt, WindowExt, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use ym_i18n::{Str, t};
@@ -13,6 +12,9 @@ use ym_settings::SettingsStore;
 
 use crate::a11y::{FocusList, OnStep, SliderStop};
 use crate::accent::Rgb;
+use crate::elevated_dialog::{
+    DEFAULT_WIDTH, ROW_HORIZONTAL, button_bar, chrome, press, scroll_body, text_button, title_bar,
+};
 use crate::settings_view::save_setting;
 
 pub const SCALE_KEY: &str = "captions.scale";
@@ -141,15 +143,14 @@ pub struct CaptionStyleDialog {
     scale: Entity<SliderState>,
     opacity: Entity<SliderState>,
     focus: FocusList,
+    scroll: ScrollHandle,
     _subscriptions: Vec<Subscription>,
 }
 
 impl CaptionStyleDialog {
     pub fn open(window: &mut Window, cx: &mut App) {
         let view = cx.new(Self::new);
-        window.open_dialog(cx, move |dialog, _, _| {
-            dialog.title(t(Str::SettingsCaptionStyle)).width(px(460.)).child(view.clone())
-        });
+        window.open_dialog(cx, move |dialog, window, _| chrome(dialog, DEFAULT_WIDTH, window).child(view.clone()));
     }
 
     fn new(cx: &mut Context<Self>) -> Self {
@@ -178,11 +179,13 @@ impl CaptionStyleDialog {
                 save_setting(BACKGROUND_OPACITY_KEY, text, cx);
             }
         });
+        let scroll = ScrollHandle::new();
         Self {
             saved,
             scale,
             opacity,
-            focus: FocusList::modal(None, cx),
+            focus: FocusList::modal(Some(scroll.clone()), cx),
+            scroll,
             _subscriptions: vec![scale_events, opacity_events],
         }
     }
@@ -255,7 +258,7 @@ impl CaptionStyleDialog {
 }
 
 impl Render for CaptionStyleDialog {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
         let look = self.saved.look();
         let title = |text: &'static str| div().text_sm().font_semibold().text_color(theme.muted_foreground).child(text);
@@ -267,16 +270,27 @@ impl Render for CaptionStyleDialog {
         let text_stops = 0;
         let box_stops = TEXT_COLORS.len();
         let button_stops = box_stops + BACKGROUND_COLORS.len();
-        let reset = Button::new("caption-reset")
-            .small()
-            .label(t(Str::SoundReset))
-            .on_click(cx.listener(|view, _, window, cx| view.reset(window, cx)));
-        let ok = Button::new("caption-ok")
-            .small()
-            .primary()
-            .label(t(Str::SoundOk))
-            .on_click(|_, window, cx| window.close_dialog(cx));
+        let buttons = h_flex()
+            .child(press(
+                &self.focus,
+                button_stops,
+                text_button("caption-reset", t(Str::SoundReset), false, true, cx),
+                true,
+                cx.listener(|view, _, window, cx| view.reset(window, cx)),
+                cx,
+            ))
+            .child(press(
+                &self.focus,
+                button_stops + 1,
+                text_button("caption-ok", t(Str::SoundOk), true, true, cx),
+                true,
+                |_, window, cx| window.close_dialog(cx),
+                cx,
+            ));
         let body = v_flex()
+            .w_full()
+            .px(px(ROW_HORIZONTAL))
+            .py_4()
             .gap_4()
             .child(
                 v_flex()
@@ -335,14 +349,15 @@ impl Render for CaptionStyleDialog {
                             .flex_1(),
                     )
                     .child(value_label(opacity_label(self.saved.opacity))),
-            )
-            .child(
-                h_flex()
-                    .justify_end()
-                    .gap_2()
-                    .child(self.focus.button(button_stops, reset, cx))
-                    .child(self.focus.button(button_stops + 1, ok, cx)),
             );
-        self.focus.container(body, 0..button_stops + 2, cx)
+        self.focus.container(
+            v_flex()
+                .w_full()
+                .child(title_bar(t(Str::SettingsCaptionStyle), cx))
+                .child(scroll_body("caption-style-body", &self.scroll, body, window, cx))
+                .child(button_bar(buttons, cx)),
+            0..button_stops + 2,
+            cx,
+        )
     }
 }

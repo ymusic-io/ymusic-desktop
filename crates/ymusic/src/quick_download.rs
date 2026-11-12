@@ -4,7 +4,7 @@
 
 use std::rc::Rc;
 
-use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::button::Button;
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::component::{ActiveTheme, Sizable, StyledExt, WindowExt, h_flex, v_flex};
 use gpui_kit::*;
@@ -16,6 +16,7 @@ use ym_i18n::{Str, t, tf};
 use crate::a11y::FocusList;
 use crate::download_dialog::{DownloadTarget, format_name, quality_name};
 use crate::downloads::{offline_ids, usable_download_folder};
+use crate::elevated_dialog::{DEFAULT_WIDTH, ROW_HORIZONTAL, button_bar, chrome, press, text_button, title_bar};
 use crate::graph::{AppGraph, on_core};
 
 pub const QUICK_PRESET_KEY: &str = "download.quickPreset";
@@ -380,7 +381,8 @@ pub struct QuickPresetEditor {
     focus: FocusList,
 }
 
-const STOP_SAVE: usize = PRESET_FIELD_STOPS;
+const STOP_CANCEL: usize = PRESET_FIELD_STOPS;
+const STOP_SAVE: usize = STOP_CANCEL + 1;
 
 impl QuickPresetEditor {
     pub fn open(window: &mut Window, cx: &mut App) {
@@ -397,8 +399,8 @@ impl QuickPresetEditor {
             .detach();
             Self { draft: saved_preset(cx), languages: Vec::new(), focus: FocusList::modal(None, cx) }
         });
-        window.open_dialog(cx, move |dialog, _, _| {
-            dialog.title(t(Str::SettingsQuickDownload)).width(px(520.)).child(view.clone())
+        window.open_dialog(cx, move |dialog, window, _| {
+            chrome(dialog, DEFAULT_WIDTH, window).on_ok(|_, _, _| false).child(view.clone())
         });
     }
 
@@ -424,29 +426,28 @@ impl Render for QuickPresetEditor {
             .ok();
         });
         let ffmpeg = cx.global::<AppGraph>().downloads.ffmpeg_available();
+        let buttons = h_flex()
+            .child(press(
+                &self.focus,
+                STOP_CANCEL,
+                text_button("quick-cancel", t(Str::DialogCancel), false, true, cx),
+                true,
+                |_, window, cx| window.close_dialog(cx),
+                cx,
+            ))
+            .child(press(
+                &self.focus,
+                STOP_SAVE,
+                text_button("quick-save", t(Str::DownloadSave), true, true, cx),
+                true,
+                cx.listener(|view, _, window, cx| view.save(window, cx)),
+                cx,
+            ));
+        let fields = preset_fields(&self.draft, &self.languages, ffmpeg, on_change, &self.focus, 0, cx);
         v_flex()
-            .gap_4()
-            .child(preset_fields(&self.draft, &self.languages, ffmpeg, on_change, &self.focus, 0, cx))
-            .child(
-                h_flex()
-                    .justify_end()
-                    .gap_2()
-                    .child(
-                        Button::new("quick-cancel")
-                            .ghost()
-                            .label(t(Str::DialogCancel))
-                            .on_click(|_, window, cx| window.close_dialog(cx)),
-                    )
-                    .child(
-                        self.focus.button(
-                            STOP_SAVE,
-                            Button::new("quick-save")
-                                .primary()
-                                .label(t(Str::DownloadSave))
-                                .on_click(cx.listener(|view, _, window, cx| view.save(window, cx))),
-                            cx,
-                        ),
-                    ),
-            )
+            .w_full()
+            .child(title_bar(t(Str::SettingsQuickDownload), cx))
+            .child(v_flex().w_full().px(px(ROW_HORIZONTAL)).py_4().gap_2().child(fields))
+            .child(button_bar(buttons, cx))
     }
 }

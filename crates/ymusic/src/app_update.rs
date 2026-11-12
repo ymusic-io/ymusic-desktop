@@ -14,7 +14,7 @@ use futures::StreamExt;
 use futures::channel::mpsc;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::progress::Progress;
-use gpui_kit::component::{ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt, WindowExt, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme, Icon, IconName, Sizable, StyledExt, WindowExt, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use ym_i18n::{Str, t, tf};
@@ -22,8 +22,13 @@ use ym_settings::SettingsStore;
 use ym_update::{Blocked, Failure, UpdatePrefs, UpdateService, UpdateState};
 
 use crate::a11y::{FocusList, focusable};
+use crate::elevated_dialog::{
+    DEFAULT_WIDTH, ROW_HORIZONTAL, ROW_VERTICAL, button_bar, chrome, press, text_button, title_bar,
+};
 use crate::graph::{AppGraph, on_core};
 use crate::spinner::Spinner;
+
+type OnPress = Box<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
 
 /// The JVM app's keys.
 const AUTO_DOWNLOAD_KEY: &str = "update.autoDownload";
@@ -250,14 +255,8 @@ impl UpdateDialog {
             focused_first: false,
         });
         updates.update(cx, |updates, _| updates.dialog = Some(view.downgrade()));
-        window.open_dialog(cx, move |dialog, _, _| {
-            dialog
-                .title(t(Str::UpdateAvailableTitle))
-                .width(px(440.))
-                .close_button(false)
-                .overlay_closable(false)
-                .keyboard(false)
-                .child(view.clone())
+        window.open_dialog(cx, move |dialog, window, _| {
+            chrome(dialog, DEFAULT_WIDTH, window).overlay_closable(false).keyboard(false).child(view.clone())
         });
     }
 
@@ -303,7 +302,7 @@ impl Render for UpdateDialog {
             )
         };
 
-        let mut body = v_flex().gap_2().px_1().pb_2();
+        let mut body = v_flex().w_full().px(px(ROW_HORIZONTAL)).py(px(ROW_VERTICAL)).gap_2();
         body = body.child(
             h_flex()
                 .gap_2()
@@ -363,54 +362,60 @@ impl Render for UpdateDialog {
         }
 
         let later_stop = next_stop();
-        let later = Button::new("update-later")
-            .small()
-            .label(t(Str::UpdateAskLater))
-            .on_click(cx.listener(|view, _, window, cx| view.ask_later(window, cx)));
+        let later = press(
+            &self.focus,
+            later_stop,
+            text_button("update-later", t(Str::UpdateAskLater), false, true, cx),
+            true,
+            cx.listener(|view, _, window, cx| view.ask_later(window, cx)),
+            cx,
+        );
         let primary_stop = next_stop();
         let code = update.version_code;
-        let primary = Button::new("update-primary").small().primary();
-        let primary = if !in_place {
+        let idle: OnPress = Box::new(|_, _, _| {});
+        let (label, enabled, on_press): (&'static str, bool, OnPress) = if !in_place {
             let page = download_page.clone();
-            primary
-                .label(t(Str::UpdateDownload))
-                .icon(Icon::new(IconName::ExternalLink))
-                .disabled(page.is_none())
-                .on_click(move |_, _, cx| {
-                    if let Some(url) = &page {
-                        cx.open_url(url);
-                    }
-                })
+            let enabled = page.is_some();
+            let open: OnPress = Box::new(move |_, _, cx| {
+                if let Some(url) = &page {
+                    cx.open_url(url);
+                }
+            });
+            (t(Str::UpdateDownload), enabled, open)
         } else {
             match &state {
                 UpdateState::Ready { .. } | UpdateState::InstallFailed { .. } => {
-                    primary.label(t(Str::UpdateInstallNow)).on_click(|_, _, cx| install_and_restart(cx))
+                    (t(Str::UpdateInstallNow), true, Box::new(|_, _, cx| install_and_restart(cx)))
                 }
-                UpdateState::Installing(_) => primary.label(t(Str::UpdateInstallNow)).disabled(true),
-                UpdateState::Downloading { .. } if requested => primary.label(t(Str::UpdateInstallNow)).disabled(true),
+                UpdateState::Installing(_) => (t(Str::UpdateInstallNow), false, idle),
+                UpdateState::Downloading { .. } if requested => (t(Str::UpdateInstallNow), false, idle),
                 _ => {
                     let updates = self.updates.clone();
-                    primary.label(t(Str::UpdateDownload)).on_click(move |_, _, cx| {
+                    let download: OnPress = Box::new(move |_, _, cx| {
                         updates.update(cx, |updates, cx| {
                             updates.requested = Some(code);
                             updates.service.download();
                             cx.notify();
                         });
-                    })
+                    });
+                    (t(Str::UpdateDownload), true, download)
                 }
             }
         };
+        let primary = press(
+            &self.focus,
+            primary_stop,
+            text_button("update-primary", label, true, enabled, cx),
+            enabled,
+            on_press,
+            cx,
+        );
         if !self.focused_first {
             self.focused_first = true;
             let first = self.focus.handle(primary_stop, cx);
             window.defer(cx, move |window, cx| window.focus(&first, cx));
         }
-        let footer = h_flex()
-            .justify_end()
-            .gap_2()
-            .pt_2()
-            .child(self.focus.button(later_stop, later, cx))
-            .child(self.focus.button(primary_stop, primary, cx));
+        let footer = h_flex().child(later).child(primary);
         // Esc acts as "Ask later"; a click outside does nothing, only the buttons close it.
         let escape = cx.listener(|view, event: &KeyDownEvent, window, cx| {
             if event.keystroke.key == "escape" {
@@ -418,9 +423,13 @@ impl Render for UpdateDialog {
                 view.ask_later(window, cx);
             }
         });
-        self.focus
-            .container(div().id("update-dialog").on_key_down(escape), 0..stops, cx)
-            .child(v_flex().child(body).child(footer))
+        self.focus.container(div().id("update-dialog").w_full().on_key_down(escape), 0..stops, cx).child(
+            v_flex()
+                .w_full()
+                .child(title_bar(t(Str::UpdateAvailableTitle), cx))
+                .child(body)
+                .child(button_bar(footer, cx)),
+        )
     }
 }
 
@@ -447,7 +456,7 @@ impl CheckUpdateDialog {
         let view = cx.new(|cx| Self { result: None, focus: FocusList::modal(None, cx), focused_first: false });
         window.open_dialog(cx, {
             let view = view.clone();
-            move |dialog, _, _| dialog.title(t(Str::UpdateCheck)).width(px(400.)).child(view.clone())
+            move |dialog, window, _| chrome(dialog, DEFAULT_WIDTH, window).child(view.clone())
         });
         // The fetch outlives a timed-out wait: a late config still lands through the subscription.
         let fetch = on_core(cx, async move {
@@ -498,25 +507,30 @@ impl Render for CheckUpdateDialog {
         let theme = cx.theme().clone();
         let line = match self.result {
             None => h_flex()
-                .gap_3()
+                .gap_4()
                 .items_center()
                 .child(Spinner::new().small())
-                .child(div().text_sm().child(t(Str::UpdateChecking))),
+                .child(div().text_size(px(14.)).child(t(Str::UpdateChecking))),
             Some(CheckResult::UpToDate) => h_flex()
-                .gap_3()
+                .gap_4()
                 .items_center()
                 .child(Icon::new(IconName::CircleCheck).text_color(theme.success))
-                .child(div().text_sm().child(t(Str::UpdateUpToDate))),
-            Some(CheckResult::Failed) => {
-                h_flex().child(div().text_sm().text_color(theme.muted_foreground).child(t(Str::UpdateCheckFailed)))
-            }
+                .child(div().text_size(px(14.)).child(t(Str::UpdateUpToDate))),
+            Some(CheckResult::Failed) => h_flex()
+                .child(div().text_size(px(14.)).text_color(theme.muted_foreground).child(t(Str::UpdateCheckFailed))),
         };
-        let close = Button::new("check-update-close")
-            .small()
-            .label(t(Str::UpdateClose))
-            .on_click(|_, window, cx| window.close_dialog(cx));
+        let close = press(
+            &self.focus,
+            0,
+            text_button("check-update-close", t(Str::UpdateClose), false, true, cx),
+            true,
+            |_, window, cx| window.close_dialog(cx),
+            cx,
+        );
         self.focus
-            .container(v_flex().gap_3().child(div().id("check-update").role(Role::Status).child(line)), 0..1, cx)
-            .child(h_flex().justify_end().child(self.focus.button(0, close, cx)))
+            .container(v_flex().w_full(), 0..1, cx)
+            .child(title_bar(t(Str::UpdateCheck), cx))
+            .child(div().id("check-update").role(Role::Status).w_full().px(px(ROW_HORIZONTAL)).py(px(20.)).child(line))
+            .child(button_bar(close, cx))
     }
 }

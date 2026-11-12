@@ -3,7 +3,6 @@
 
 use gpui_kit::base::actions::Confirm;
 use gpui_kit::base::slider::{SliderEvent, SliderState};
-use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::slider::Slider;
 use gpui_kit::component::{ActiveTheme, Sizable, WindowExt, h_flex, v_flex};
@@ -11,6 +10,7 @@ use gpui_kit::*;
 use ym_i18n::{Str, t, tf};
 
 use crate::a11y::{FocusList, SliderStop};
+use crate::elevated_dialog::{DEFAULT_WIDTH, ROW_HORIZONTAL, button_bar, chrome, press, text_button, title_bar};
 
 pub const ACCENT_KEY: &str = "theme.accent";
 const DEFAULT_ACCENT: Rgb = Rgb::hex(0xE8732A);
@@ -150,8 +150,14 @@ impl AccentPicker {
     pub fn open(saved: &str, on_pick: impl Fn(String, &mut App) + 'static, window: &mut Window, cx: &mut App) {
         let start = accent_rgb(saved);
         let view = cx.new(|cx| Self::new(start, Box::new(on_pick), window, cx));
-        window.open_dialog(cx, move |dialog, _, _| {
-            dialog.title(t(Str::SettingsAccentColor)).width(px(420.)).child(view.clone())
+        window.open_dialog(cx, move |dialog, window, _| {
+            let enter = view.downgrade();
+            chrome(dialog, DEFAULT_WIDTH, window)
+                .on_ok(move |_, window, cx| {
+                    enter.update(cx, |view, cx| view.confirm(window, cx)).ok();
+                    false
+                })
+                .child(view.clone())
         });
     }
 
@@ -258,17 +264,28 @@ impl Render for AccentPicker {
             )));
         }
         let stops = PRESETS.len();
-        let reset = Button::new("accent-reset")
-            .small()
-            .label(t(Str::SoundReset))
-            .on_click(cx.listener(|view, _, window, cx| view.set_color_and_hex(DEFAULT_ACCENT, window, cx)));
-        let ok = Button::new("accent-ok")
-            .small()
-            .primary()
-            .label(t(Str::SoundOk))
-            .on_click(cx.listener(|view, _, window, cx| view.confirm(window, cx)));
-        self.focus.container(
+        let buttons = h_flex()
+            .child(press(
+                &self.focus,
+                stops,
+                text_button("accent-reset", t(Str::SoundReset), false, true, cx),
+                true,
+                cx.listener(|view, _, window, cx| view.set_color_and_hex(DEFAULT_ACCENT, window, cx)),
+                cx,
+            ))
+            .child(press(
+                &self.focus,
+                stops + 1,
+                text_button("accent-ok", t(Str::SoundOk), true, true, cx).text_color(picked.hsla()),
+                true,
+                cx.listener(|view, _, window, cx| view.confirm(window, cx)),
+                cx,
+            ));
+        let body = self.focus.container(
             v_flex()
+                .w_full()
+                .px(px(ROW_HORIZONTAL))
+                .py_4()
                 .gap_4()
                 .child(swatches)
                 .child(v_flex().gap_2().child(hue_bar).child(self.focus.slider(
@@ -288,16 +305,10 @@ impl Render for AccentPicker {
                         .child(div().text_color(theme.muted_foreground).font_family("monospace").child("#"))
                         .child(div().w(px(120.)).child(Input::new(&self.hex).small()))
                         .child(div().flex_1()),
-                )
-                .child(
-                    h_flex().justify_end().gap_2().child(self.focus.button(stops, reset, cx)).child(self.focus.button(
-                        stops + 1,
-                        ok,
-                        cx,
-                    )),
                 ),
             0..stops + 2,
             cx,
-        )
+        );
+        v_flex().w_full().child(title_bar(name, cx)).child(body).child(button_bar(buttons, cx))
     }
 }

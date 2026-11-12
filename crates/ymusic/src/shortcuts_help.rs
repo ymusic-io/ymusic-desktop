@@ -1,12 +1,14 @@
 //! The keyboard shortcuts help (F1): every Shell binding with what it does.
 
-use gpui_kit::component::button::Button;
 use gpui_kit::component::kbd::Kbd;
-use gpui_kit::component::{ActiveTheme, Sizable, WindowExt, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme, WindowExt, h_flex, v_flex};
 use gpui_kit::*;
 use ym_i18n::{Str, t};
 
 use crate::a11y::FocusList;
+use crate::elevated_dialog::{
+    DEFAULT_WIDTH, ROW_HORIZONTAL, ROW_VERTICAL, button_bar, chrome, press, scroll_body, text_button, title_bar,
+};
 use crate::shortcuts::HELP;
 
 pub struct ShortcutsHelp {
@@ -25,10 +27,7 @@ impl ShortcutsHelp {
             let scroll = ScrollHandle::new();
             Self { focus: FocusList::modal(Some(scroll.clone()), cx), scroll, focused_first: false }
         });
-        let height = (f32::from(window.viewport_size().height) - 200.).clamp(240., 620.);
-        window.open_dialog(cx, move |dialog, _, _| {
-            dialog.title(t(Str::ShortcutsTitle)).width(px(560.)).child(div().h(px(height)).child(view.clone()))
-        });
+        window.open_dialog(cx, move |dialog, window, _| chrome(dialog, DEFAULT_WIDTH, window).child(view.clone()));
     }
 }
 
@@ -60,7 +59,7 @@ impl Render for ShortcutsHelp {
             window.defer(cx, move |window, cx| window.focus(&first, cx));
         }
         let theme = cx.theme().clone();
-        let mut rows = v_flex().py_1();
+        let mut rows = v_flex().w_full().py_2();
         for (index, row) in HELP.iter().enumerate() {
             let mut keys = h_flex().w(px(200.)).flex_shrink_0().flex_wrap().gap_1().items_center();
             let mut spoken_keys = Vec::new();
@@ -96,30 +95,27 @@ impl Render for ShortcutsHelp {
                 .id(("shortcut", index))
                 .role(Role::ListItem)
                 .aria_label(format!("{label}, {}", spoken_keys.join(if row.range { " … " } else { ", " })))
+                .w_full()
                 .gap_4()
-                .px_4()
-                .py_2()
+                .px(px(ROW_HORIZONTAL))
+                .py(px(ROW_VERTICAL))
                 .items_center()
-                .rounded(px(6.))
                 .child(keys)
-                .child(div().flex_1().min_w_0().text_sm().child(label));
+                .child(div().flex_1().min_w_0().text_size(px(14.)).child(label));
             rows = rows.child(self.focus.item(index, line, cx));
         }
         let close = HELP.len();
-        let footer = h_flex().justify_end().pt_2().child(
-            self.focus.button(
-                close,
-                Button::new("shortcuts-close")
-                    .small()
-                    .label(t(Str::CdClose))
-                    .on_click(|_, window, cx| window.close_dialog(cx)),
-                cx,
-            ),
+        let footer = press(
+            &self.focus,
+            close,
+            text_button("shortcuts-close", t(Str::CdClose), true, true, cx),
+            true,
+            |_, window, cx| window.close_dialog(cx),
+            cx,
         );
-        let list = div().id("shortcuts").flex_1().min_h_0().overflow_y_scroll().track_scroll(&self.scroll).child(rows);
         self.focus
             .container(
-                v_flex().size_full().on_key_down(|event: &KeyDownEvent, window, cx| {
+                v_flex().w_full().on_key_down(|event: &KeyDownEvent, window, cx| {
                     if event.keystroke.key == "f1" {
                         window.close_dialog(cx);
                         cx.stop_propagation();
@@ -128,7 +124,8 @@ impl Render for ShortcutsHelp {
                 0..close + 1,
                 cx,
             )
-            .child(list)
-            .child(footer)
+            .child(title_bar(t(Str::ShortcutsTitle), cx))
+            .child(scroll_body("shortcuts", &self.scroll, rows, window, cx))
+            .child(button_bar(footer, cx))
     }
 }

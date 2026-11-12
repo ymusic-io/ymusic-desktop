@@ -14,6 +14,7 @@ use gpui_kit::*;
 use ym_i18n::{Str, t, tf};
 
 use crate::a11y::{FocusList, SliderStop};
+use crate::elevated_dialog::{DEFAULT_WIDTH, ROW_HORIZONTAL, button_bar, chrome, press, text_button, title_bar};
 use crate::graph::AppGraph;
 use crate::mini_player::clock;
 use crate::playback::Playback;
@@ -53,9 +54,9 @@ pub struct SleepTimerDialog {
 impl SleepTimerDialog {
     pub fn open(playback: Entity<Playback>, window: &mut Window, cx: &mut App) {
         let view = cx.new(|cx| Self::new(playback, cx));
-        window.open_dialog(cx, move |dialog, _, _| {
+        window.open_dialog(cx, move |dialog, window, _| {
             let confirm = view.downgrade();
-            dialog.title(t(Str::CdSleepTimer)).width(px(420.)).child(view.clone()).on_ok(move |_, window, cx| {
+            chrome(dialog, DEFAULT_WIDTH, window).child(view.clone()).on_ok(move |_, window, cx| {
                 confirm.update(cx, |view, cx| view.activate_focused(window, cx)).ok();
                 false
             })
@@ -110,7 +111,7 @@ impl SleepTimerDialog {
     }
 
     /// Enter is the dialog's Confirm binding, which a focused button never sees: act for that button,
-    /// with Start as the default.
+    /// with Start as the default (the bar's buttons take Enter themselves).
     fn activate_focused(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let focused = (0..=STOP_START).find(|stop| self.focus.handle(*stop, cx).is_focused(window));
         let remaining = self.playback.read(cx).sleep_remaining();
@@ -126,7 +127,6 @@ impl SleepTimerDialog {
                 self.end_of_track = true;
                 cx.notify();
             }
-            Some(STOP_CANCEL) => window.close_dialog(cx),
             _ => self.start(window, cx),
         }
     }
@@ -272,10 +272,28 @@ impl Render for SleepTimerDialog {
             cx,
         ));
 
-        v_flex()
+        let buttons = h_flex()
+            .child(press(
+                &self.focus,
+                STOP_CANCEL,
+                text_button("sleep-cancel", t(Str::DialogCancel), false, true, cx),
+                true,
+                |_, window, cx| window.close_dialog(cx),
+                cx,
+            ))
+            .child(press(
+                &self.focus,
+                STOP_START,
+                text_button("sleep-start", t(Str::SleepStart), true, true, cx),
+                true,
+                cx.listener(|view, _, window, cx| view.start(window, cx)),
+                cx,
+            ));
+        let body = v_flex()
+            .w_full()
+            .px(px(ROW_HORIZONTAL))
+            .py_4()
             .gap_4()
-            .px_2()
-            .pb_2()
             .when(armed, |column| column.child(self.armed_card(remaining, cx)))
             .child(
                 v_flex()
@@ -293,31 +311,7 @@ impl Render for SleepTimerDialog {
                 Slider::new(&self.slider).accessibility_label(t(Str::CdSleepTimer)),
                 cx,
             )))
-            .child(chips)
-            .child(
-                h_flex()
-                    .justify_end()
-                    .gap_2()
-                    .child(
-                        self.focus.button(
-                            STOP_CANCEL,
-                            Button::new("sleep-cancel")
-                                .ghost()
-                                .label(t(Str::DialogCancel))
-                                .on_click(cx.listener(|_, _, window, cx| window.close_dialog(cx))),
-                            cx,
-                        ),
-                    )
-                    .child(
-                        self.focus.button(
-                            STOP_START,
-                            Button::new("sleep-start")
-                                .primary()
-                                .label(t(Str::SleepStart))
-                                .on_click(cx.listener(|view, _, window, cx| view.start(window, cx))),
-                            cx,
-                        ),
-                    ),
-            )
+            .child(chips);
+        v_flex().w_full().child(title_bar(t(Str::CdSleepTimer), cx)).child(body).child(button_bar(buttons, cx))
     }
 }
