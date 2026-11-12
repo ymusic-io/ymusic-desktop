@@ -1138,51 +1138,77 @@ impl NowPlaying {
         let more = sized_action_icon("np-more", IconName::EllipsisVertical, t(Str::CdMore), ICON, HIT)
             .track_focus(&self.bar_focus.handle(STOP_MORE, cx))
             .dropdown_menu_with_anchor(Anchor::TopRight, move |mut menu, _, cx| {
+                let icon = |name: Lucide| Icon::new(name);
                 if let Some(target) = &more_target {
                     let (details, video_id) = (view.clone(), target.video_id.clone());
-                    menu = menu.item(PopupMenuItem::new(t(Str::MenuDetailsComments)).on_click(move |_, _, cx| {
-                        details.update(cx, |_, cx| cx.emit(NowPlayingEvent::Details(video_id.clone()))).ok();
-                    }));
+                    menu =
+                        menu.item(PopupMenuItem::new(t(Str::MenuDetailsComments)).icon(icon(Lucide::Info)).on_click(
+                            move |_, _, cx| {
+                                details.update(cx, |_, cx| cx.emit(NowPlayingEvent::Details(video_id.clone()))).ok();
+                            },
+                        ));
                     let video_id = target.video_id.clone();
-                    menu = menu.item(PopupMenuItem::new(t(Str::CdAddToPlaylist)).on_click(move |_, window, cx| {
-                        crate::yt_playlist::AddToPlaylist::open(video_id.clone(), window, cx)
-                    }));
+                    menu =
+                        menu.item(PopupMenuItem::new(t(Str::CdAddToPlaylist)).icon(icon(Lucide::ListPlus)).on_click(
+                            move |_, window, cx| crate::yt_playlist::AddToPlaylist::open(video_id.clone(), window, cx),
+                        ));
                     let link = format!("https://youtu.be/{}", target.video_id);
-                    menu = menu.item(PopupMenuItem::new(t(Str::CdShare)).on_click(move |_, window, cx| {
-                        cx.write_to_clipboard(ClipboardItem::new_string(link.clone()));
-                        window.push_notification(t(Str::LinkCopied), cx);
-                    }));
-                    let query = format!("{} lyrics", target.title);
-                    menu = menu.item(PopupMenuItem::new(t(Str::MenuSearchLyrics)).on_click(move |_, _, cx| {
-                        let encoded: String = url::form_urlencoded::byte_serialize(query.as_bytes()).collect();
-                        cx.open_url(&format!("https://www.google.com/search?q={encoded}"));
-                    }));
-                    menu = menu.separator();
+                    menu = menu.item(PopupMenuItem::new(t(Str::CdShare)).icon(icon(Lucide::Share2)).on_click(
+                        move |_, window, cx| {
+                            cx.write_to_clipboard(ClipboardItem::new_string(link.clone()));
+                            window.push_notification(t(Str::LinkCopied), cx);
+                        },
+                    ));
                 }
                 let queue = queue_playback.clone();
-                menu = menu.item(PopupMenuItem::new(t(Str::QueueSaveAsYtPlaylist)).on_click(move |_, window, cx| {
-                    let video_ids: Vec<String> =
-                        queue.read(cx).queue.iter().filter_map(|item| item.video_id().map(str::to_owned)).collect();
-                    if video_ids.is_empty() {
-                        window.push_notification(t(Str::YtPlaylistQueueEmpty), cx);
-                    } else {
-                        crate::yt_playlist::CreatePlaylist::open(video_ids, true, window, cx);
-                    }
-                }));
+                menu = menu.item(
+                    PopupMenuItem::new(t(Str::QueueSaveAsYtPlaylist)).icon(icon(Lucide::ListMusic)).on_click(
+                        move |_, window, cx| {
+                            let video_ids: Vec<String> = queue
+                                .read(cx)
+                                .queue
+                                .iter()
+                                .filter_map(|item| item.video_id().map(str::to_owned))
+                                .collect();
+                            if video_ids.is_empty() {
+                                window.push_notification(t(Str::YtPlaylistQueueEmpty), cx);
+                            } else {
+                                crate::yt_playlist::CreatePlaylist::open(video_ids, true, window, cx);
+                            }
+                        },
+                    ),
+                );
+                if let Some(target) = &more_target {
+                    let query = format!("{} lyrics", target.title);
+                    menu =
+                        menu.item(PopupMenuItem::new(t(Str::MenuSearchLyrics)).icon(icon(Lucide::MicVocal)).on_click(
+                            move |_, _, cx| {
+                                let encoded: String = url::form_urlencoded::byte_serialize(query.as_bytes()).collect();
+                                cx.open_url(&format!("https://www.google.com/search?q={encoded}"));
+                            },
+                        ));
+                }
+                menu = menu.separator();
                 let effects = queue_playback.read(cx).effects;
                 let speed = format!("{}×", crate::speed_pitch::trimmed(effects.speed));
                 let speed_pitch = view.clone();
-                menu = menu.item(menu_value_item(t(Str::MenuSpeedPitch), speed).on_click(move |_, _, cx| {
-                    speed_pitch.update(cx, |_, cx| cx.emit(NowPlayingEvent::OpenSpeedPitch)).ok();
-                }));
+                menu = menu.item(menu_value_item(t(Str::MenuSpeedPitch), speed).icon(icon(Lucide::Gauge)).on_click(
+                    move |_, _, cx| {
+                        speed_pitch.update(cx, |_, cx| cx.emit(NowPlayingEvent::OpenSpeedPitch)).ok();
+                    },
+                ));
                 let preset = crate::audio_effects::preset_name(&effects.tone.eq_db).to_owned();
                 let equalizer = view.clone();
-                menu = menu.item(menu_value_item(t(Str::SoundEq), preset).on_click(move |_, _, cx| {
-                    equalizer.update(cx, |_, cx| cx.emit(NowPlayingEvent::OpenEqualizer)).ok();
-                }));
+                menu =
+                    menu.item(menu_value_item(t(Str::SoundEq), preset).icon(icon(Lucide::SlidersVertical)).on_click(
+                        move |_, _, cx| {
+                            equalizer.update(cx, |_, cx| cx.emit(NowPlayingEvent::OpenEqualizer)).ok();
+                        },
+                    ));
                 let reload = queue_playback.clone();
                 menu.separator().item(
                     PopupMenuItem::new(t(Str::MenuReloadPlayer))
+                        .icon(icon(Lucide::RefreshCw))
                         .on_click(move |_, _, cx| reload.update(cx, |playback, cx| playback.reload(cx))),
                 )
             })
