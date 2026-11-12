@@ -120,13 +120,9 @@ fn remove_tree(path: &Path) -> std::io::Result<()> {
 #[cfg(target_os = "macos")]
 fn writable(folder: &Path) -> bool {
     use std::os::unix::ffi::OsStrExt;
-    const W_OK: std::ffi::c_int = 2;
-    unsafe extern "C" {
-        fn access(path: *const std::ffi::c_char, mode: std::ffi::c_int) -> std::ffi::c_int;
-    }
     let Ok(path) = std::ffi::CString::new(folder.as_os_str().as_bytes()) else { return false };
     // SAFETY: `path` is a valid NUL-terminated string for the call's duration.
-    unsafe { access(path.as_ptr(), W_OK) == 0 }
+    unsafe { libc::access(path.as_ptr(), libc::W_OK) == 0 }
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -139,21 +135,13 @@ fn writable(_folder: &Path) -> bool {
 #[cfg(target_os = "macos")]
 fn exchange(installed: &Path, staged: &Path) -> Result<(), InstallError> {
     use std::os::unix::ffi::OsStrExt;
-    const RENAME_SWAP: std::ffi::c_uint = 0x0000_0002;
-    unsafe extern "C" {
-        fn renamex_np(
-            from: *const std::ffi::c_char,
-            to: *const std::ffi::c_char,
-            flags: std::ffi::c_uint,
-        ) -> std::ffi::c_int;
-    }
     let path = |path: &Path| {
         std::ffi::CString::new(path.as_os_str().as_bytes())
             .map_err(|_| InstallError::Failed(format!("path holds a NUL: {}", path.display())))
     };
     let (from, to) = (path(installed)?, path(staged)?);
     // SAFETY: both are valid NUL-terminated strings for the call's duration.
-    if unsafe { renamex_np(from.as_ptr(), to.as_ptr(), RENAME_SWAP) } != 0 {
+    if unsafe { libc::renamex_np(from.as_ptr(), to.as_ptr(), libc::RENAME_SWAP) } != 0 {
         let error = std::io::Error::last_os_error();
         return Err(InstallError::Failed(format!(
             "renamex_np failed ({error}) exchanging {} and {}",

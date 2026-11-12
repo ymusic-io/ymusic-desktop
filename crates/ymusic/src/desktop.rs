@@ -128,16 +128,12 @@ pub fn set_dock_icon(_log: &Logger) {}
 /// match. Debug builds take their own, so they never touch the installed app's taskbar button.
 #[cfg(target_os = "windows")]
 pub fn claim_app_user_model_id(log: &Logger) {
-    #[link(name = "shell32")]
-    unsafe extern "system" {
-        fn SetCurrentProcessExplicitAppUserModelID(id: *const u16) -> i32;
-    }
-    let id = if cfg!(debug_assertions) { "io.ymusic.windows.dev" } else { "io.ymusic.windows" };
-    let wide: Vec<u16> = id.encode_utf16().chain([0]).collect();
-    // SAFETY: a NUL-terminated UTF-16 string that outlives the call.
-    let result = unsafe { SetCurrentProcessExplicitAppUserModelID(wide.as_ptr()) };
-    if result < 0 {
-        log.warn(&format!("SetCurrentProcessExplicitAppUserModelID failed: HRESULT {result:#010x}"), None);
+    use windows::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID;
+    use windows::core::w;
+    let id = if cfg!(debug_assertions) { w!("io.ymusic.windows.dev") } else { w!("io.ymusic.windows") };
+    // SAFETY: a static NUL-terminated UTF-16 string.
+    if let Err(error) = unsafe { SetCurrentProcessExplicitAppUserModelID(id) } {
+        log.warn("SetCurrentProcessExplicitAppUserModelID failed", Some(&error));
     }
 }
 
@@ -888,12 +884,8 @@ fn tray_scale_factor() -> f32 {
 
 #[cfg(target_os = "windows")]
 fn tray_scale_factor() -> f32 {
-    #[link(name = "user32")]
-    unsafe extern "system" {
-        fn GetDpiForSystem() -> u32;
-    }
     // SAFETY: a plain Win32 query without arguments.
-    unsafe { GetDpiForSystem() as f32 / 96. }
+    unsafe { windows::Win32::UI::HiDpi::GetDpiForSystem() as f32 / 96. }
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]

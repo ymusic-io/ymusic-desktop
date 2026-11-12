@@ -338,14 +338,10 @@ fn send_lines(port: u16, lines: &[String]) -> std::io::Result<()> {
 /// Windows lets only the process the user just launched take the foreground: pass that on.
 #[cfg(target_os = "windows")]
 fn share_foreground(log: &Logger) {
-    #[link(name = "user32")]
-    unsafe extern "system" {
-        fn AllowSetForegroundWindow(process_id: u32) -> i32;
-    }
-    const ASFW_ANY: u32 = u32::MAX;
+    use windows::Win32::UI::WindowsAndMessaging::{ASFW_ANY, AllowSetForegroundWindow};
     // SAFETY: a plain Win32 call without pointers.
-    if unsafe { AllowSetForegroundWindow(ASFW_ANY) } == 0 {
-        log.info("AllowSetForegroundWindow refused");
+    if let Err(error) = unsafe { AllowSetForegroundWindow(ASFW_ANY) } {
+        log.info(&format!("AllowSetForegroundWindow refused: {error}"));
     }
 }
 
