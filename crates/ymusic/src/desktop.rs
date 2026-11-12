@@ -124,16 +124,92 @@ pub fn set_dock_icon(log: &Logger) {
 pub fn set_dock_icon(_log: &Logger) {}
 
 /// The app's AppUserModelID, which the installer's shortcuts carry too: the taskbar and the media
-/// flyout find the name and icon through it, and a pin merges with the running window only when they
-/// match. Debug builds take their own, so they never touch the installed app's taskbar button.
+/// flyout find the name and icon through the Start menu shortcut carrying it, and a pin merges with
+/// the running window only when they match. Debug builds take their own, so they never touch the
+/// installed app's taskbar button.
+#[cfg(target_os = "windows")]
+const APP_USER_MODEL_ID: &str = if cfg!(debug_assertions) { "io.ymusic.windows.dev" } else { "io.ymusic.windows" };
+
 #[cfg(target_os = "windows")]
 pub fn claim_app_user_model_id(log: &Logger) {
     use windows::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID;
-    use windows::core::w;
-    let id = if cfg!(debug_assertions) { w!("io.ymusic.windows.dev") } else { w!("io.ymusic.windows") };
-    // SAFETY: a static NUL-terminated UTF-16 string.
-    if let Err(error) = unsafe { SetCurrentProcessExplicitAppUserModelID(id) } {
+    let id = windows::core::HSTRING::from(APP_USER_MODEL_ID);
+    // SAFETY: a NUL-terminated UTF-16 string that outlives the call.
+    if let Err(error) = unsafe { SetCurrentProcessExplicitAppUserModelID(&id) } {
         log.warn("SetCurrentProcessExplicitAppUserModelID failed", Some(&error));
+    }
+}
+
+/// A debug build has no installer shortcut, so it keeps its own Start menu entry carrying its
+/// AppUserModelID: without one the media flyout shows no name or logo for it. The entry launches
+/// this executable on this run's data dir, as the Jump List's tasks do, and is rewritten only when
+/// either changes. COM gets a thread of its own.
+#[cfg(all(target_os = "windows", debug_assertions))]
+pub fn sync_dev_start_menu_entry(data_dir: PathBuf, log: Logger) {
+    let thread_log = log.clone();
+    let spawned = std::thread::Builder::new().name("start-menu".into()).spawn(move || {
+        if let Err(error) = dev_start_menu_entry(&data_dir) {
+            thread_log.warn("the dev Start menu entry could not be written", Some(error.as_ref()));
+        }
+    });
+    if let Err(error) = spawned {
+        log.warn("the dev Start menu entry's thread did not start", Some(&error));
+    }
+}
+
+#[cfg(all(target_os = "windows", debug_assertions))]
+fn dev_start_menu_entry(data_dir: &Path) -> anyhow::Result<()> {
+    use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize};
+    let exe = std::env::current_exe()?;
+    let arguments = crate::jump_list::quoted(&format!("{}{}", crate::DEV_DATA_DIR_ARG, data_dir.display()));
+    // SAFETY: balanced by the CoUninitialize below, on this thread.
+    unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }.ok()?;
+    let synced = write_dev_start_menu_entry(&exe, &arguments);
+    // SAFETY: pairs with the successful CoInitializeEx above.
+    unsafe { CoUninitialize() };
+    synced
+}
+
+#[cfg(all(target_os = "windows", debug_assertions))]
+fn write_dev_start_menu_entry(exe: &Path, arguments: &str) -> anyhow::Result<()> {
+    use windows::Win32::Foundation::PROPERTYKEY;
+    use windows::Win32::System::Com::StructuredStorage::PROPVARIANT;
+    use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance, CoTaskMemFree, IPersistFile, STGM_READ};
+    use windows::Win32::UI::Shell::PropertiesSystem::IPropertyStore;
+    use windows::Win32::UI::Shell::{FOLDERID_Programs, IShellLinkW, KF_FLAG_DEFAULT, SHGetKnownFolderPath, ShellLink};
+    use windows::core::{GUID, HSTRING, Interface};
+    const PKEY_APP_USER_MODEL_ID: PROPERTYKEY =
+        PROPERTYKEY { fmtid: GUID::from_u128(0x9f4c2855_9f79_4b39_a8d0_e1d42de1d5f3), pid: 5 };
+    const SLGP_RAWPATH: u32 = 4;
+    // SAFETY: COM calls on this apartment thread with interfaces it created; the known folder's
+    // buffer is freed once copied, and every string outlives its call.
+    unsafe {
+        let programs = SHGetKnownFolderPath(&FOLDERID_Programs, KF_FLAG_DEFAULT, None)?;
+        let folder = programs.to_string();
+        CoTaskMemFree(Some(programs.0 as *const _));
+        let file = HSTRING::from(PathBuf::from(folder?).join("YMusic Dev.lnk").as_os_str());
+        let saved: IShellLinkW = CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER)?;
+        if saved.cast::<IPersistFile>()?.Load(&file, STGM_READ).is_ok() {
+            let mut target = [0u16; 2048];
+            let mut saved_arguments = [0u16; 2048];
+            saved.GetPath(&mut target, std::ptr::null_mut(), SLGP_RAWPATH)?;
+            saved.GetArguments(&mut saved_arguments)?;
+            let text = |buffer: &[u16]| {
+                String::from_utf16_lossy(&buffer[..buffer.iter().position(|&unit| unit == 0).unwrap_or(buffer.len())])
+            };
+            let id = saved.cast::<IPropertyStore>()?.GetValue(&PKEY_APP_USER_MODEL_ID)?.to_string();
+            if Path::new(&text(&target)) == exe && text(&saved_arguments) == arguments && id == APP_USER_MODEL_ID {
+                return Ok(());
+            }
+        }
+        let link: IShellLinkW = CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER)?;
+        link.SetPath(&HSTRING::from(exe.as_os_str()))?;
+        link.SetArguments(&HSTRING::from(arguments))?;
+        let store: IPropertyStore = link.cast()?;
+        store.SetValue(&PKEY_APP_USER_MODEL_ID, &PROPVARIANT::from(APP_USER_MODEL_ID))?;
+        store.Commit()?;
+        link.cast::<IPersistFile>()?.Save(&file, true)?;
+        Ok(())
     }
 }
 

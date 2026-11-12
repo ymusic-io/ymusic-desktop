@@ -221,6 +221,8 @@ fn main() {
         crate::desktop::set_dock_icon(&log);
         #[cfg(target_os = "windows")]
         crate::jump_list::JumpList::install(&jump_list_dir, log.fork("jump-list"), cx);
+        #[cfg(all(target_os = "windows", debug_assertions))]
+        crate::desktop::sync_dev_start_menu_entry(jump_list_dir.clone(), log.fork("start-menu"));
         #[cfg(target_os = "linux")]
         {
             let log = log.fork("desktop-entry");

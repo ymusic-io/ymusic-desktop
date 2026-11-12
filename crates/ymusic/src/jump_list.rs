@@ -193,7 +193,7 @@ fn shell_link(launcher: &Launcher, task: &Task, icon: Option<&Path>) -> windows:
 }
 
 /// `arg` as one command-line argument under `CommandLineToArgvW`'s rules; paths hold no `"`.
-fn quoted(arg: &str) -> String {
+pub(crate) fn quoted(arg: &str) -> String {
     let trailing_backslashes = arg.len() - arg.trim_end_matches('\\').len();
     format!("\"{arg}{}\"", "\\".repeat(trailing_backslashes))
 }
