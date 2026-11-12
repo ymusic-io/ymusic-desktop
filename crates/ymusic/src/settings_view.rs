@@ -58,6 +58,7 @@ fn apply_theme(choice: &str, accent: &str, cx: &mut App) {
     let on_accent = white();
     let amoled = choice == "amoled";
     let ui_font = linux_ui_font(cx);
+    let mut tones = ChromeTones { flat: black(), lifted: black() };
     Theme::update(cx, |theme| {
         if let Some(font) = ui_font {
             theme.font_family = font;
@@ -75,22 +76,89 @@ fn apply_theme(choice: &str, accent: &str, cx: &mut App) {
         theme.progress_bar = accent;
         theme.slider_bar = accent;
         theme.switch_thumb = on_accent;
-        if amoled {
-            let ground = black();
-            theme.background = ground;
-            theme.sidebar = ground;
-            theme.popover = ground;
-            theme.colors.list = ground;
-            theme.tab_bar = ground;
-            theme.title_bar = ground;
-            theme.accordion = ground;
-        }
+        let palette = Palette::for_mode(theme.mode.is_dark(), amoled);
+        theme.background = palette.surface;
+        theme.foreground = palette.ink;
+        theme.muted_foreground = palette.ink_secondary;
+        theme.border = palette.divider;
+        theme.sidebar = palette.surface;
+        theme.sidebar_border = palette.divider;
+        theme.title_bar = palette.surface;
+        theme.title_bar_border = palette.divider;
+        theme.tab_bar = palette.surface;
+        theme.colors.list = palette.surface;
+        theme.accordion = palette.surface;
+        theme.popover = palette.surface_dim;
+        theme.popover_foreground = palette.ink;
+        theme.secondary = palette.settings_card;
+        theme.secondary_foreground = palette.ink;
+        theme.muted = palette.placeholder;
+        theme.input = palette.outline;
         // Adwaita's faint window outline. Corners stay square: gpui clips content to rectangles, so
         // a rounded frame needs every surface touching a bottom corner rounded too.
         if cfg!(target_os = "linux") {
             theme.window_border = if theme.mode.is_dark() { white().opacity(0.07) } else { black().opacity(0.15) };
         }
+        tones = ChromeTones { flat: palette.surface, lifted: palette.surface_elevated };
     });
+    cx.set_global(tones);
+}
+
+/// The bars' grounds: flat over a page at its top, lifted while the page is scrolled from it.
+#[derive(Clone, Copy)]
+pub struct ChromeTones {
+    pub flat: Hsla,
+    pub lifted: Hsla,
+}
+
+impl Global for ChromeTones {}
+
+/// The JVM app's `DesignPalette` grounds and inks (commonUi Theme.kt), per mode.
+struct Palette {
+    surface: Hsla,
+    surface_dim: Hsla,
+    surface_elevated: Hsla,
+    settings_card: Hsla,
+    placeholder: Hsla,
+    outline: Hsla,
+    divider: Hsla,
+    ink: Hsla,
+    ink_secondary: Hsla,
+}
+
+impl Palette {
+    fn for_mode(dark: bool, amoled: bool) -> Self {
+        let palette = if dark {
+            Self {
+                surface: rgb(0x272727).into(),
+                surface_dim: rgb(0x313131).into(),
+                surface_elevated: rgb(0x292929).into(),
+                settings_card: rgb(0x333333).into(),
+                placeholder: rgb(0x454545).into(),
+                outline: rgb(0x5c5c5c).into(),
+                divider: rgb(0x2a2a2a).into(),
+                ink: rgb(0xe2e2e2).into(),
+                ink_secondary: rgb(0x9a9a9a).into(),
+            }
+        } else {
+            Self {
+                surface: rgb(0xffffff).into(),
+                surface_dim: rgb(0xfafafa).into(),
+                surface_elevated: rgb(0xf5f5f5).into(),
+                settings_card: rgb(0xf2f2f2).into(),
+                placeholder: rgb(0xe3e3e3).into(),
+                outline: rgb(0xcfcfcf).into(),
+                divider: rgb(0xe6e6e6).into(),
+                ink: rgb(0x333333).into(),
+                ink_secondary: rgb(0x8a8a8a).into(),
+            }
+        };
+        if !amoled {
+            return palette;
+        }
+        let ground: Hsla = black();
+        Self { surface: ground, surface_dim: ground, surface_elevated: ground, settings_card: ground, ..palette }
+    }
 }
 
 /// Linux desktops' UI fonts, in the order GNOME and fontconfig fall back. gpui's system font there
@@ -532,6 +600,7 @@ impl SettingsView {
 
 impl Render for SettingsView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::shell::track_scroll(&self.scroll, cx);
         let graph = cx.global::<AppGraph>();
         let settings = graph.settings.clone();
         let theme_choice = saved_theme(settings.as_ref());
