@@ -1450,17 +1450,15 @@ impl Shell {
     /// The section's root surface (below its top bar).
     fn root_content(&mut self, cx: &mut Context<Self>) -> AnyElement {
         match self.section {
-            Section::Discover if self.discover_tab == DiscoverTab::Account => self.account_view(cx).into_any_element(),
-            Section::Discover => self.root(self.discover_tab.source(), cx).into_any_element(),
-            Section::YtMusic if self.music_tab == MusicTab::Library => self.music_library_view(cx).into_any_element(),
-            Section::YtMusic => self.root(self.music_tab.source(), cx).into_any_element(),
-            Section::Library => self.library_view(cx).into_any_element(),
-            Section::PlayAgain => self.play_again_view(cx).into_any_element(),
-            Section::Downloads => self.downloads_view(cx).into_any_element(),
-            Section::Feedback => {
-                self.feedback.get_or_insert_with(|| cx.new(|_| FeedbackView::new())).clone().into_any_element()
-            }
-            Section::Settings => self.settings_view(cx).into_any_element(),
+            Section::Discover if self.discover_tab == DiscoverTab::Account => page(self.account_view(cx)),
+            Section::Discover => page(self.root(self.discover_tab.source(), cx)),
+            Section::YtMusic if self.music_tab == MusicTab::Library => page(self.music_library_view(cx)),
+            Section::YtMusic => page(self.root(self.music_tab.source(), cx)),
+            Section::Library => page(self.library_view(cx)),
+            Section::PlayAgain => page(self.play_again_view(cx)),
+            Section::Downloads => page(self.downloads_view(cx)),
+            Section::Feedback => page(self.feedback.get_or_insert_with(|| cx.new(|_| FeedbackView::new())).clone()),
+            Section::Settings => page(self.settings_view(cx)),
             Section::Donate | Section::Telegram => div().into_any_element(),
         }
     }
@@ -1469,9 +1467,9 @@ impl Shell {
     fn render_main(&mut self, rail_mode: bool, wide: bool, cx: &mut Context<Self>) -> AnyElement {
         let top = self.stacks.get(&self.section).and_then(|stack| stack.pushed.last());
         match top {
-            Some(Layer::Search(view)) => return view.clone().into_any_element(),
-            Some(Layer::LibrarySearch(view)) => return view.clone().into_any_element(),
-            Some(Layer::SignIn(view)) => return view.clone().into_any_element(),
+            Some(Layer::Search(view)) => return page(view.clone()),
+            Some(Layer::LibrarySearch(view)) => return page(view.clone()),
+            Some(Layer::SignIn(view)) => return page(view.clone()),
             Some(Layer::Feed { view, title }) => {
                 let view = view.clone();
                 // A channel's name arrives with its page header.
@@ -1485,7 +1483,7 @@ impl Shell {
                 return v_flex()
                     .size_full()
                     .child(self.detail_bar(title, None, None, cx))
-                    .child(div().flex_1().min_h_0().child(view))
+                    .child(div().flex_1().min_h_0().child(page(view)))
                     .into_any_element();
             }
             Some(Layer::Results { view, query }) => {
@@ -1494,7 +1492,7 @@ impl Shell {
                 return v_flex()
                     .size_full()
                     .child(self.detail_bar(query.clone().into(), Some(query), filter, cx))
-                    .child(div().flex_1().min_h_0().child(view))
+                    .child(div().flex_1().min_h_0().child(page(view)))
                     .into_any_element();
             }
             None => {}
@@ -2088,6 +2086,15 @@ impl Render for Shell {
             .when(!covered, |shell| shell.child(self.mini_player.clone()))
             .children(drawer)
     }
+}
+
+/// A page view drawn from its last frame until it notifies: the player bar's progress ticks redraw
+/// the shell around it four times a second.
+fn page<V: Render>(view: Entity<V>) -> AnyElement {
+    let mut style = StyleRefinement::default();
+    style.size.width = Some(relative(1.).into());
+    style.size.height = Some(relative(1.).into());
+    view.cached(style).into_any_element()
 }
 
 /// Writes a setting off the UI thread; a failed write is logged, the UI state stands.
