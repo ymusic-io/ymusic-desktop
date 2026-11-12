@@ -210,6 +210,7 @@ impl SongMenuHost for LibrarySearchView {
 
 impl Render for LibrarySearchView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::shell::track_scroll(&self.scroll, cx);
         let theme = cx.theme().clone();
         let bar = h_flex()
             .gap_2()

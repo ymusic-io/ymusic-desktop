@@ -1823,6 +1823,7 @@ impl LibraryView {
 
 impl Render for LibraryView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::shell::track_scroll(&self.scroll, cx);
         if let Some(offer) = self.location_offer.take() {
             window.defer(cx, move |window, cx| crate::downloads::offer_download_location(offer, window, cx));
         }
@@ -1840,17 +1841,20 @@ impl Render for LibraryView {
 
         let selected = Tab::ALL.iter().position(|tab| *tab == self.tab).unwrap_or(0);
         let view = cx.entity().downgrade();
-        let tabs = div().w_full().px_3().border_b_1().border_color(theme.border).child(tab_row(
-            "library-tabs",
-            Tab::ALL.iter().map(|tab| SharedString::from(tab.label())).collect(),
-            selected,
-            &self.tab_focus,
-            &self.tab_drag,
-            move |index, _, cx| {
-                view.update(cx, |view, cx| view.select_tab(Tab::ALL[index], cx)).ok();
-            },
-            cx,
-        ));
+        let tabs =
+            div().w_full().px_3().bg(crate::shell::chrome_tone(cx)).border_b_1().border_color(theme.border).child(
+                tab_row(
+                    "library-tabs",
+                    Tab::ALL.iter().map(|tab| SharedString::from(tab.label())).collect(),
+                    selected,
+                    &self.tab_focus,
+                    &self.tab_drag,
+                    move |index, _, cx| {
+                        view.update(cx, |view, cx| view.select_tab(Tab::ALL[index], cx)).ok();
+                    },
+                    cx,
+                ),
+            );
 
         let nothing_indexed = self.tab == Tab::Folders && self.path.is_empty() && self.folders.is_empty();
         if nothing_indexed && !self.scanning {
@@ -1935,12 +1939,18 @@ impl Render for LibraryView {
             .child(tabs)
             .child(
                 div()
-                    .id("library-scroll")
                     .flex_1()
                     .min_h_0()
-                    .overflow_y_scroll()
-                    .track_scroll(&self.scroll)
-                    .child(body),
+                    .relative()
+                    .child(
+                        div()
+                            .id("library-scroll")
+                            .size_full()
+                            .overflow_y_scroll()
+                            .track_scroll(&self.scroll)
+                            .child(body),
+                    )
+                    .children(crate::shell::bar_shadow(cx)),
             )
             .into_any_element()
     }

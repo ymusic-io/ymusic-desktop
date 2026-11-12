@@ -288,6 +288,7 @@ impl PlayAgainView {
 
 impl Render for PlayAgainView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::shell::track_scroll(&self.scroll, cx);
         let theme = cx.theme().clone();
         if let Some(error) = self.error.clone() {
             return v_flex()

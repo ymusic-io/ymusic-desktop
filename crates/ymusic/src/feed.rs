@@ -1728,6 +1728,7 @@ fn share_link(item: &YtFeedItem) -> Option<String> {
 
 impl Render for FeedView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::shell::track_scroll(&self.scroll, cx);
         match &self.phase {
             Phase::Loading => return centered(Spinner::new().large()).into_any_element(),
             Phase::Failed(error) => {

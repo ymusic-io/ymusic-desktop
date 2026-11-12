@@ -419,7 +419,7 @@ impl MiniPlayer {
             .items_center()
             .border_t_1()
             .border_color(theme.border)
-            .bg(theme.sidebar)
+            .bg(crate::shell::chrome_tone(cx))
             .on_click(cx.listener(|_, _, _, cx| cx.emit(ToggleNowPlaying)))
             .child(info)
             .child(transport)
@@ -456,7 +456,7 @@ impl MiniPlayer {
                     .flex_1()
                     .min_w_0()
                     .h_full()
-                    .bg(theme.sidebar)
+                    .bg(crate::shell::chrome_tone(cx))
                     .child(
                         div()
                             .w_full()

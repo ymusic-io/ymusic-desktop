@@ -726,6 +726,7 @@ impl DownloadsView {
 
 impl Render for DownloadsView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::shell::track_scroll(&self.scroll, cx);
         let theme = cx.theme().clone();
         if self.tasks.iter().all(|task| task.state == DownloadState::Canceled) {
             return v_flex()

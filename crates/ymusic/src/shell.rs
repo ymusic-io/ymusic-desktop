@@ -3,6 +3,7 @@
 //! icon tabs, search); pushed layers (search, results, detail pages) that bring their own back bar;
 //! and the mini player along the bottom.
 
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
@@ -55,6 +56,46 @@ const CHROME_FILTER: usize = 2;
 const CHROME_LAYER_SEARCH: usize = 3;
 const CHROME_DRAWER: usize = 4;
 const CHROME_SEARCH: usize = 5;
+
+/// The visible page's scroll container: the bars lift while it is scrolled from its top (the JVM
+/// app's `ScrollHost`).
+#[derive(Default)]
+pub struct ScrollHost {
+    active: RefCell<Option<ScrollHandle>>,
+    lifted: Cell<bool>,
+}
+
+impl Global for ScrollHost {}
+
+/// Called by a page as it renders: the bars follow `scroll`.
+pub fn track_scroll(scroll: &ScrollHandle, cx: &App) {
+    *cx.global::<ScrollHost>().active.borrow_mut() = Some(scroll.clone());
+}
+
+/// The bars' ground: the elevated tone while the page under them is scrolled.
+pub fn chrome_tone(cx: &App) -> Hsla {
+    let tones = cx.global::<crate::settings_view::ChromeTones>();
+    if cx.global::<ScrollHost>().lifted.get() { tones.lifted } else { tones.flat }
+}
+
+/// The shadow a lifted bar casts on the page below it, laid over the page's top edge (the JVM app's
+/// painted 12 dp falloff).
+pub fn bar_shadow(cx: &App) -> Option<Div> {
+    if !cx.global::<ScrollHost>().lifted.get() {
+        return None;
+    }
+    let (near, mid) = (black().opacity(0.20), black().opacity(0.07));
+    let band = |height: f32, from: Hsla, to: Hsla| {
+        div().h(px(height)).bg(linear_gradient(180., linear_color_stop(from, 0.), linear_color_stop(to, 1.)))
+    };
+    Some(v_flex().absolute().top_0().left_0().right_0().child(band(BAR_SHADOW * 0.4, near, mid)).child(band(
+        BAR_SHADOW * 0.6,
+        mid,
+        transparent_black(),
+    )))
+}
+
+const BAR_SHADOW: f32 = 12.;
 
 /// Shared with the JVM app: the section and Discover tab a restart resumes, by their stable ids.
 const LAST_SECTION_KEY: &str = "app.lastSection";
@@ -329,6 +370,8 @@ pub struct Shell {
     /// Now Playing as last drawn, and what held focus when it opened, which gets it back on close.
     now_playing_shown: bool,
     now_playing_opener: Option<WeakFocusHandle>,
+    /// The page last drawn, by section, depth and tab: a new one drops the old page's scroll.
+    shown_page: (i32, usize, i32, &'static str),
     library: Option<Entity<LibraryView>>,
     account: Option<Entity<AccountView>>,
     music_library: Option<Entity<AccountView>>,
@@ -483,6 +526,7 @@ impl Shell {
             .unwrap_or(DiscoverTab::Home);
         let focus = cx.focus_handle();
         crate::a11y::track_root(&focus, cx);
+        cx.set_global(ScrollHost::default());
         // Focus on a control that left the screen would leave shortcuts, Tab and the arrows nowhere to go.
         let focus_lost = cx.on_focus_lost(window, |shell, window, cx| shell.focus.focus(window, cx));
         Self {
@@ -492,6 +536,7 @@ impl Shell {
             now_playing_open: false,
             now_playing_shown: false,
             now_playing_opener: None,
+            shown_page: (0, 0, 0, ""),
             library: None,
             account: None,
             music_library: None,
@@ -1503,7 +1548,7 @@ impl Shell {
                 return v_flex()
                     .size_full()
                     .child(self.detail_bar(title, None, None, cx))
-                    .child(div().flex_1().min_h_0().child(page(view, window)))
+                    .child(div().flex_1().min_h_0().relative().child(page(view, window)).children(bar_shadow(cx)))
                     .into_any_element();
             }
             Some(Layer::Results { view, query }) => {
@@ -1512,7 +1557,7 @@ impl Shell {
                 return v_flex()
                     .size_full()
                     .child(self.detail_bar(query.clone().into(), Some(query), filter, cx))
-                    .child(div().flex_1().min_h_0().child(page(view, window)))
+                    .child(div().flex_1().min_h_0().relative().child(page(view, window)).children(bar_shadow(cx)))
                     .into_any_element();
             }
             None => {}
@@ -1523,11 +1568,13 @@ impl Shell {
             Section::YtMusic => Some(self.music_tabs(cx)),
             _ => None,
         };
+        // Library's own tab row, under this bar, casts the shadow.
+        let shadow = (self.section != Section::Library).then(|| bar_shadow(cx)).flatten();
         v_flex()
             .size_full()
             .child(self.root_bar(rail_mode, wide, cx))
             .children(tab_row)
-            .child(div().flex_1().min_h_0().child(content))
+            .child(div().flex_1().min_h_0().relative().child(content).children(shadow))
             .into_any_element()
     }
 
@@ -1540,14 +1587,12 @@ impl Shell {
         filter: Option<Entity<FeedView>>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let theme = cx.theme();
         h_flex()
             .gap_2()
             .px_2()
             .pt(px(2.))
             .pb(px(3.))
-            .border_b_1()
-            .border_color(theme.border)
+            .bg(chrome_tone(cx))
             .child(
                 self.chrome_focus.button(
                     CHROME_BACK,
@@ -1579,7 +1624,6 @@ impl Shell {
 
     /// Hamburger (drawer mode), the section title, Discover's inline tabs when wide, search.
     fn root_bar(&self, rail_mode: bool, wide: bool, cx: &mut Context<Self>) -> AnyElement {
-        let theme = cx.theme();
         let discover = self.section == Section::Discover;
         let title = if discover { self.discover_tab.label() } else { self.section.label() };
         let searchable = matches!(self.section, Section::Discover | Section::YtMusic | Section::Library);
@@ -1591,7 +1635,7 @@ impl Shell {
             .pt(px(2.))
             .pb(px(3.))
             .items_center()
-            .when(!wide || !discover, |bar| bar.border_b_1().border_color(theme.border))
+            .bg(chrome_tone(cx))
             .when(!rail_mode, |bar| {
                 bar.child(self.chrome_focus.button(
                     CHROME_DRAWER,
@@ -1633,7 +1677,7 @@ impl Shell {
         let theme = cx.theme();
         let mut row = h_flex().id("discover-tabs").role(Role::TabList).aria_label(t(Str::SectionDiscover));
         if !inline {
-            row = row.w_full().border_b_1().border_color(theme.border);
+            row = row.w_full().bg(chrome_tone(cx)).border_b_1().border_color(theme.border);
         }
         let tabs = DiscoverTab::listed(self.guest);
         for (index, tab) in tabs.iter().copied().enumerate() {
@@ -1671,6 +1715,7 @@ impl Shell {
         div()
             .w_full()
             .px_3()
+            .bg(chrome_tone(cx))
             .border_b_1()
             .border_color(theme.border)
             .child(tab_row(
@@ -1841,6 +1886,7 @@ impl Shell {
             .w(px(if expanded { RAIL_EXPANDED } else { RAIL_COLLAPSED }))
             .h_full()
             .flex_shrink_0()
+            .bg(chrome_tone(cx))
             .border_r_1()
             .border_color(theme.border)
             .child(div().pt_1().child(header))
@@ -2098,6 +2144,15 @@ impl Render for Shell {
         if !now_playing {
             self.now_playing.read(cx).hide_video();
         }
+        let depth = self.stacks.get(&self.section).map_or(0, |stack| stack.pushed.len());
+        let shown_page = (self.section.id(), depth, self.discover_tab.id(), self.music_tab.label());
+        if shown_page != self.shown_page {
+            self.shown_page = shown_page;
+            cx.global::<ScrollHost>().active.borrow_mut().take();
+        }
+        let host = cx.global::<ScrollHost>();
+        let lifted = !now_playing && host.active.borrow().as_ref().is_some_and(|scroll| scroll.offset().y < px(0.));
+        host.lifted.set(lifted);
         if now_playing != self.now_playing_shown {
             self.now_playing_shown = now_playing;
             if now_playing {
