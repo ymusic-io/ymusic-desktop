@@ -11,7 +11,7 @@ use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use ym_i18n::{Str, t};
 
-use crate::action_icon::{hit_target, sized_action_icon};
+use crate::action_icon::{hit_target, lucide_size, sized_action_icon};
 use crate::desktop::TrayCommand;
 use crate::mini_player::clock;
 use crate::playback::{PlayState, Playback};
@@ -218,7 +218,8 @@ impl Render for TrayPopup {
                             .when(state == PlayState::Buffering, |button| button.child(Spinner::new().small()))
                             .when(state != PlayState::Buffering, |button| {
                                 button.child(
-                                    Icon::new(if playing { Lucide::Pause } else { Lucide::Play }).size(px(PLAY_ICON)),
+                                    Icon::new(if playing { Lucide::Pause } else { Lucide::Play })
+                                        .size(px(lucide_size(PLAY_ICON))),
                                 )
                             })
                             .accessibility_label(play_label)

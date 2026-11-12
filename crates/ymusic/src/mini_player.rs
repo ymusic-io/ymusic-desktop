@@ -9,7 +9,7 @@ use gpui_kit::*;
 use ym_i18n::{Str, t, tf};
 
 use crate::a11y::FocusList;
-use crate::action_icon::{HIT, action_icon, sized_action_icon};
+use crate::action_icon::{HIT, action_icon, lucide_size, sized_action_icon};
 use crate::playback::{PlayState, Playback, QueueItem};
 use crate::queue_nav::LoopMode;
 use crate::spinner::Spinner;
@@ -174,7 +174,7 @@ impl MiniPlayer {
                 Spinner::new().small().into_any_element()
             } else {
                 Icon::new(if playing { Lucide::Pause } else { Lucide::Play })
-                    .size(px(BAR_SMALL_ICON))
+                    .size(px(lucide_size(BAR_SMALL_ICON)))
                     .into_any_element()
             })
             .on_click(cx.listener(|player, _, _, cx| {
@@ -339,7 +339,7 @@ impl MiniPlayer {
                         } else {
                             Lucide::Volume2
                         })
-                        .size(px(BAR_SMALL_ICON))
+                        .size(px(lucide_size(BAR_SMALL_ICON)))
                         .text_color(theme.muted_foreground),
                     ),
                 )

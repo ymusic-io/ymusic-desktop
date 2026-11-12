@@ -17,7 +17,7 @@ use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use ym_i18n::{Str, t, tf};
 
-use crate::action_icon::{HIT, sized_action_icon};
+use crate::action_icon::{HIT, glyph_action_icon, lucide_size, sized_action_icon};
 use crate::a11y::{FocusList, KeyboardFocusable};
 use crate::audio_only::AudioOnlyArt;
 use crate::download_dialog::DownloadTarget;
@@ -544,7 +544,10 @@ impl NowPlaying {
             .bg(black().opacity(0.42))
             .text_color(white())
             .opacity(if buffering { 0.6 } else { 1. })
-            .child(Icon::new(if playing { Lucide::Pause } else { Lucide::Play }).with_size(px(even(PLAY_ICON * scale))))
+            .child(
+                Icon::new(if playing { Lucide::Pause } else { Lucide::Play })
+                    .with_size(px(lucide_size(PLAY_ICON * scale))),
+            )
             .on_click(cx.listener(|view, _, _, cx| view.playback.update(cx, |playback, cx| playback.toggle(cx))))
     }
 
@@ -629,7 +632,7 @@ impl NowPlaying {
         let scale = overlay_scale(self.video_box.get());
         let (glyph, hit) = (ICON * scale, HIT * scale);
         let transport_icon = |id: &'static str, icon: Lucide, label: &'static str, cx: &App| {
-            on_video(sized_action_icon(id, icon, label, even(glyph), even(hit)), cx)
+            on_video(sized_action_icon(id, icon, label, glyph, even(hit)), cx)
         };
         let transport = h_flex()
             .w_full()
@@ -1123,7 +1126,7 @@ impl NowPlaying {
                 bar.child(
                     self.bar_focus.button(
                         STOP_SPONSOR_BLOCK,
-                        sized_action_icon("np-sponsorblock", mark, t(Str::SettingsSponsorBlock), ICON, HIT)
+                        glyph_action_icon("np-sponsorblock", mark, t(Str::SettingsSponsorBlock), ICON, HIT)
                             .tooltip(state)
                             .on_click(cx.listener(move |view, _, _, cx| {
                                 view.sponsor_block.update(cx, |sponsor, cx| sponsor.set_whitelisted(!whitelisted, cx))
