@@ -30,6 +30,8 @@ pub struct MediaSession {
     announced_state: Option<PlayState>,
     announced_position: i64,
     announced_at: Instant,
+    /// The playback speed the OS extrapolates the position at.
+    announced_rate: f64,
     _observe: Subscription,
     _events: Task<()>,
 }
@@ -96,6 +98,7 @@ impl MediaSession {
             announced_state: None,
             announced_position: 0,
             announced_at: Instant::now(),
+            announced_rate: 1.0,
             _observe: observe,
             _events: events,
         };
@@ -153,9 +156,14 @@ impl MediaSession {
             self.announced_duration = playback.duration_ms;
             self.announced_state = None;
         }
-        // While playing, the OS extrapolates from the last report; only drift from that is news.
+        let rate = f64::from(playback.effects.speed);
+        if rate != self.announced_rate {
+            let _ = controls.set_rate(rate);
+            self.announced_rate = rate;
+        }
+        // While playing, the OS extrapolates from the last report at the rate; only drift from that is news.
         let elapsed = if matches!(self.announced_state, Some(PlayState::Playing)) {
-            self.announced_at.elapsed().as_millis() as i64
+            (self.announced_at.elapsed().as_millis() as f64 * self.announced_rate) as i64
         } else {
             0
         };
