@@ -10,7 +10,7 @@ use gpui_kit::*;
 use ym_engine::yt::YtAccountInfo;
 use ym_i18n::{Str, t};
 
-use crate::a11y::{DragRow, FocusList, announced, heading};
+use crate::a11y::{DragRow, FocusList, heading, label};
 use crate::action_icon::action_icon;
 use crate::feed::{FeedView, feed_width, thumb_for};
 use crate::graph::{AppGraph, on_core};
@@ -171,7 +171,7 @@ impl AccountView {
                                     .font_bold(),
                             )
                             .child(
-                                announced("signin-subtitle", t(Str::SigninPrefaceSubtitle))
+                                label("signin-subtitle", t(Str::SigninPrefaceSubtitle))
                                     .text_sm()
                                     .text_color(theme.muted_foreground),
                             ),

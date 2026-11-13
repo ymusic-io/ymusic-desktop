@@ -15,7 +15,7 @@ use gpui_kit::*;
 use ym_download::{DownloadChange, DownloadService, DownloadState, DownloadTask, TaskError};
 use ym_i18n::{Str, t, tf};
 
-use crate::a11y::{DragRow, FocusList, announced, heading, list_item};
+use crate::a11y::{DragRow, FocusList, announced, announced_as, heading, list_item};
 use crate::action_icon::action_icon;
 use crate::download_dialog::{DownloadPicker, DownloadTarget};
 use crate::downloads::pick_download_folder;
@@ -734,11 +734,15 @@ impl Render for DownloadsView {
                 .justify_center()
                 .gap_2()
                 .child(Icon::new(Lucide::Download).size(px(56.)).text_color(theme.muted_foreground))
-                .child(heading("downloads-none-title", 2, t(Str::DownloadsNoneTitle)).aria_live(Live::Polite).text_lg())
+                .child(heading("downloads-none-title", 2, t(Str::DownloadsNoneTitle)).text_lg())
                 .child(
-                    announced("downloads-none-message", t(Str::DownloadsNoneMessage))
-                        .text_sm()
-                        .text_color(theme.muted_foreground),
+                    announced_as(
+                        "downloads-none-message",
+                        t(Str::DownloadsNoneMessage),
+                        format!("{}. {}", t(Str::DownloadsNoneTitle), t(Str::DownloadsNoneMessage)),
+                    )
+                    .text_sm()
+                    .text_color(theme.muted_foreground),
                 )
                 .into_any_element();
         }

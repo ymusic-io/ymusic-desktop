@@ -11,7 +11,7 @@ use gpui_kit::*;
 use ym_i18n::{Str, t, tf};
 use ym_signin::DeviceLinkOffer;
 
-use crate::a11y::{FocusList, alert, announced, heading, label};
+use crate::a11y::{FocusList, alert, announced, announced_as, heading, label};
 use crate::action_icon::action_icon;
 use crate::cookie_guide::CookieGuide;
 use crate::cookie_lock::{ProtectEvent, ProtectStep};
@@ -278,19 +278,21 @@ impl SignInView {
                 .gap_2()
                 .items_center()
                 .child(Spinner::new().small())
-                .child(
-                    announced("signin-waiting", t(Str::SigninQrWaiting)).text_sm().text_color(theme.muted_foreground),
-                )
+                .child(label("signin-waiting", t(Str::SigninQrWaiting)).text_sm().text_color(theme.muted_foreground))
                 .into_any_element(),
         };
         let ended = matches!(self.link, Link::Ended);
         vec![
-            announced("signin-qr-title", t(Str::SigninQrTitle)).text_center().font_semibold().into_any_element(),
-            announced("signin-qr-hint", t(Str::SigninQrHint))
-                .text_center()
-                .text_sm()
-                .text_color(theme.muted_foreground)
-                .into_any_element(),
+            label("signin-qr-title", t(Str::SigninQrTitle)).text_center().font_semibold().into_any_element(),
+            announced_as(
+                "signin-qr-hint",
+                t(Str::SigninQrHint),
+                format!("{}. {}", t(Str::SigninQrTitle), t(Str::SigninQrHint)),
+            )
+            .text_center()
+            .text_sm()
+            .text_color(theme.muted_foreground)
+            .into_any_element(),
             div().w_full().h(px(QR_BOX)).flex().items_center().justify_center().child(qr).into_any_element(),
             v_flex()
                 .w_full()

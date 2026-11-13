@@ -16,7 +16,7 @@ use ym_engine::yt::{YtFeedItem, YtFeedPage, YtFilterGroup, YtPageHeader, YtSecti
 use ym_engine::{DynamicEngine, EngineError, ErrorKind};
 use ym_i18n::{Str, t, tf};
 
-use crate::a11y::{DragRow, FocusList, alert, announced, heading, list_item};
+use crate::a11y::{DragRow, FocusList, alert, announced, announced_as, heading, list_item};
 use crate::action_icon::{HIT, action_icon, sized_action_icon};
 use crate::download_dialog::DownloadTarget;
 use crate::graph::{AppGraph, on_core};
@@ -1724,15 +1724,19 @@ impl FeedView {
                     .child(div().pb_1().child(Icon::new(Lucide::Inbox).size(px(52.)).text_color(muted)))
                     .when_some(self.page.empty_title.clone(), |empty, title| {
                         empty.child(
-                            heading("empty-title", 2, title)
-                                .aria_live(Live::Polite)
-                                .text_base()
-                                .font_semibold()
-                                .text_color(ink)
-                                .text_center(),
+                            heading("empty-title", 2, title).text_base().font_semibold().text_color(ink).text_center(),
                         )
                     })
-                    .child(announced("empty-message", message).text_center().text_color(muted))
+                    .child(
+                        match &self.page.empty_title {
+                            Some(title) => {
+                                announced_as("empty-message", message.clone(), format!("{title}. {message}"))
+                            }
+                            None => announced("empty-message", message),
+                        }
+                        .text_center()
+                        .text_color(muted),
+                    )
                     .child(actions.pt_2()),
             )
             .into_any_element()

@@ -664,9 +664,20 @@ pub fn label(id: impl Into<ElementId>, text: impl Into<SharedString>) -> Statefu
 }
 
 /// A [`label`] the screen reader announces when it appears and whenever it changes: a status, the
-/// message of an empty page.
+/// message of an empty page. AccessKit announces nodes that appear together in no set order, so a
+/// screen announces one: [`announced_as`] speaks the lines before it too.
 pub fn announced(id: impl Into<ElementId>, text: impl Into<SharedString>) -> Stateful<Div> {
     label(id, text).aria_live(Live::Polite)
+}
+
+/// An [`announced`] label showing `shown` that speaks `spoken`: the screen's whole announcement
+/// (its title, then this line), in order.
+pub fn announced_as(
+    id: impl Into<ElementId>,
+    shown: impl Into<SharedString>,
+    spoken: impl Into<SharedString>,
+) -> Stateful<Div> {
+    div().id(id).role(Role::Label).aria_value(spoken.into()).aria_live(Live::Polite).child(shown.into())
 }
 
 /// An [`announced`] label that interrupts the screen reader: an error that stops what the user did.
