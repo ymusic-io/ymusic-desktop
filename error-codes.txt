@@ -33,6 +33,7 @@ R20019 - player main-proxy: host/main/ opened without a command
 R20020 - player main-proxy: no main engine, or the main engine refused the command
 R20021 - player/mintPo answered without a content PO token
 R20022 - engine manager: no engine bundle candidate to boot
+R20023 - log/capture: the cache entry the bundle named (the bg-session dump) could not be read; the report goes without it (logged)
 R30001 - remote config: the cached config was unreadable and was dropped (logged; defaults used)
 R30002 - remote config: the fetched config could not be written to the cache (logged)
 R30003 - remote config: fetching /v1/config failed (logged; the held config stays)

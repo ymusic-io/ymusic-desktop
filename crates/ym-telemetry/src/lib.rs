@@ -17,8 +17,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
-use sentry::protocol::{Breadcrumb, Context, Event, Level as SentryLevel, TraceContext, TraceId};
-use ym_common::log::{Crumb, Level, LogSink};
+use sentry::protocol::{Attachment, Breadcrumb, Context, Event, Level as SentryLevel, TraceContext, TraceId};
+use ym_common::log::{CaptureExtras, Crumb, Level, LogSink};
 
 const TRAIL_TAG: &str = "trail";
 const CODE_TAG: &str = "error.code";
@@ -226,6 +226,16 @@ impl LogSink for SentrySink {
     }
 
     fn capture_error(&self, trail: &[Crumb], message: &str, error: &(dyn Error + 'static)) {
+        self.capture_error_with(trail, message, error, &CaptureExtras::default());
+    }
+
+    fn capture_error_with(
+        &self,
+        trail: &[Crumb],
+        message: &str,
+        error: &(dyn Error + 'static),
+        extras: &CaptureExtras,
+    ) {
         if !reports_allowed() {
             return;
         }
@@ -256,6 +266,17 @@ impl LogSink for SentrySink {
                             scope.set_extra(&format!("{}.{key}", crumb.tag), value.clone());
                         }
                     }
+                }
+                if !extras.props.is_empty() {
+                    let props = extras.props.iter().map(|(key, value)| (key.clone(), value.clone())).collect();
+                    scope.set_context("capture", Context::Other(props));
+                }
+                for file in &extras.files {
+                    scope.add_attachment(Attachment {
+                        buffer: file.bytes.clone(),
+                        filename: file.filename.clone(),
+                        ..Default::default()
+                    });
                 }
             },
             || {

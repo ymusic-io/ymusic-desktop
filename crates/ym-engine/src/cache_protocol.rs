@@ -9,6 +9,7 @@ use std::time::Duration;
 use bytes::{Bytes, BytesMut};
 use serde_json::{Map, Value, json};
 use tokio::io::AsyncReadExt;
+use ym_common::log::{CaptureExtras, CapturedFile};
 use ym_quickjs::{PIPE_CAP, Pipe, PipeError, QuickJsRuntime};
 
 use crate::cache::{CacheError, CacheMeta, DiskCacheStore, PutError};
@@ -18,6 +19,8 @@ use crate::protocol::{Codes, Request, ServeError, serve};
 
 const CODES: Codes = Codes { request: "R20008", failure: "R20009" };
 const CAPTURE: Codes = Codes { request: "R20016", failure: "R20016" };
+/// The JVM host's name for the attached cache entry.
+const CAPTURE_FILE: &str = "bg-session.json";
 const PUT_IDLE_TIMEOUT_MS: u64 = 30_000;
 
 pub(crate) fn install(runtime: &QuickJsRuntime, store: Arc<DiskCacheStore>, parked: Arc<ParkedLoggers>) {
@@ -167,10 +170,15 @@ impl fmt::Display for CapturedFailure {
 impl Error for CapturedFailure {}
 
 /// The bundle reporting a coded failure it declared dead (e.g. a PO token rejection) as the job's
-/// one crash record.
-pub(crate) fn install_capture(runtime: &QuickJsRuntime, parked: Arc<ParkedLoggers>) {
+/// one crash record, with the cache entry it names attached (the bg-session dump), as the JVM host
+/// does.
+pub(crate) fn install_capture(
+    runtime: &QuickJsRuntime,
+    store: Option<Arc<DiskCacheStore>>,
+    parked: Arc<ParkedLoggers>,
+) {
     runtime.on_accept("log/capture", move |pipe| {
-        let parked = parked.clone();
+        let (store, parked) = (store.clone(), parked.clone());
         async move {
             let root = parked.root().clone();
             serve(pipe, parked, "log/capture", CAPTURE, &["scope", "key"], async move |request: &Request<'_>| {
@@ -179,10 +187,32 @@ pub(crate) fn install_capture(runtime: &QuickJsRuntime, parked: Arc<ParkedLogger
                     code: field("code").unwrap_or("R20015").to_owned(),
                     message: field("message").unwrap_or("PO rejected").to_owned(),
                 };
-                root.capture_error(&failure.message, &failure);
+                let (scope, key) = (field("scope").unwrap_or_default(), field("key").unwrap_or_default());
+                let mut extras = CaptureExtras::default();
+                extras.props.insert("cache.scope".into(), json!(scope));
+                extras.props.insert("cache.key".into(), json!(key));
+                if let Some(store) = store.clone().filter(|_| !scope.is_empty() && !key.is_empty()) {
+                    let (scope, key) = (scope.to_owned(), key.to_owned());
+                    let read = tokio::task::spawn_blocking(move || read_entry(&store, &scope, &key)).await;
+                    match read {
+                        Ok(Ok(Some(bytes))) => extras.files.push(CapturedFile { filename: CAPTURE_FILE.into(), bytes }),
+                        Ok(Ok(None)) => {}
+                        Ok(Err(error)) => {
+                            root.warn("R20023 the capture's cache entry could not be read", Some(&*error))
+                        }
+                        Err(error) => root.warn("R20023 the capture's cache entry could not be read", Some(&error)),
+                    }
+                }
+                root.capture_error_with(&failure.message, &failure, &extras);
                 Ok(())
             })
             .await
         }
     });
+}
+
+/// Blocking: the entry's whole body, `None` once it is trimmed or was never written.
+fn read_entry(store: &DiskCacheStore, scope: &str, key: &str) -> Result<Option<Vec<u8>>, Box<dyn Error + Send + Sync>> {
+    let Some(entry) = store.get(scope, key)? else { return Ok(None) };
+    Ok(Some(std::fs::read(entry.path)?))
 }

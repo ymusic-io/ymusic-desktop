@@ -88,10 +88,10 @@ impl DynamicEngine {
         if let Some(lookup) = config.remote_features {
             crate::settings::install_remote_config(&runtime, lookup, parked.clone());
         }
+        crate::cache_protocol::install_capture(&runtime, config.cache.clone(), parked.clone());
         if let Some(store) = config.cache {
             crate::cache_protocol::install(&runtime, store, parked.clone());
         }
-        crate::cache_protocol::install_capture(&runtime, parked.clone());
         if let Some(main) = config.main {
             crate::main_proxy::install(&runtime, main, parked.clone());
         }

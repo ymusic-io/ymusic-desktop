@@ -32,12 +32,38 @@ pub fn now_millis() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_millis() as i64)
 }
 
+/// What a crash record carries beside its error, as the JVM app's `captureError` props: values for
+/// the record's `capture` context, and files attached to it.
+#[derive(Debug, Default)]
+pub struct CaptureExtras {
+    pub props: Map<String, Value>,
+    pub files: Vec<CapturedFile>,
+}
+
+#[derive(Debug)]
+pub struct CapturedFile {
+    pub filename: String,
+    /// Sentry's attachment takes the whole buffer.
+    pub bytes: Vec<u8>,
+}
+
 /// Where log lines go: the app log, Sentry breadcrumbs, stderr.
 pub trait LogSink: Send + Sync {
     fn log(&self, level: Level, trail: &[Crumb], message: &str, error: Option<&(dyn Error + 'static)>);
 
     fn capture_error(&self, trail: &[Crumb], message: &str, error: &(dyn Error + 'static)) {
         self.log(Level::Error, trail, message, Some(error));
+    }
+
+    /// [`Self::capture_error`] with props and files; a sink that keeps no crash records drops them.
+    fn capture_error_with(
+        &self,
+        trail: &[Crumb],
+        message: &str,
+        error: &(dyn Error + 'static),
+        _extras: &CaptureExtras,
+    ) {
+        self.capture_error(trail, message, error);
     }
 }
 
@@ -113,6 +139,11 @@ impl Logger {
     pub fn capture_error(&self, message: &str, error: &(dyn Error + 'static)) {
         self.sink.capture_error(&self.trail, message, error);
     }
+
+    /// [`Self::capture_error`] carrying props and files with the record.
+    pub fn capture_error_with(&self, message: &str, error: &(dyn Error + 'static), extras: &CaptureExtras) {
+        self.sink.capture_error_with(&self.trail, message, error, extras);
+    }
 }
 
 struct NoopSink;
@@ -163,6 +194,18 @@ impl LogSink for TeeSink {
             sink.capture_error(trail, message, error);
         }
     }
+
+    fn capture_error_with(
+        &self,
+        trail: &[Crumb],
+        message: &str,
+        error: &(dyn Error + 'static),
+        extras: &CaptureExtras,
+    ) {
+        for sink in &self.sinks {
+            sink.capture_error_with(trail, message, error, extras);
+        }
+    }
 }
 
 /// A sink that joins later (once what it needs has booted); lines before then skip it.
@@ -188,6 +231,18 @@ impl LogSink for DeferredSink {
     fn capture_error(&self, trail: &[Crumb], message: &str, error: &(dyn Error + 'static)) {
         if let Some(sink) = self.inner.get() {
             sink.capture_error(trail, message, error);
+        }
+    }
+
+    fn capture_error_with(
+        &self,
+        trail: &[Crumb],
+        message: &str,
+        error: &(dyn Error + 'static),
+        extras: &CaptureExtras,
+    ) {
+        if let Some(sink) = self.inner.get() {
+            sink.capture_error_with(trail, message, error, extras);
         }
     }
 }
