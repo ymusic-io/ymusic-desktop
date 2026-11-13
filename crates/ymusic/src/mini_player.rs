@@ -170,6 +170,11 @@ pub fn clock(ms: i64) -> String {
     if hours > 0 { format!("{hours}:{minutes:02}:{seconds:02}") } else { format!("{minutes}:{seconds:02}") }
 }
 
+/// A duration as the JVM app shows it: `--:--` until it is known.
+pub fn duration_clock(ms: i64) -> String {
+    if ms > 0 { clock(ms) } else { "--:--".to_owned() }
+}
+
 /// The track info takes this share of the bar once that beats `BAR_INFO_MIN`.
 const BAR_INFO_SHARE: f32 = 0.3;
 const BAR_INFO_MIN: f32 = 300.;
@@ -367,7 +372,7 @@ impl MiniPlayer {
                     .child({
                         let playback = self.playback.clone();
                         let stop = SliderStop {
-                            value_text: Some(format!("{} / {}", clock(position), clock(duration)).into()),
+                            value_text: Some(format!("{} / {}", clock(position), duration_clock(duration)).into()),
                             on_step: Some(Rc::new(move |delta, _, cx| {
                                 playback.update(cx, |playback, cx| playback.seek_by(delta as i64 * SEEK_STEP_MS, cx))
                             })),
@@ -379,7 +384,13 @@ impl MiniPlayer {
                             .child(Slider::new(&self.seek).accessibility_label(t(Str::A11yPlaybackPosition)));
                         self.focus.slider(STOP_SEEK, &self.seek, stop, slider, cx).flex_1()
                     })
-                    .child(div().text_xs().font_semibold().text_color(theme.muted_foreground).child(clock(duration))),
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_semibold()
+                            .text_color(theme.muted_foreground)
+                            .child(duration_clock(duration)),
+                    ),
             );
         let side_controls = side.then(|| {
             h_flex()

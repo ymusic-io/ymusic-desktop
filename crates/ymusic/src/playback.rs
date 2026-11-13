@@ -1349,7 +1349,8 @@ impl Playback {
         let current = self.current().and_then(QueueItem::video_id).map(str::to_owned);
         if let Some(progress) = status.get("progress") {
             let video_id = progress.get("videoId").and_then(Value::as_str).map(str::to_owned);
-            if video_id.is_some() && video_id == current {
+            let failed = matches!(self.state, PlayState::Failed(_));
+            if video_id.is_some() && video_id == current && !failed {
                 self.loading_video = None;
                 self.position_ms = field_i64(progress, &["progress", "positionMs"]);
                 self.buffered_ms = field_i64(progress, &["bufferedMs"]);
@@ -1386,6 +1387,14 @@ impl Playback {
             };
             if self.state == PlayState::Ended {
                 self.track_ended(cx);
+            }
+            // A failed video has no play-head; its last report (an unplayable recording's length)
+            // must not stay up, and later ones are ignored until the next load.
+            if matches!(self.state, PlayState::Failed(_)) {
+                self.position_ms = 0;
+                self.duration_ms = 0;
+                self.buffered_ms = 0;
+                self.live = false;
             }
         }
         if let Some(details) = status.get("details") {

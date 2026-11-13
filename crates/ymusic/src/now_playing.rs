@@ -22,7 +22,7 @@ use crate::action_icon::{HIT, glyph_action_icon, lucide_size, sized_action_icon}
 use crate::audio_only::AudioOnlyArt;
 use crate::download_dialog::DownloadTarget;
 use crate::graph::{AppGraph, on_core};
-use crate::mini_player::clock;
+use crate::mini_player::{clock, duration_clock};
 use crate::playback::{
     AUTO_TRANSLATE_KIND, CaptionTrack, PlayState, Playback, QUALITY_AUDIO_ONLY, QUALITY_AUTO, QueueItem, Source,
 };
@@ -685,7 +685,7 @@ impl NowPlaying {
                 ));
 
         let actions = if fullscreen { self.overlay_player_actions(current, scale, cx) } else { Vec::new() };
-        let time = format!("{} / {}", clock(position), clock(duration));
+        let time = format!("{} / {}", clock(position), duration_clock(duration));
         let bottom_row = h_flex()
             .gap(px(4.))
             .items_center()
@@ -714,7 +714,7 @@ impl NowPlaying {
             );
         let playback = self.playback.clone();
         let seek_stop = SliderStop {
-            value_text: Some(format!("{} / {}", clock(position), clock(duration)).into()),
+            value_text: Some(format!("{} / {}", clock(position), duration_clock(duration)).into()),
             on_step: Some(Rc::new(move |delta, _, cx| {
                 playback.update(cx, |playback, cx| playback.seek_by(delta as i64 * SKIP_MS, cx))
             })),
