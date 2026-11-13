@@ -10,7 +10,7 @@ use gpui_kit::*;
 use ym_engine::yt::YtAccountInfo;
 use ym_i18n::{Str, t};
 
-use crate::a11y::{DragRow, FocusList, heading, label};
+use crate::a11y::{DragRow, FocusList, announced_as, heading};
 use crate::action_icon::action_icon;
 use crate::feed::{FeedView, feed_width, thumb_for};
 use crate::graph::{AppGraph, on_core};
@@ -164,16 +164,15 @@ impl AccountView {
                     )
                     .child(
                         v_flex()
+                            .child(heading("signin-title", 2, t(Str::SigninPrefaceTitle)).text_xl().font_bold())
                             .child(
-                                heading("signin-title", 2, t(Str::SigninPrefaceTitle))
-                                    .aria_live(Live::Polite)
-                                    .text_xl()
-                                    .font_bold(),
-                            )
-                            .child(
-                                label("signin-subtitle", t(Str::SigninPrefaceSubtitle))
-                                    .text_sm()
-                                    .text_color(theme.muted_foreground),
+                                announced_as(
+                                    "signin-subtitle",
+                                    t(Str::SigninPrefaceSubtitle),
+                                    format!("{}. {}", t(Str::SigninPrefaceTitle), t(Str::SigninPrefaceSubtitle)),
+                                )
+                                .text_sm()
+                                .text_color(theme.muted_foreground),
                             ),
                     ),
             )
@@ -187,11 +186,7 @@ impl AccountView {
                     .item_for(
                         0,
                         &self.sign_in_focus,
-                        div()
-                            .id("signin-button")
-                            .role(Role::Button)
-                            .aria_label(t(Str::SigninButton))
-                            .aria_description(t(Str::SigninPrefaceSubtitle)),
+                        div().id("signin-button").role(Role::Button).aria_label(t(Str::SigninButton)),
                         cx,
                     )
                     .w_full()
