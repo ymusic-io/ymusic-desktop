@@ -142,7 +142,9 @@ pub fn start_reporting(setup: &LogSetup, graph: &AppGraph) -> Option<Telemetry> 
         return None;
     }
     let telemetry = Telemetry::init(telemetry_config(dsn, graph.settings.as_ref()))?;
-    setup.reports.set(Arc::new(SentrySink { logs, policy: Arc::new(RemotePolicy(graph.remote.clone())) }));
+    let sink = Arc::new(SentrySink { logs, policy: Arc::new(RemotePolicy(graph.remote.clone())) });
+    sink.attach_logs_to_panics();
+    setup.reports.set(sink);
     follow_remote_tags(graph);
     Some(telemetry)
 }

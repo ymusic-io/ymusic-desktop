@@ -10,10 +10,11 @@ use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::sync::{Arc, Mutex, PoisonError};
+use std::time::Duration;
 
 use sentry::protocol::{Attachment, Breadcrumb, Event, Level as SentryLevel};
 use ym_common::log::{Crumb, Level, LogSink};
-use ym_logstore::LogStore;
+use ym_logstore::{LogRecord, LogStore};
 
 const TRAIL_TAG: &str = "trail";
 const CODE_TAG: &str = "error.code";
@@ -27,6 +28,8 @@ const IGNORED_CATEGORIES: &[&str] = &["network"];
 const MAX_BREADCRUMBS: usize = 200;
 /// This workspace's crates: a panic's culprit is the topmost of their frames, never the SDK's or gpui's.
 const IN_APP_CRATES: &[&str] = &["ymusic::", "ym_"];
+/// How long a panic waits for the app log's connection before it goes without its lines.
+const PANIC_CLAIM_WAIT: Duration = Duration::from_millis(200);
 
 /// Tags every event carries, whichever thread sends it: sentry-rust forks a scope per thread, so a
 /// tag set on one thread's scope never reaches another thread's events.
@@ -111,6 +114,42 @@ pub struct SentrySink {
     pub policy: Arc<dyn ReportPolicy>,
 }
 
+impl SentrySink {
+    /// Panics reported from now on carry the newest unsent app-log lines too, as error events do.
+    /// Call after [`Telemetry::init`], whose panic hook this wraps.
+    pub fn attach_logs_to_panics(self: &Arc<Self>) {
+        let sink = self.clone();
+        let next = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            let lines = sink.policy.error_log_lines();
+            // A panic hook has nowhere to report a failed claim: the panic goes without its lines.
+            let claimed = (lines > 0).then(|| sink.logs.try_claim_unsent(lines, PANIC_CLAIM_WAIT)).flatten();
+            match claimed.and_then(Result::ok).and_then(log_attachment) {
+                Some(log) => sentry::with_scope(|scope| scope.add_attachment(log), || next(info)),
+                None => next(info),
+            }
+        }));
+    }
+}
+
+/// The claimed lines as the event's `log.txt`; none when nothing was claimed.
+fn log_attachment(lines: Vec<LogRecord>) -> Option<Attachment> {
+    if lines.is_empty() {
+        return None;
+    }
+    let text = lines
+        .iter()
+        .map(|line| format!("{} {} [{}] {}", line.epoch_ms, line.level, line.trail, line.message))
+        .collect::<Vec<_>>()
+        .join("\n");
+    Some(Attachment {
+        buffer: text.into_bytes(),
+        filename: "log.txt".into(),
+        content_type: Some("text/plain".into()),
+        ..Default::default()
+    })
+}
+
 fn trail_path(trail: &[Crumb]) -> String {
     trail.iter().map(|crumb| crumb.tag.as_str()).collect::<Vec<_>>().join("/")
 }
@@ -159,20 +198,7 @@ impl LogSink for SentrySink {
             return;
         }
         let lines = self.policy.error_log_lines();
-        let log_text = if lines > 0 {
-            self.logs
-                .claim_unsent(lines)
-                .map(|lines| {
-                    lines
-                        .iter()
-                        .map(|line| format!("{} {} [{}] {}", line.epoch_ms, line.level, line.trail, line.message))
-                        .collect::<Vec<_>>()
-                        .join("\n")
-                })
-                .unwrap_or_default()
-        } else {
-            String::new()
-        };
+        let log = if lines > 0 { self.logs.claim_unsent(lines).ok().and_then(log_attachment) } else { None };
         let path = trail_path(trail);
         sentry::with_scope(
             |scope| {
@@ -188,13 +214,8 @@ impl LogSink for SentrySink {
                         }
                     }
                 }
-                if !log_text.is_empty() {
-                    scope.add_attachment(Attachment {
-                        buffer: log_text.into_bytes(),
-                        filename: "log.txt".into(),
-                        content_type: Some("text/plain".into()),
-                        ..Default::default()
-                    });
+                if let Some(log) = log {
+                    scope.add_attachment(log);
                 }
             },
             || {

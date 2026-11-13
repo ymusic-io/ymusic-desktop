@@ -6,7 +6,8 @@ use std::error::Error;
 use std::io::Write;
 use std::path::Path;
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, TryLockError};
+use std::time::{Duration, Instant};
 
 use rusqlite::{Connection, params};
 use ym_common::log::{Crumb, Level, LogSink, now_millis};
@@ -32,6 +33,7 @@ DROP TABLE sent_mark;
 const QUEUE_CAPACITY: usize = 4_096;
 const MIN_LINES: i64 = 100;
 const STATE_SENT: i64 = 2;
+const CLAIM_RETRY: Duration = Duration::from_millis(5);
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct LogRecord {
@@ -127,17 +129,23 @@ impl LogStore {
 
     /// Blocking: this launch's newest `limit` lines not yet sent with an error event, marked sent.
     pub fn claim_unsent(&self, limit: i64) -> rusqlite::Result<Vec<LogRecord>> {
-        let db = self.db.lock().unwrap();
-        let mut statement = db.prepare(
-            "SELECT seq, ts, level, launch, trail, message FROM log_line WHERE state = 0 AND seq IN \
-             (SELECT seq FROM log_line WHERE launch = ?1 ORDER BY seq DESC LIMIT ?2) ORDER BY seq",
-        )?;
-        let lines: Vec<LogRecord> =
-            statement.query_map(params![self.launch, limit], record)?.collect::<Result<_, _>>()?;
-        for line in &lines {
-            db.execute("UPDATE log_line SET state = ?1 WHERE seq = ?2", params![STATE_SENT, line.seq])?;
+        claim(&self.db.lock().unwrap(), &self.launch, limit)
+    }
+
+    /// [`Self::claim_unsent`] for a panic hook: `None` when the connection stays busy past `wait`,
+    /// as it does when the panicking thread holds it; a poisoned lock still reads.
+    pub fn try_claim_unsent(&self, limit: i64, wait: Duration) -> Option<rusqlite::Result<Vec<LogRecord>>> {
+        let deadline = Instant::now() + wait;
+        loop {
+            match self.db.try_lock() {
+                Ok(db) => return Some(claim(&db, &self.launch, limit)),
+                Err(TryLockError::Poisoned(poisoned)) => {
+                    return Some(claim(&poisoned.into_inner(), &self.launch, limit));
+                }
+                Err(TryLockError::WouldBlock) if Instant::now() < deadline => std::thread::sleep(CLAIM_RETRY),
+                Err(TryLockError::WouldBlock) => return None,
+            }
         }
-        Ok(lines)
     }
 
     /// Blocking: the whole log, gzipped text, for the feedback report.
@@ -159,6 +167,18 @@ impl LogStore {
         encoder.finish()?;
         Ok(())
     }
+}
+
+fn claim(db: &Connection, launch: &str, limit: i64) -> rusqlite::Result<Vec<LogRecord>> {
+    let mut statement = db.prepare(
+        "SELECT seq, ts, level, launch, trail, message FROM log_line WHERE state = 0 AND seq IN \
+         (SELECT seq FROM log_line WHERE launch = ?1 ORDER BY seq DESC LIMIT ?2) ORDER BY seq",
+    )?;
+    let lines: Vec<LogRecord> = statement.query_map(params![launch, limit], record)?.collect::<Result<_, _>>()?;
+    for line in &lines {
+        db.execute("UPDATE log_line SET state = ?1 WHERE seq = ?2", params![STATE_SENT, line.seq])?;
+    }
+    Ok(lines)
 }
 
 impl Drop for LogStore {
