@@ -10,7 +10,7 @@ use gpui_kit::*;
 use ym_engine::yt::YtAccountInfo;
 use ym_i18n::{Str, t};
 
-use crate::a11y::{DragRow, FocusList, heading, label};
+use crate::a11y::{DragRow, FocusList, announced, heading, list_item};
 use crate::action_icon::action_icon;
 use crate::feed::{FeedView, feed_width, thumb_for};
 use crate::graph::{AppGraph, on_core};
@@ -130,15 +130,20 @@ impl AccountView {
         let width = feed_width(window);
         let margin = if width >= 840. { 24. } else { 16. };
         let center = width >= 840. && f32::from(window.viewport_size().height) >= 600.;
-        let mut features = v_flex();
+        let mut features = v_flex()
+            .id("signin-features")
+            .role(Role::List)
+            .aria_label(t(Str::SigninEnables))
+            .aria_size_of_set(FEATURES.len());
         for (index, feature) in FEATURES.into_iter().enumerate() {
             features = features.child(
-                h_flex()
+                list_item(h_flex().id(("signin-feature", index)), index)
+                    .aria_label(t(feature))
                     .py_2()
                     .gap(px(14.))
                     .items_center()
                     .child(div().size(px(10.)).flex_shrink_0().rounded_full().bg(theme.primary))
-                    .child(label(("signin-feature", index), t(feature))),
+                    .child(t(feature)),
             );
         }
         let column = v_flex()
@@ -163,16 +168,21 @@ impl AccountView {
                     )
                     .child(
                         v_flex()
-                            .child(heading("signin-title", 2, t(Str::SigninPrefaceTitle)).text_xl().font_bold())
                             .child(
-                                label("signin-subtitle", t(Str::SigninPrefaceSubtitle))
+                                heading("signin-title", 2, t(Str::SigninPrefaceTitle))
+                                    .aria_live(Live::Polite)
+                                    .text_xl()
+                                    .font_bold(),
+                            )
+                            .child(
+                                announced("signin-subtitle", t(Str::SigninPrefaceSubtitle))
                                     .text_sm()
                                     .text_color(theme.muted_foreground),
                             ),
                     ),
             )
             .child(div().my(px(20.)).h(px(1.)).bg(theme.border))
-            .child(label("signin-enables", t(Str::SigninEnables)).font_bold().text_color(theme.muted_foreground))
+            .child(div().child(t(Str::SigninEnables)).font_bold().text_color(theme.muted_foreground))
             .child(div().h(px(12.)))
             .child(features)
             .child(div().h(px(28.)))
@@ -181,7 +191,11 @@ impl AccountView {
                     .item_for(
                         0,
                         &self.sign_in_focus,
-                        div().id("signin-button").role(Role::Button).aria_label(t(Str::SigninButton)),
+                        div()
+                            .id("signin-button")
+                            .role(Role::Button)
+                            .aria_label(t(Str::SigninButton))
+                            .aria_description(t(Str::SigninPrefaceSubtitle)),
                         cx,
                     )
                     .w_full()
