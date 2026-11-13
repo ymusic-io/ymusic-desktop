@@ -120,6 +120,7 @@ R90020 - top tracks: play history could not be read
 R90021 - sponsorblock: the per-video whitelist could not be saved
 R90022 - downloads: a finished file could not be deleted from disk
 R90023 - sign-in: the device-link QR could not be drawn
+R90024 - media session: the app could not be listed in or taken off the OS media surface (Windows SMTC IsEnabled; logged)
 R90200 - data dir: a database this app's earlier builds named differently could not take the JVM app's name (logged; retried next launch)
 R90201 - data dir: the window bounds kept in app.db could not move to window.properties (logged)
 R90202 - data dir: the old window.bounds setting could not be removed from app.db (logged)

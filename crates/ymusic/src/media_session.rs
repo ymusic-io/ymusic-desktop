@@ -9,6 +9,7 @@ use gpui_kit::*;
 use souvlaki::{
     MediaControlEvent, MediaControls, MediaMetadata, MediaPlayback, MediaPosition, PlatformConfig, SeekDirection,
 };
+use ym_common::log::Logger;
 use ym_i18n::{Str, t};
 
 use crate::graph::AppGraph;
@@ -20,6 +21,10 @@ const DRIFT_MS: i64 = 2_000;
 
 pub struct MediaSession {
     controls: Option<MediaControls>,
+    hwnd: Option<*mut std::ffi::c_void>,
+    /// Whether the OS media surface lists the app; it does only while something is queued.
+    listed: bool,
+    log: Logger,
     announced_video: Option<String>,
     announced_duration: i64,
     announced_state: Option<PlayState>,
@@ -35,8 +40,8 @@ impl MediaSession {
         // MPRIS bus names are unique per bus; souvlaki's service thread panics when one is taken
         // (by a second instance or the JVM app), so each process gets the spec's instance suffix.
         let dbus_name = format!("ymusic.instance{}", std::process::id());
-        let controls =
-            PlatformConfig { display_name: t(Str::AppName), dbus_name: &dbus_name, hwnd: window_hwnd(window) };
+        let hwnd = window_hwnd(window);
+        let controls = PlatformConfig { display_name: t(Str::AppName), dbus_name: &dbus_name, hwnd };
         let controls = match open_controls(controls) {
             Ok(mut controls) => match controls.attach(move |event| {
                 let _ = sender.unbounded_send(event);
@@ -81,8 +86,11 @@ impl MediaSession {
                 }
             }
         });
-        Self {
+        let mut session = Self {
             controls,
+            hwnd,
+            listed: true,
+            log: cx.global::<AppGraph>().log.fork("media-session"),
             announced_video: None,
             announced_duration: 0,
             announced_state: None,
@@ -90,18 +98,38 @@ impl MediaSession {
             announced_at: Instant::now(),
             _observe: observe,
             _events: events,
+        };
+        session.list(false);
+        session
+    }
+
+    /// Lists the app in the OS media surface or takes it off, so a stopped session offers no Play.
+    fn list(&mut self, listed: bool) {
+        if self.controls.is_none() || self.listed == listed {
+            return;
+        }
+        self.listed = listed;
+        if let Err(error) = set_listed(self.hwnd, listed) {
+            self.log.warn(&format!("R90024 media session listing could not change: {error}"), None);
         }
     }
 
     fn mirror(&mut self, playback: &Entity<Playback>, cx: &mut Context<Self>) {
-        let Some(controls) = self.controls.as_mut() else { return };
+        if self.controls.is_none() {
+            return;
+        }
         let playback = playback.read(cx);
         let Some(item) = playback.current() else {
             if self.announced_video.take().is_some() {
-                let _ = controls.set_playback(MediaPlayback::Stopped);
+                if let Some(controls) = self.controls.as_mut() {
+                    let _ = controls.set_playback(MediaPlayback::Stopped);
+                }
+                self.list(false);
             }
             return;
         };
+        self.list(true);
+        let Some(controls) = self.controls.as_mut() else { return };
         let duration_learned = playback.duration_ms > 0 && playback.duration_ms != self.announced_duration;
         let key = item.key();
         if self.announced_video.as_deref() != Some(key.as_str()) || duration_learned {
@@ -165,6 +193,29 @@ fn window_hwnd(window: &Window) -> Option<*mut std::ffi::c_void> {
 #[cfg(not(target_os = "windows"))]
 fn window_hwnd(_: &Window) -> Option<*mut std::ffi::c_void> {
     None
+}
+
+/// Windows lists the window's SMTC while it is enabled; souvlaki toggles that only on attach and
+/// detach (which drops its handlers), so the switch goes to the same SMTC fetched for the window.
+#[cfg(target_os = "windows")]
+fn set_listed(hwnd: Option<*mut std::ffi::c_void>, listed: bool) -> Result<(), String> {
+    use windows::Media::SystemMediaTransportControls;
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::System::WinRT::ISystemMediaTransportControlsInterop;
+    let hwnd = hwnd.ok_or("no window handle")?;
+    let switch = || -> windows::core::Result<()> {
+        let interop = windows::core::factory::<SystemMediaTransportControls, ISystemMediaTransportControlsInterop>()?;
+        // SAFETY: the main window's handle, alive as long as this session.
+        let controls: SystemMediaTransportControls = unsafe { interop.GetForWindow(HWND(hwnd)) }?;
+        controls.SetIsEnabled(listed)
+    };
+    switch().map_err(|error| error.to_string())
+}
+
+/// Elsewhere the app stays listed, its state Stopped while nothing is queued.
+#[cfg(not(target_os = "windows"))]
+fn set_listed(_: Option<*mut std::ffi::c_void>, _: bool) -> Result<(), String> {
+    Ok(())
 }
 
 /// Hack: souvlaki's SMTC strips `file://` and opens the rest as a path, so Windows gets the
