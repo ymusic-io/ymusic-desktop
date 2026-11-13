@@ -49,13 +49,13 @@ Debug builds keep their own data dir, apart from the installed app's `~/.ymusic`
 picks another. Without a `secret.properties` (keys in `secret.properties.example`) the app runs on
 its embedded bundles, with no config service, QR sign-in, self-update or crash reports.
 
-### Packages
+## Release
+
+YMusicV4's GitHub Actions build and publish the desktop packages, with this repo as its
+`ymusic-desktop` submodule. The scripts they run package a local build too:
 
 ```sh
 tools/bundle-macos.sh --dmg                 # DMG
 tools/package-linux.sh --deb --appimage     # .deb + AppImage
 tools/package-windows.sh --setup            # installer, needs Inno Setup
 ```
-
-Releases come from YMusicV4's release workflow, which builds this repo as its `ymusic-desktop`
-submodule.
