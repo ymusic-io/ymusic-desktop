@@ -3,8 +3,9 @@
 # (the path the JVM updater relaunches) beside the packed ffmpeg (where downloads look for it), the
 # libav DSOs in /opt/ymusic/lib, both binaries loading them through $ORIGIN/../lib.
 #   --deb       the .deb the JVM app's updater installs over its own: package ymusic, version
-#               <versionName>, the same paths (dpkg drops jpackage's leftovers) and the JVM's desktop
-#               entry name, so dash pins and Open With defaults carry over.
+#               <versionName>-<versionCode> (a release that bumps only the code still upgrades), the
+#               same paths (dpkg drops jpackage's leftovers) and the JVM's desktop entry name, so dash
+#               pins and Open With defaults carry over.
 #   --appimage  the same files as an AppImage (AppRun is the executable; its rpath finds the DSOs).
 #
 # usage: tools/package-linux.sh [--no-build] [--debug] [--deb] [--appimage] [--out <dir>]
@@ -67,7 +68,8 @@ fi
 binary=$target_dir/$profile/ymusic
 [[ -f $binary ]] || die "no $profile binary at $binary"
 version=${YMUSIC_VERSION_NAME:-$(sed -n 's/^ymusic\.versionName=//p' "$v4/gradle.properties" | tr -d '[:space:]')}
-[[ -n $version ]] || die "no version in $v4/gradle.properties"
+version_code=${YMUSIC_VERSION_CODE:-$(sed -n 's/^val desktopVersionCode = \([0-9]*\).*/\1/p' "$v4/desktopApp/build.gradle.kts")}
+[[ -n $version && -n $version_code ]] || die "no version in $v4 (gradle.properties / desktopApp/build.gradle.kts)"
 
 # One tree, two prefixes: /opt/ymusic for the .deb, usr/ inside the AppImage.
 stage_app() {
@@ -111,7 +113,7 @@ if [[ $deb == 1 ]]; then
     # wgpu draws through Vulkan or EGL and audio goes to PulseAudio (both loaded at runtime).
     cat > "$tree/DEBIAN/control" << EOF
 Package: $DEB_PACKAGE
-Version: $version
+Version: $version-$version_code
 Architecture: $deb_arch
 Maintainer: YMusic <Unknown>
 Installed-Size: $(du -sk --exclude=DEBIAN "$tree" | cut -f1)
