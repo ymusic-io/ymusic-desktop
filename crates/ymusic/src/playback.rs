@@ -700,7 +700,11 @@ impl Playback {
         self.load_current(cx);
     }
 
+    /// Nothing queued: a no-op, as the YouTube engine keeps a stopped video that play would revive unseen.
     pub fn toggle(&mut self, cx: &mut Context<Self>) {
+        if self.current().is_none() {
+            return;
+        }
         let playing = self.is_playing();
         match self.active {
             Some(Active::Local) => {
@@ -715,6 +719,9 @@ impl Playback {
     }
 
     pub fn seek(&mut self, position_ms: i64, cx: &mut Context<Self>) {
+        if self.current().is_none() {
+            return;
+        }
         self.position_ms = position_ms;
         match self.active {
             Some(Active::Local) => self.send_local(LocalCommand::Seek(position_ms)),
