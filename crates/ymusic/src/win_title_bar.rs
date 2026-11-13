@@ -23,13 +23,12 @@ const TITLE_SIZE: f32 = 12.;
 const CLOSE_RED: u32 = 0xC42B1C;
 
 /// Segoe Fluent Icons / MDL2 Assets code points: ChromeMinimize, ChromeMaximize, ChromeRestore,
-/// ChromeClose, Pin, PinFill.
+/// ChromeClose, Pin.
 const MINIMIZE: &str = "\u{E921}";
 const MAXIMIZE: &str = "\u{E922}";
 const RESTORE: &str = "\u{E923}";
 const CLOSE: &str = "\u{E8BB}";
 const PIN: &str = "\u{E718}";
-const PINNED: &str = "\u{E842}";
 
 /// The window content under the title bar; a fullscreen window has none. The bar is deferred above
 /// a dialog's input-blocking layer, so minimize, maximize and close keep working while a dialog is
@@ -116,7 +115,7 @@ fn title_bar(window: &mut Window, cx: &mut App) -> GrayscaleText {
                 .text_size(px(PIN_GLYPH_SIZE))
                 .line_height(px(PIN_GLYPH_SIZE))
                 .when(pinned, |glyph| glyph.text_color(theme.primary))
-                .child(if pinned { PINNED } else { PIN }),
+                .child(PIN),
         )
         .when(pin_focus.is_focused(window), |pin| {
             pin.child(div().absolute().inset_0().border_2().border_color(theme.ring))
