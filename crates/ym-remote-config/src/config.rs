@@ -17,6 +17,10 @@ fn null_default<'de, D: Deserializer<'de>, T: Default + Deserialize<'de>>(deseri
     Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
 }
 
+fn null_true<'de, D: Deserializer<'de>>(deserializer: D) -> Result<bool, D::Error> {
+    Ok(Option::<bool>::deserialize(deserializer)?.unwrap_or(true))
+}
+
 /// A published JS bundle; the document arrives unsigned, so `signature` authenticates the file.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BundleVersion {
@@ -31,18 +35,18 @@ pub struct BundleVersion {
 pub struct AppUpdate {
     pub version_code: i32,
     pub version_name: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub notes: String,
     pub url: String,
     pub size: i64,
     pub sha256: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub signature: String,
     #[serde(default)]
     pub changelog_url: Option<String>,
     #[serde(default)]
     pub download_page: Option<String>,
-    #[serde(default = "default_true")]
+    #[serde(default = "default_true", deserialize_with = "null_true")]
     pub install_in_app: bool,
 }
 
