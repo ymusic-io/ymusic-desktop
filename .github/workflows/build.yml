@@ -1,9 +1,11 @@
-name: linux
+name: build
 
-# The Linux packages: the .deb the JVM app's updater installs over its own, and an AppImage, for
-# x86_64 and arm64 (tools/package-linux.sh). Run by a release tag, as YMusicV4's release workflow
-# (git tag release-v4.1.0 && git push <remote> release-v4.1.0), or by hand from the Actions tab.
-# Everything builds in an ubuntu:22.04 container: the binaries then need glibc 2.35, not the runner's.
+# The desktop packages, in the shapes the JVM app's updater installs over its own: macOS DMGs
+# (tools/bundle-macos.sh), Windows Inno Setup installers (tools/package-windows.sh) and Linux .debs
+# plus AppImages (tools/package-linux.sh), each for arm64 and x86_64. Run by a release tag, as
+# YMusicV4's release workflow (git tag release-v4.1.0 && git push <remote> release-v4.1.0), or by
+# hand from the Actions tab. The checkouts sit side by side (ymusic-desktop/ + YMusicV4/ +
+# ffmpeg-build/), as on a developer machine.
 on:
   push:
     tags: ['release-*', 'prerelease-*']
@@ -11,7 +13,7 @@ on:
     inputs:
       ymusic_v4_ref:
         description: YMusicV4 ref (C sources, engine bundles, strings, version line)
-        default: master
+        default: dev
       version_name:
         description: versionName override (empty = YMusicV4's ymusic.versionName)
         default: ''
@@ -23,12 +25,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: linux-${{ github.ref }}
+  group: build-${{ github.ref }}
   cancel-in-progress: true
 
 env:
   YMUSIC_V4_REPO: ymusic-io/YMusicV4
-  YMUSIC_V4_REF: ${{ inputs.ymusic_v4_ref || 'master' }}
+  YMUSIC_V4_REF: ${{ inputs.ymusic_v4_ref || 'dev' }}
   # The ffmpeg-build commit YMusicV4's release links against; bumping it rebuilds each pack once.
   FFMPEG_BUILD_REPO: ymusic-io/ffmpeg-build
   FFMPEG_BUILD_REF: 4d2dc9ae0c73dc5f01733f18af070412013a6a93
@@ -37,6 +39,10 @@ env:
   # moving "continuous" build).
   APPIMAGETOOL_VERSION: '1.9.1'
   APPIMAGE_RUNTIME_VERSION: '20251108'
+  # The installer msys2/setup-msys2 (pinned below) extracts, as in YMusicV4's release workflow; both
+  # must change together.
+  MSYS2_INSTALLER_DATE: '2026-09-27'
+  MSYS2_INSTALLER_SHA256: ad336cccfda47758b5e15cda993fbba421115cb0b126697daef1ee4dfe37209f
 
 jobs:
   # engine.js / player.js are YMusicV4's Gradle build (esbuild, then the Closure Compiler): on the
@@ -67,7 +73,8 @@ jobs:
             YMusicV4/engine-js/build/dist/player.js
           if-no-files-found: error
 
-  ffmpeg:
+  # Linux ffmpeg builds in the packages' ubuntu:22.04 container, so it links the same glibc.
+  ffmpeg-linux:
     name: ffmpeg ${{ matrix.slug }}
     runs-on: ${{ matrix.runner }}
     container: ubuntu:22.04
@@ -106,9 +113,121 @@ jobs:
             exit 1
           }
 
+  ffmpeg-macos:
+    name: ffmpeg ${{ matrix.slug }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { slug: macos-arm64, runner: macos-15 }
+          - { slug: macos-x86_64, runner: macos-15-intel }
+    steps:
+      - id: cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ffmpeg-build/out/${{ matrix.slug }}
+          key: ffmpeg-${{ matrix.slug }}-${{ env.FFMPEG_BUILD_REF }}
+      - if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: ${{ env.FFMPEG_BUILD_REPO }}
+          ref: ${{ env.FFMPEG_BUILD_REF }}
+          path: ffmpeg-build
+          submodules: recursive
+          fetch-depth: 1
+      - if: steps.cache.outputs.cache-hit != 'true'
+        working-directory: ffmpeg-build
+        run: |
+          brew install nasm automake autoconf libtool pkg-config meson ninja
+          scripts/build-desktop.sh
+
+  ffmpeg-windows:
+    name: ffmpeg ${{ matrix.slug }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Native under MSYS2, as on a developer machine. CLANGARM64 has no gcc: HOST_CC is
+          # ffmpeg's compiler, which its configure otherwise assumes is gcc.
+          - slug: windows-x86_64
+            runner: windows-2022
+            msystem: MINGW64
+            cc: gcc
+            packages: >-
+              mingw-w64-x86_64-toolchain mingw-w64-x86_64-nasm mingw-w64-x86_64-pkgconf
+              mingw-w64-x86_64-meson mingw-w64-x86_64-ninja mingw-w64-x86_64-zlib
+          - slug: windows-arm64
+            runner: windows-11-arm
+            msystem: CLANGARM64
+            cc: clang
+            packages: >-
+              mingw-w64-clang-aarch64-toolchain mingw-w64-clang-aarch64-pkgconf
+              mingw-w64-clang-aarch64-meson mingw-w64-clang-aarch64-ninja
+              mingw-w64-clang-aarch64-zlib
+    steps:
+      # The Windows runner checks out with CRLF, which breaks every shell script ffmpeg-build runs.
+      - run: git config --global core.autocrlf false
+      - id: cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ffmpeg-build/out/${{ matrix.slug }}
+          key: ffmpeg-${{ matrix.slug }}-${{ env.FFMPEG_BUILD_REF }}
+      - if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: ${{ env.FFMPEG_BUILD_REPO }}
+          ref: ${{ env.FFMPEG_BUILD_REF }}
+          path: ffmpeg-build
+          submodules: recursive
+          fetch-depth: 1
+      - name: Seed MSYS2 installer
+        if: steps.cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          day="${MSYS2_INSTALLER_DATE//-/}"
+          file="msys2-base-x86_64-$day.sfx.exe"
+          dir="$(cygpath -u "$RUNNER_TOOL_CACHE")/msys2-installer/0.0.$day/x64"
+          mkdir -p "$dir"
+          for url in \
+            "https://github.com/msys2/msys2-installer/releases/download/$MSYS2_INSTALLER_DATE/$file" \
+            "https://repo.msys2.org/distrib/x86_64/$file" \
+            "https://mirror.msys2.org/distrib/x86_64/$file"; do
+            if curl -fsSL --retry 3 --retry-all-errors --connect-timeout 20 -o "$dir/base.exe" "$url" &&
+              echo "$MSYS2_INSTALLER_SHA256  $dir/base.exe" | sha256sum -c --status; then
+              touch "$dir.complete"
+              echo "MSYS2 installer from $url"
+              exit 0
+            fi
+            echo "::warning::MSYS2 installer download failed: $url"
+          done
+          echo "::error::MSYS2 installer: every source failed"
+          exit 1
+      - if: steps.cache.outputs.cache-hit != 'true'
+        uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2.33.0
+        with:
+          msystem: ${{ matrix.msystem }}
+          update: true
+          install: git make diffutils autoconf automake libtool patch ${{ matrix.packages }}
+      - if: steps.cache.outputs.cache-hit != 'true'
+        shell: msys2 {0}
+        working-directory: ffmpeg-build
+        env:
+          HOST_CC: ${{ matrix.cc }}
+        run: |
+          scripts/build-desktop.sh || {
+            for log in .deps/.build/*/config.log; do
+              [ -f "$log" ] && { echo "::group::$log"; tail -n 80 "$log"; echo "::endgroup::"; }
+            done
+            exit 1
+          }
+
+  # Everything builds in an ubuntu:22.04 container: the binaries then need glibc 2.35, not the runner's.
   linux:
     name: linux ${{ matrix.slug }}
-    needs: [engine-js, ffmpeg]
+    needs: [engine-js, ffmpeg-linux]
     runs-on: ${{ matrix.runner }}
     container: ubuntu:22.04
     env:
@@ -204,4 +323,264 @@ jobs:
           path: |
             dist/*.deb
             dist/*.AppImage
+          if-no-files-found: error
+
+  # The DMG. With the Developer ID (MACOS_CERT_P12) it is the shipped bundle (--release: the JVM
+  # app's bundle id, hardened runtime, notarized with secrets.enc's mac.notarization.*); without it,
+  # an ad-hoc signed DMG of the dev bundle.
+  macos:
+    name: macos ${{ matrix.slug }}
+    needs: [engine-js, ffmpeg-macos]
+    runs-on: ${{ matrix.runner }}
+    env:
+      HAS_SECRETS: ${{ secrets.SECRETS_PASSPHRASE != '' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { slug: macos-arm64, runner: macos-15 }
+          - { slug: macos-x86_64, runner: macos-15-intel }
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          path: ymusic-desktop
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: ${{ env.YMUSIC_V4_REPO }}
+          ref: ${{ env.YMUSIC_V4_REF }}
+          path: YMusicV4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: engine-js
+          path: YMusicV4/engine-js/build/dist
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ffmpeg-build/out/${{ matrix.slug }}
+          key: ffmpeg-${{ matrix.slug }}-${{ env.FFMPEG_BUILD_REF }}
+          fail-on-cache-miss: true
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          rustup default "$RUST_TOOLCHAIN"
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: cargo-${{ matrix.slug }}-${{ hashFiles('ymusic-desktop/Cargo.lock') }}
+          restore-keys: cargo-${{ matrix.slug }}-
+
+      - name: Restore secrets
+        if: env.HAS_SECRETS == 'true'
+        env:
+          SECRETS_PASSPHRASE: ${{ secrets.SECRETS_PASSPHRASE }}
+        run: |
+          YMusicV4/decrypt.sh -f
+          cp YMusicV4/secrets.properties ymusic-desktop/secret.properties
+
+      # Repository secrets, as YMusicV4's release: MACOS_CERT_P12 (the Developer ID .p12, base64) and
+      # MACOS_CERT_PASSWORD. The identity goes into a throwaway keychain.
+      - name: Import signing identity
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "$MACOS_CERT_P12" ]; then
+            echo "no signing identity: an ad-hoc signed dev bundle"
+            exit 0
+          fi
+          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(uuidgen)"
+          CERT="$RUNNER_TEMP/cert.p12"
+          echo "$MACOS_CERT_P12" | base64 --decode > "$CERT"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$CERT" -P "$MACOS_CERT_PASSWORD" -A -f pkcs12 -k "$KEYCHAIN"
+          rm -f "$CERT"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
+          security list-keychain -d user -s "$KEYCHAIN" $(security list-keychain -d user | tr -d ' "')
+          IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN" \
+            | sed -n '/Developer ID Application/{s/.*"\(.*\)".*/\1/p;q;}')"
+          [ -n "$IDENTITY" ] || { echo "no valid Developer ID Application identity in MACOS_CERT_P12" >&2; exit 1; }
+          echo "signing as: $IDENTITY"
+          echo "CODESIGN_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
+
+      - name: Package the DMG
+        working-directory: ymusic-desktop
+        env:
+          VERSION_NAME: ${{ inputs.version_name }}
+          VERSION_CODE: ${{ inputs.version_code }}
+        run: |
+          set -euo pipefail
+          [ -n "$VERSION_NAME" ] && export YMUSIC_VERSION_NAME="$VERSION_NAME"
+          [ -n "$VERSION_CODE" ] && export YMUSIC_VERSION_CODE="$VERSION_CODE"
+          if [ -z "${CODESIGN_IDENTITY:-}" ]; then
+            tools/bundle-macos.sh --dmg --out "$GITHUB_WORKSPACE/dist"
+            exit 0
+          fi
+          property() { sed -n "s/^$1=//p" ../YMusicV4/secrets.properties 2>/dev/null | head -n 1; }
+          YMUSIC_MAC_APPLE_ID="$(property mac.notarization.appleId)" \
+          YMUSIC_MAC_APPLE_PASSWORD="$(property mac.notarization.password)" \
+          YMUSIC_MAC_TEAM_ID="$(property mac.notarization.teamId)" \
+            tools/bundle-macos.sh --release --out "$GITHUB_WORKSPACE/dist"
+
+      - name: Discard secrets
+        if: always()
+        run: |
+          rm -rf ymusic-desktop/secret.properties YMusicV4/secrets.properties YMusicV4/signing
+          security delete-keychain "$RUNNER_TEMP/signing.keychain-db" 2>/dev/null || true
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ matrix.slug }}-dmg
+          path: dist/*.dmg
+          if-no-files-found: error
+
+  # The Inno Setup installer, unsigned. x86_64 on the windows-gnu host with MSYS2's MinGW gcc; arm64
+  # on the aarch64-pc-windows-gnullvm host with CLANGARM64's clang (MSYS2 has no arm64 gcc).
+  windows:
+    name: windows ${{ matrix.slug }}
+    needs: [engine-js, ffmpeg-windows]
+    runs-on: ${{ matrix.runner }}
+    env:
+      HAS_SECRETS: ${{ secrets.SECRETS_PASSPHRASE != '' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { slug: windows-x86_64, runner: windows-2022, msystem: MINGW64, prefix: mingw64,
+              host: x86_64-pc-windows-gnu, packages: 'mingw-w64-x86_64-toolchain' }
+          - { slug: windows-arm64, runner: windows-11-arm, msystem: CLANGARM64, prefix: clangarm64,
+              host: aarch64-pc-windows-gnullvm, packages: 'mingw-w64-clang-aarch64-toolchain' }
+    steps:
+      - run: git config --global core.autocrlf false
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          path: ymusic-desktop
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: ${{ env.YMUSIC_V4_REPO }}
+          ref: ${{ env.YMUSIC_V4_REF }}
+          path: YMusicV4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: engine-js
+          path: YMusicV4/engine-js/build/dist
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ffmpeg-build/out/${{ matrix.slug }}
+          key: ffmpeg-${{ matrix.slug }}-${{ env.FFMPEG_BUILD_REF }}
+          fail-on-cache-miss: true
+
+      - name: Seed MSYS2 installer
+        shell: bash
+        run: |
+          set -euo pipefail
+          day="${MSYS2_INSTALLER_DATE//-/}"
+          file="msys2-base-x86_64-$day.sfx.exe"
+          dir="$(cygpath -u "$RUNNER_TOOL_CACHE")/msys2-installer/0.0.$day/x64"
+          mkdir -p "$dir"
+          for url in \
+            "https://github.com/msys2/msys2-installer/releases/download/$MSYS2_INSTALLER_DATE/$file" \
+            "https://repo.msys2.org/distrib/x86_64/$file" \
+            "https://mirror.msys2.org/distrib/x86_64/$file"; do
+            if curl -fsSL --retry 3 --retry-all-errors --connect-timeout 20 -o "$dir/base.exe" "$url" &&
+              echo "$MSYS2_INSTALLER_SHA256  $dir/base.exe" | sha256sum -c --status; then
+              touch "$dir.complete"
+              echo "MSYS2 installer from $url"
+              exit 0
+            fi
+            echo "::warning::MSYS2 installer download failed: $url"
+          done
+          echo "::error::MSYS2 installer: every source failed"
+          exit 1
+      - id: msys2
+        uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2.33.0
+        with:
+          msystem: ${{ matrix.msystem }}
+          install: ${{ matrix.packages }}
+      - name: Locate MinGW
+        shell: bash
+        run: echo "MINGW_HOME=$(cygpath -m '${{ steps.msys2.outputs.msys2-location }}')/${{ matrix.prefix }}" >> "$GITHUB_ENV"
+
+      - name: Install Inno Setup
+        shell: bash
+        env:
+          INNO_SETUP_VERSION: 6.7.1
+        run: |
+          set -euo pipefail
+          find_iscc() {
+            ls "/c/Program Files (x86)/Inno Setup "*/ISCC.exe "/c/Program Files/Inno Setup "*/ISCC.exe \
+              "$(cygpath -u "$LOCALAPPDATA")/Programs/Inno Setup "*/ISCC.exe 2>/dev/null | head -n 1 || true
+          }
+          iscc="$(find_iscc)"
+          [ -n "$iscc" ] || { choco install innosetup --version "$INNO_SETUP_VERSION" -y --no-progress; iscc="$(find_iscc)"; }
+          [ -n "$iscc" ] || { echo "ISCC.exe not found after installing Inno Setup" >&2; exit 1; }
+          echo "using $iscc"
+          echo "ISCC=$iscc" >> "$GITHUB_ENV"
+
+      # The toolchain's own host is the target: build scripts and the app share one linker.
+      - name: Install Rust
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v rustup >/dev/null; then
+            arch=$([ "${{ matrix.host }}" = aarch64-pc-windows-gnullvm ] && echo aarch64 || echo x86_64)
+            curl -fsSL -o "$RUNNER_TEMP/rustup-init.exe" "https://static.rust-lang.org/rustup/dist/$arch-pc-windows-msvc/rustup-init.exe"
+            "$RUNNER_TEMP/rustup-init.exe" -y --profile minimal --default-host "${{ matrix.host }}" --default-toolchain none
+            echo "$USERPROFILE/.cargo/bin" >> "$GITHUB_PATH"
+            export PATH="$USERPROFILE/.cargo/bin:$PATH"
+          fi
+          rustup toolchain install "$RUST_TOOLCHAIN-${{ matrix.host }}" --profile minimal
+          rustup default "$RUST_TOOLCHAIN-${{ matrix.host }}"
+          rustc -vV
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: cargo-${{ matrix.slug }}-${{ hashFiles('ymusic-desktop/Cargo.lock') }}
+          restore-keys: cargo-${{ matrix.slug }}-
+
+      - name: Restore secrets
+        if: env.HAS_SECRETS == 'true'
+        shell: bash
+        env:
+          SECRETS_PASSPHRASE: ${{ secrets.SECRETS_PASSPHRASE }}
+        run: |
+          YMusicV4/decrypt.sh -f
+          cp YMusicV4/secrets.properties ymusic-desktop/secret.properties
+
+      # The MinGW bin dir goes on PATH for this step alone: gcc/clang load their own DLLs from it, but
+      # it would shadow Git Bash's tools in other steps.
+      - name: Package the installer
+        shell: bash
+        working-directory: ymusic-desktop
+        env:
+          VERSION_NAME: ${{ inputs.version_name }}
+          VERSION_CODE: ${{ inputs.version_code }}
+          CC_aarch64_pc_windows_gnullvm: clang
+          AR_aarch64_pc_windows_gnullvm: llvm-ar
+          CARGO_TARGET_AARCH64_PC_WINDOWS_GNULLVM_LINKER: clang
+        run: |
+          set -euo pipefail
+          [ -n "$VERSION_NAME" ] && export YMUSIC_VERSION_NAME="$VERSION_NAME"
+          [ -n "$VERSION_CODE" ] && export YMUSIC_VERSION_CODE="$VERSION_CODE"
+          PATH="$(cygpath -u "$MINGW_HOME")/bin:$PATH" tools/package-windows.sh --setup --out "$GITHUB_WORKSPACE/dist"
+
+      - name: Discard secrets
+        if: always()
+        shell: bash
+        run: rm -rf ymusic-desktop/secret.properties YMusicV4/secrets.properties YMusicV4/signing
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ matrix.slug }}-setup
+          path: dist/*-setup.exe
           if-no-files-found: error
