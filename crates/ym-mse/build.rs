@@ -135,7 +135,8 @@ fn link_apple(native: &std::path::Path, production: &str) {
         .expect("run the C compiler for its runtime library");
     let runtime = PathBuf::from(String::from_utf8_lossy(&probe.stdout).trim());
     assert!(runtime.is_file(), "no clang runtime at {} (libclang_rt.osx.a)", runtime.display());
-    println!("cargo:rustc-link-arg={}", runtime.display());
+    println!("cargo:rustc-link-search=native={}", runtime.parent().unwrap().display());
+    println!("cargo:rustc-link-lib=static:-bundle=clang_rt.osx");
     for framework in APPLE_FRAMEWORKS {
         println!("cargo:rustc-link-lib=framework={framework}");
     }
