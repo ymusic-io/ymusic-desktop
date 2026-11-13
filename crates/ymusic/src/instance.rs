@@ -23,8 +23,11 @@ const HANDOFF_ATTEMPTS: u32 = 60;
 const HANDOFF_RETRY: Duration = Duration::from_millis(150);
 const HANDOFF_TIMEOUT: Duration = Duration::from_secs(2);
 const WAKE_TIMEOUT: Duration = Duration::from_millis(500);
-/// How long a plain launch the running instance took watches for that instance to quit.
+/// How long a plain launch the JVM app took watches for it to quit.
 const TAKEOVER_WINDOW: Duration = Duration::from_secs(5);
+/// Starts this app's port-file token. The JVM app's is bare hex and both send the token back
+/// verbatim, so a launch can tell which app it handed over to.
+const TOKEN_PREFIX: &str = "rust-";
 const MAX_REQUEST_BYTES: u64 = 1 << 20;
 /// Not a JVM command: the JVM app reads the request and drops it, so it never takes links as files.
 const LINKS_COMMAND: &str = "Links";
@@ -211,18 +214,18 @@ pub fn claim(
             share_foreground(log);
         }
         match hand_off(&port_path, request, log) {
-            Ok(()) if request.is_empty() => return outlast(&lock_path, &port_path, sender, log),
-            Ok(()) => return Ok(Claim::HandedOver),
+            Ok(Holder::Jvm) if request.is_empty() => return outlast(&lock_path, &port_path, sender, log),
+            Ok(_) => return Ok(Claim::HandedOver),
             Err(error) => last_error = Some(error),
         }
     }
     Err(ClaimError::NoAnswer(last_error))
 }
 
-/// A plain launch may have reached an instance that is quitting: an updater starts the new version
-/// while the old one winds down, and JVM builds before the bridge release keep taking requests
-/// then. If the lock frees within the window this process becomes the instance; a request with
-/// files, links or a player command never waits.
+/// A plain launch the JVM app took may have reached it quitting: its updater starts this version
+/// while it winds down, and builds before the bridge release keep taking requests then. If the lock
+/// frees within the window this process becomes the instance. This app stops taking requests before
+/// it quits or relaunches, so a launch it takes never waits.
 fn outlast(
     lock_path: &Path,
     port_path: &Path,
@@ -299,7 +302,8 @@ pub fn stop_accepting() {
 fn listen(port_path: &Path, sender: UnboundedSender<Request>, log: Logger) -> std::io::Result<()> {
     let listener = TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))?;
     let port = listener.local_addr()?.port();
-    let token: String = rand::random::<[u8; 16]>().iter().map(|byte| format!("{byte:02x}")).collect();
+    let hex: String = rand::random::<[u8; 16]>().iter().map(|byte| format!("{byte:02x}")).collect();
+    let token = format!("{TOKEN_PREFIX}{hex}");
     let staged = port_path.with_extension("port.tmp");
     std::fs::write(&staged, format!("{port} {token}"))?;
     std::fs::rename(&staged, port_path)?;
@@ -338,8 +342,14 @@ fn receive(mut stream: TcpStream, token: &str) -> std::io::Result<Option<Request
     Ok(Request::from_wire(&String::from_utf8_lossy(&bytes), token))
 }
 
+/// Which app took a hand-off, by its port-file token.
+enum Holder {
+    Jvm,
+    Rust,
+}
+
 /// The JVM app's request first (command and files), then the links in a request of their own.
-fn hand_off(port_path: &Path, request: &Request, log: &Logger) -> std::io::Result<()> {
+fn hand_off(port_path: &Path, request: &Request, log: &Logger) -> std::io::Result<Holder> {
     let invalid = || std::io::Error::new(std::io::ErrorKind::InvalidData, "bad instance.port");
     let contents = std::fs::read_to_string(port_path)?;
     let (port, token) = contents.trim().split_once(' ').ok_or_else(invalid)?;
@@ -350,7 +360,7 @@ fn hand_off(port_path: &Path, request: &Request, log: &Logger) -> std::io::Resul
     {
         log.warn("instance hand-off: the links did not reach the running instance", Some(&error));
     }
-    Ok(())
+    Ok(if token.starts_with(TOKEN_PREFIX) { Holder::Rust } else { Holder::Jvm })
 }
 
 /// The receiver closes once it has read everything; a reset instead (a listener closing with the
