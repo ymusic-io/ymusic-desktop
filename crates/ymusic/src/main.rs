@@ -84,11 +84,10 @@ use crate::cookie_session::{CookieOpen, LockedJar};
 use crate::graph::AppGraph;
 use crate::http_client::ReqwestHttpClient;
 use crate::launch::{BootInputs, Launch};
-use crate::telemetry::LogSetup;
 
 enum Start {
-    Ready(Box<AppGraph>, Option<ym_telemetry::Telemetry>),
-    Locked(std::sync::Arc<LockedJar>, BootInputs, LogSetup),
+    Ready(Box<AppGraph>),
+    Locked(std::sync::Arc<LockedJar>, BootInputs),
 }
 
 /// A launch that cannot boot ends here, its error captured.
@@ -143,6 +142,8 @@ fn main() {
     let local_art = std::sync::Arc::new(crate::local_art::LocalArt::new(data_dir.join("art-cache"), log.fork("art")));
     let app_db = graph::open_app_db(&data_dir).unwrap_or_else(|error| boot_failed(&log, &error));
     crate::data_files::import_legacy_files(&app_db, &data_dir, &log);
+    let reporting =
+        crate::telemetry::start_reporting(&log_setup, app_db.as_ref(), tokio.handle(), http.following.clone());
     let upgrade_notice = crate::app_update::UpgradeNotice::read(&app_db);
     let opened = crate::cookie_session::open(app_db.clone(), &data_dir, &log).unwrap_or_else(|error| {
         boot_failed(&log, &ym_engine::EngineError::site("R98000", format!("cookie store: {error}")))
@@ -165,12 +166,12 @@ fn main() {
     let start = match opened {
         CookieOpen::Ready(session) => {
             let graph = tokio.block_on(inputs.boot(session)).unwrap_or_else(|error| boot_failed(&log, &error));
-            let reporting = crate::telemetry::start_reporting(&log_setup, &graph, http.following.clone());
-            Start::Ready(Box::new(graph), reporting)
+            reporting.follow(&graph);
+            Start::Ready(Box::new(graph))
         }
         CookieOpen::Locked(locked) => {
             log.info("cookie jar is password-sealed: waiting for the unlock screen");
-            Start::Locked(locked, inputs, log_setup)
+            Start::Locked(locked, inputs)
         }
     };
     let images = ReqwestHttpClient::new(http.following.clone(), tokio.handle().clone());
@@ -243,13 +244,13 @@ fn main() {
             Some(dev) => WindowBounds::centered(dev, cx),
             None => crate::desktop::initial_bounds(saved_window, size(px(1180.), px(780.)), cx),
         };
+        cx.set_global(reporting);
         let locked = match start {
-            Start::Ready(graph, reporting) => {
+            Start::Ready(graph) => {
                 cx.set_global(*graph);
-                cx.set_global(crate::telemetry::Reporting { _guard: reporting });
                 None
             }
-            Start::Locked(locked, inputs, log_setup) => Some((locked, inputs, log_setup)),
+            Start::Locked(locked, inputs) => Some((locked, inputs)),
         };
         cx.set_global(app_logs);
         cx.set_global(upgrade_notice);
@@ -289,7 +290,7 @@ fn main() {
             crate::desktop::install_pin_button(window, cx, &log.fork("pin"));
             crate::desktop::remember_main_window(window);
             let launch = cx.new(|cx| match locked {
-                Some((locked, inputs, log_setup)) => Launch::locked(locked, inputs, log_setup, window, cx),
+                Some((locked, inputs)) => Launch::locked(locked, inputs, window, cx),
                 None => Launch::shell(window, cx),
             });
             cx.new(|cx| gpui_kit::base::Root::new(launch, window, cx).bg(transparent_black()))

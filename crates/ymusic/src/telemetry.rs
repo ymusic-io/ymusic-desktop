@@ -1,12 +1,13 @@
-//! The app log and crash reporting, set up around the app graph.
+//! The app log and crash reporting, set up at launch and handed the app graph once it booted.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
+use tokio::runtime::Handle;
 use ym_common::log::{DeferredSink, Level, LogSink, Logger, StderrSink, TeeSink};
 use ym_logstore::{LogStore, LogStoreSink};
-use ym_remote_config::RemoteConfig;
+use ym_remote_config::{RemoteConfig, RemoteConfigData};
 use ym_settings::SettingsStore;
 use ym_telemetry::{FeedbackReport, LogShipper, ReportPolicy, SentrySink, Telemetry, TelemetryConfig};
 
@@ -16,6 +17,7 @@ use crate::graph::AppGraph;
 pub const CRASH_REPORTS_KEY: &str = "telemetry.crashReports";
 /// Shared with the JVM app: "Send anonymous stats"; nothing is recorded or sent while off.
 pub const STATS_KEY: &str = "telemetry.stats";
+/// Shared with the JVM app: the anonymous id the config service counts devices by.
 const DEVICE_ID_KEY: &str = "telemetry.deviceId";
 /// Debug builds: the feedback report's envelopes go to this file instead of Sentry.
 const FEEDBACK_DRY_RUN_ENV: &str = "YMUSIC_DEV_FEEDBACK_ENVELOPE";
@@ -119,56 +121,102 @@ pub fn logger(data_dir: &Path) -> LogSetup {
     LogSetup { log: Logger::new(Arc::new(TeeSink { sinks })), logs, reports }
 }
 
-struct RemotePolicy(Arc<RemoteConfig>);
+/// The remote config's report policy, its defaults until the booted graph hands the config over.
+#[derive(Default)]
+struct RemotePolicy(OnceLock<Arc<RemoteConfig>>);
+
+impl RemotePolicy {
+    fn config(&self) -> RemoteConfigData {
+        self.0.get().map(|remote| remote.current()).unwrap_or_default()
+    }
+}
 
 impl ReportPolicy for RemotePolicy {
     fn error_log_lines(&self) -> i64 {
-        self.0.current().error_log_lines()
+        self.config().error_log_lines()
     }
 
     fn error_sample_rate(&self) -> f64 {
-        self.0.current().error_sample_rate()
+        self.config().error_sample_rate()
     }
 }
 
-/// Keeps reporting alive for the app's lifetime.
+/// Keeps reporting alive for the app's lifetime; [`Self::follow`] hands it the booted graph.
 pub struct Reporting {
-    pub _guard: Option<Telemetry>,
+    _guard: Option<Telemetry>,
+    logs: Option<Arc<LogStore>>,
+    policy: Option<Arc<RemotePolicy>>,
 }
 
 impl gpui_kit::Global for Reporting {}
+
+impl Reporting {
+    /// Once the graph booted: the app log's size cap, the error policy and the events' tags come
+    /// from its remote config.
+    pub fn follow(&self, graph: &AppGraph) {
+        if let Some(logs) = &self.logs {
+            logs.set_max_lines(graph.remote.current().log_lines());
+        }
+        if let Some(policy) = &self.policy {
+            // One graph boots per launch; a second follow would keep the first's config.
+            let _ = policy.0.set(graph.remote.clone());
+        }
+        if self._guard.is_some() {
+            follow_remote_tags(graph);
+        }
+    }
+}
 
 /// The crash-reports switch applies at once: each value saved under [`CRASH_REPORTS_KEY`].
 pub fn crash_reports_changed(value: &str) {
     ym_telemetry::set_reports_allowed(value != "false");
 }
 
-/// After boot: trims the app log to the configured size, and starts Sentry when this build has a
-/// DSN; the user's crash-reports switch gates what leaves, live. Error events' log lines go out as
-/// Sentry Logs over `http`. The returned guard keeps reporting alive.
-pub fn start_reporting(setup: &LogSetup, graph: &AppGraph, http: reqwest::Client) -> Option<Telemetry> {
-    let logs = setup.logs.clone()?;
-    logs.set_max_lines(graph.remote.current().log_lines());
-    let dsn = sentry_dsn();
-    if dsn.is_empty() {
-        return None;
+/// The anonymous id reports and stats carry, made on first use.
+pub fn device_id(settings: &dyn SettingsStore) -> String {
+    match settings.string(DEVICE_ID_KEY, "").ok().filter(|id| !id.is_empty()) {
+        Some(id) => id,
+        None => {
+            let id = uuid::Uuid::new_v4().to_string();
+            let _ = settings.put_raw(DEVICE_ID_KEY, id.clone());
+            id
+        }
     }
-    let shipper =
-        LogShipper::start(logs, dsn, crate::graph::APP_VERSION, http, &graph.tokio, graph.log.fork("sentry-logs"));
-    let config = telemetry_config(dsn, graph.settings.as_ref());
-    let telemetry = Telemetry::init(config, crash_reports_allowed(graph.settings.as_ref()))?;
+}
+
+/// At launch, as soon as the settings are open (the JVM app's order): starts Sentry when this build
+/// has a DSN, so a failure during boot or at the unlock screen is reported; the user's crash-reports
+/// switch gates what leaves, live. Error events' log lines go out as Sentry Logs over `http`.
+pub fn start_reporting(
+    setup: &LogSetup,
+    settings: &dyn SettingsStore,
+    tokio: &Handle,
+    http: reqwest::Client,
+) -> Reporting {
+    let mut reporting = Reporting { _guard: None, logs: setup.logs.clone(), policy: None };
+    let (Some(logs), dsn) = (setup.logs.clone(), sentry_dsn()) else { return reporting };
+    if dsn.is_empty() {
+        return reporting;
+    }
+    device_id(settings);
+    let shipper = LogShipper::start(logs, dsn, crate::graph::APP_VERSION, http, tokio, setup.log.fork("sentry-logs"));
+    let Some(telemetry) = Telemetry::init(telemetry_config(dsn, settings), crash_reports_allowed(settings)) else {
+        return reporting;
+    };
     match shipper {
         Ok(shipper) => {
-            let sink = Arc::new(SentrySink { logs: shipper, policy: Arc::new(RemotePolicy(graph.remote.clone())) });
+            let policy = Arc::new(RemotePolicy::default());
+            let sink = Arc::new(SentrySink { logs: shipper, policy: policy.clone() });
             sink.attach_logs_to_panics();
             setup.reports.set(sink);
+            reporting.policy = Some(policy);
         }
         Err(error) => {
-            graph.log.warn("R90025 Sentry reporting runs without its sink: the DSN does not parse", Some(&error))
+            setup.log.warn("R90025 Sentry reporting runs without its sink: the DSN does not parse", Some(&error))
         }
     }
-    follow_remote_tags(graph);
-    Some(telemetry)
+    reporting._guard = Some(telemetry);
+    reporting
 }
 
 /// Keeps the events' remote tags equal to the config's `sentryTags`, from the cached config on.

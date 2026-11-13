@@ -14,7 +14,7 @@ use crate::cookie_lock::UnlockView;
 use crate::cookie_session::{CookieSession, LockedJar};
 use crate::graph::AppGraph;
 use crate::shell::Shell;
-use crate::telemetry::{LogSetup, Reporting};
+use crate::telemetry::Reporting;
 
 /// What the graph boots from, besides the cookie session.
 pub struct BootInputs {
@@ -46,13 +46,7 @@ impl Launch {
         Self { stage: Stage::Shell(Self::new_shell(window, cx)) }
     }
 
-    pub fn locked(
-        locked: Arc<LockedJar>,
-        inputs: BootInputs,
-        log_setup: LogSetup,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Self {
+    pub fn locked(locked: Arc<LockedJar>, inputs: BootInputs, window: &mut Window, cx: &mut Context<Self>) -> Self {
         window.on_window_should_close(cx, |_, cx| {
             cx.quit();
             true
@@ -65,7 +59,7 @@ impl Launch {
                 tokio,
                 log,
                 move |session, window, cx| {
-                    launch.update(cx, |_, cx| Self::boot(inputs, session, log_setup, window, cx)).ok();
+                    launch.update(cx, |_, cx| Self::boot(inputs, session, window, cx)).ok();
                 },
                 window,
                 cx,
@@ -83,14 +77,8 @@ impl Launch {
         })
     }
 
-    fn boot(
-        inputs: BootInputs,
-        session: CookieSession,
-        log_setup: LogSetup,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let (tokio, log, http) = (inputs.tokio.clone(), inputs.log.clone(), inputs.http.following.clone());
+    fn boot(inputs: BootInputs, session: CookieSession, window: &mut Window, cx: &mut Context<Self>) {
+        let (tokio, log) = (inputs.tokio.clone(), inputs.log.clone());
         let booted = tokio.spawn(inputs.boot(session));
         cx.spawn_in(window, async move |this, cx| {
             let graph = match booted.await {
@@ -99,9 +87,8 @@ impl Launch {
                 Err(error) => crate::boot_failed(&log, &ym_engine::EngineError::site("R98003", error.to_string())),
             };
             this.update_in(cx, |launch, window, cx| {
-                let reporting = crate::telemetry::start_reporting(&log_setup, &graph, http);
+                cx.global::<Reporting>().follow(&graph);
                 cx.set_global(graph);
-                cx.set_global(Reporting { _guard: reporting });
                 launch.stage = Stage::Shell(Self::new_shell(window, cx));
                 cx.notify();
             })

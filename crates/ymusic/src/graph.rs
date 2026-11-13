@@ -29,8 +29,6 @@ const PLAYER_JS_VERSION: &str = env!("YM_PLAYER_JS_VERSION");
 /// gate compatibility on it.
 pub const APP_VERSION: i32 = version_code(env!("YM_VERSION_CODE"));
 pub const APP_VERSION_NAME: &str = env!("YM_VERSION_NAME");
-/// Shared with the JVM app: the anonymous id the config service counts devices by.
-const DEVICE_ID_KEY: &str = "telemetry.deviceId";
 /// A bundle in use refreshes a config older than this.
 const BUNDLE_CONFIG_MAX_AGE: Duration = Duration::from_secs(10 * 60);
 
@@ -99,14 +97,7 @@ impl AppGraph {
             log.fork("http-cache"),
         ));
         let cookies = session.jar;
-        let device_id = match app_db.string(DEVICE_ID_KEY, "").ok().filter(|id| !id.is_empty()) {
-            Some(id) => id,
-            None => {
-                let id = uuid::Uuid::new_v4().to_string();
-                let _ = app_db.put_raw(DEVICE_ID_KEY, id.clone());
-                id
-            }
-        };
+        let device_id = crate::telemetry::device_id(app_db.as_ref());
         let settings: Arc<dyn SettingsStore> = app_db;
         let media_path = data_dir.join("media-store.db");
         let media = tokio::task::spawn_blocking(move || MediaStore::open(&media_path))
