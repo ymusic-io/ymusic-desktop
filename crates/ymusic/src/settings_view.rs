@@ -89,7 +89,7 @@ fn apply_theme(choice: &str, accent: &str, cx: &mut App) {
         theme.border = palette.divider;
         theme.sidebar = palette.surface;
         theme.sidebar_border = palette.divider;
-        theme.title_bar = palette.surface;
+        theme.title_bar = palette.surface_elevated;
         theme.title_bar_border = palette.divider;
         theme.tab_bar = palette.surface;
         theme.colors.list = palette.surface;

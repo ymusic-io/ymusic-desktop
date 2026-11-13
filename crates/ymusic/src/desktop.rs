@@ -1290,7 +1290,7 @@ pub fn frame(content: AnyElement, window: &mut Window, cx: &mut App) -> AnyEleme
         .font_weight(FontWeight::BOLD)
         .child(t(Str::AppName));
     let bar = TitleBar::new()
-        .bg(theme.background)
+        .bg(theme.title_bar)
         .border_color(theme.border)
         .on_close_window(|_, window, cx| close_from_title_bar(window, cx))
         .child(title);

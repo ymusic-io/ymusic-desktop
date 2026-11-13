@@ -130,7 +130,7 @@ fn title_bar(window: &mut Window, cx: &mut App) -> GrayscaleText {
         h_flex()
             .h(px(HEIGHT))
             .flex_shrink_0()
-            .bg(theme.background)
+            .bg(theme.title_bar)
             .child(caption)
             .child(pin)
             .child(caption_button("title-bar-minimize", MINIMIZE, WindowControlArea::Min, &ink, glyphs))
