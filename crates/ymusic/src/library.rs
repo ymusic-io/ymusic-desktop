@@ -27,7 +27,7 @@ use crate::library_playlist::{self, AddToLocalPlaylist, ArrangePlaylist, Changed
 use crate::mini_player::clock;
 use crate::playback::QueueItem;
 use crate::playlist_transfer::PlaylistTransfer;
-use crate::spinner::Spinner;
+use crate::spinner::LoadingLine;
 use crate::tab_row::tab_row;
 
 /// Writes that land within this window of each other cost one reload (a scan writes row by row).
@@ -282,7 +282,10 @@ pub struct LibraryView {
     download_folder: Option<PathBuf>,
     sorts: HashMap<&'static str, SortState>,
     scanning: bool,
-    summary: Option<String>,
+    /// A failed read, shown as a snackbar at the next render.
+    notice: Option<String>,
+    /// The window the Library draws in, where a scan's report shows even once the Library is left.
+    window: Option<AnyWindowHandle>,
     scroll: ScrollHandle,
     card_focus: FocusList,
     tab_focus: FocusList,
@@ -332,7 +335,8 @@ impl LibraryView {
             download_folder: None,
             sorts,
             scanning: false,
-            summary: None,
+            notice: None,
+            window: None,
             scroll: scroll.clone(),
             card_focus: FocusList::new(Some(scroll.clone())),
             tab_focus: FocusList::new(None),
@@ -398,7 +402,7 @@ impl LibraryView {
                     }
                     Some(Ok(Err(error))) => {
                         cx.global::<AppGraph>().log.warn("R90008 library read failed", Some(&error));
-                        view.summary = Some(tf(Str::ErrorGeneric, &[&"R90008"]));
+                        view.notice = Some(tf(Str::ErrorGeneric, &[&"R90008"]));
                     }
                     _ => {}
                 }
@@ -471,7 +475,7 @@ impl LibraryView {
                     }
                     Some(Ok(Err(message))) => {
                         cx.global::<AppGraph>().log.warn(&format!("R90008 library read failed: {message}"), None);
-                        view.summary = Some(tf(Str::ErrorGeneric, &[&"R90008"]));
+                        view.notice = Some(tf(Str::ErrorGeneric, &[&"R90008"]));
                     }
                     _ => {}
                 }
@@ -722,7 +726,7 @@ impl LibraryView {
                 }
                 Some(Ok(Err(error))) => {
                     cx.global::<AppGraph>().log.warn("R90008 library read failed", Some(&error));
-                    view.summary = Some(tf(Str::ErrorGeneric, &[&"R90008"]));
+                    view.notice = Some(tf(Str::ErrorGeneric, &[&"R90008"]));
                     cx.notify();
                 }
                 _ => {}
@@ -884,7 +888,6 @@ impl LibraryView {
         cx.spawn(async move |this, cx| {
             let started = this.update(cx, |view, cx| {
                 view.scanning = true;
-                view.summary = None;
                 cx.notify();
             });
             if started.is_err() {
@@ -921,7 +924,7 @@ impl LibraryView {
                     view.location_offer = Some(offer.clone());
                 }
                 let result = result.map(|joined| joined.map(|scanned| scanned.map(|(report, _)| report)));
-                view.summary = Some(match result {
+                let report = match result {
                     Some(Ok(Ok(report))) => {
                         for error in &report.errors {
                             log.warn(&format!("scan skipped {}: {}", error.path.display(), error.message), None);
@@ -942,7 +945,14 @@ impl LibraryView {
                         tf(Str::LibraryScanFailed, &[&"R90009"])
                     }
                     _ => tf(Str::LibraryScanFailed, &[&"R90009"]),
-                });
+                };
+                match view.window {
+                    Some(window) => cx.defer(move |cx| {
+                        // The window is gone only when the app closes.
+                        let _ = cx.update_window(window, |_, window, cx| window.push_notification(report, cx));
+                    }),
+                    None => view.notice = Some(report),
+                }
                 if play_first {
                     view.open_root_and_play(cx);
                 } else {
@@ -1568,13 +1578,11 @@ impl LibraryView {
     }
 
     fn rescan_button(&self, cx: &mut Context<Self>) -> AnyElement {
-        if self.scanning {
-            return div().size(px(40.)).flex().items_center().justify_center().child(Spinner::new()).into_any_element();
-        }
         self.tool_focus
             .button(
                 TOOL_RESCAN,
                 action_icon("rescan", Lucide::RefreshCw, t(Str::LibraryRescan))
+                    .disabled(self.scanning)
                     .on_click(cx.listener(|view, _, _, cx| view.rescan(cx))),
                 cx,
             )
@@ -1929,6 +1937,10 @@ impl LibraryView {
 impl Render for LibraryView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         crate::shell::track_scroll(&self.scroll, cx);
+        self.window = Some(window.window_handle());
+        if let Some(notice) = self.notice.take() {
+            window.push_notification(notice, cx);
+        }
         if let Some(offer) = self.location_offer.take() {
             window.defer(cx, move |window, cx| crate::downloads::offer_download_location(offer, window, cx));
         }
@@ -1990,12 +2002,7 @@ impl Render for LibraryView {
                                     .on_click(cx.listener(|view, _, _, cx| view.scan(cx))),
                                 cx,
                             ),
-                        )
-                        .when_some(self.summary.clone(), |column, summary| {
-                            column.child(
-                                announced("library-summary", summary).text_sm().text_color(theme.muted_foreground),
-                            )
-                        }),
+                        ),
                 )
                 .into_any_element();
         }
@@ -2023,14 +2030,6 @@ impl Render for LibraryView {
 
         let mut body = v_flex().w_full().pt_1().pb_4().px(px(if grid { GRID_PADDING } else { 0. }));
         body = body.child(div().mx(px(if grid { -GRID_PADDING } else { 0. })).child(self.toolbar(cx)));
-        if let Some(summary) = self.summary.clone() {
-            body = body.child(
-                div()
-                    .px_4()
-                    .pb_2()
-                    .child(announced("library-summary", summary).text_sm().text_color(theme.muted_foreground)),
-            );
-        }
         let empty = cards.is_empty() && songs.is_empty();
         let (card_count, song_count) = (cards.len(), songs.len());
         let (card_block, song_block) = if grid {
@@ -2083,7 +2082,17 @@ impl Render for LibraryView {
                             .track_scroll(&self.scroll)
                             .child(body),
                     )
-                    .children(crate::shell::bar_shadow(cx)),
+                    .children(crate::shell::bar_shadow(cx))
+                    .when(self.scanning, |content| {
+                        content.child(
+                            div()
+                                .absolute()
+                                .top_0()
+                                .left_0()
+                                .right_0()
+                                .child(LoadingLine::new("library-scanning", t(Str::LibraryScanning))),
+                        )
+                    }),
             )
             .into_any_element()
     }
