@@ -250,7 +250,14 @@ fi
 if [[ $release == 1 && -n ${YMUSIC_MAC_APPLE_ID:-} && -n ${YMUSIC_MAC_APPLE_PASSWORD:-} && -n ${YMUSIC_MAC_TEAM_ID:-} ]]; then
     xcrun notarytool submit "$dmg_file" --apple-id "$YMUSIC_MAC_APPLE_ID" --password "$YMUSIC_MAC_APPLE_PASSWORD" \
         --team-id "$YMUSIC_MAC_TEAM_ID" --wait
-    xcrun stapler staple "$dmg_file"
+    # Right after notarytool accepts, stapler can fail to fetch the fresh ticket (exit 68); a rejected
+    # or never-submitted DMG has none, so the retries still fail it.
+    for attempt in 1 2 3 4 5 6; do
+        xcrun stapler staple "$dmg_file" && break
+        [[ $attempt == 6 ]] && die "no notarization ticket to staple to $dmg_file"
+        echo "bundle-macos: staple failed; retry $attempt in 30 s" >&2
+        sleep 30
+    done
     xcrun stapler validate "$dmg_file"
 elif [[ $release == 1 ]]; then
     echo "bundle-macos: not notarized (no YMUSIC_MAC_APPLE_ID / _PASSWORD / _TEAM_ID)" >&2
