@@ -128,6 +128,14 @@ fn link_apple(native: &std::path::Path, production: &str) {
         objc.file(native.join(source));
     }
     objc.compile("msehost_objc");
+    // rustc links with -nodefaultlibs, dropping clang's runtime, which `@available` checks call into.
+    let probe = std::process::Command::new(objc.get_compiler().path())
+        .arg("-print-file-name=libclang_rt.osx.a")
+        .output()
+        .expect("run the C compiler for its runtime library");
+    let runtime = PathBuf::from(String::from_utf8_lossy(&probe.stdout).trim());
+    assert!(runtime.is_file(), "no clang runtime at {} (libclang_rt.osx.a)", runtime.display());
+    println!("cargo:rustc-link-arg={}", runtime.display());
     for framework in APPLE_FRAMEWORKS {
         println!("cargo:rustc-link-lib=framework={framework}");
     }
