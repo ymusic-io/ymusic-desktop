@@ -228,6 +228,9 @@ fn linux_ui_font(cx: &App) -> Option<SharedString> {
 
 /// Writes a setting off the UI thread, then redraws every window so its readers see it.
 pub fn save_setting(key: &'static str, value: String, cx: &mut App) {
+    if key == crate::telemetry::CRASH_REPORTS_KEY {
+        crate::telemetry::crash_reports_changed(&value);
+    }
     let graph = cx.global::<AppGraph>();
     let (settings, log) = (graph.settings.clone(), graph.log.fork("settings"));
     let write = graph.tokio.spawn_blocking(move || settings.put_raw(key, value));

@@ -132,16 +132,22 @@ pub struct Reporting {
 
 impl gpui_kit::Global for Reporting {}
 
+/// The crash-reports switch applies at once: each value saved under [`CRASH_REPORTS_KEY`].
+pub fn crash_reports_changed(value: &str) {
+    ym_telemetry::set_reports_allowed(value != "false");
+}
+
 /// After boot: trims the app log to the configured size, and starts Sentry when this build has a
-/// DSN and the user allows crash reports. The returned guard keeps reporting alive.
+/// DSN; the user's crash-reports switch gates what leaves, live. The returned guard keeps reporting alive.
 pub fn start_reporting(setup: &LogSetup, graph: &AppGraph) -> Option<Telemetry> {
     let logs = setup.logs.clone()?;
     logs.set_max_lines(graph.remote.current().log_lines());
     let dsn = sentry_dsn();
-    if !crash_reports_allowed(graph.settings.as_ref()) || dsn.is_empty() {
+    if dsn.is_empty() {
         return None;
     }
-    let telemetry = Telemetry::init(telemetry_config(dsn, graph.settings.as_ref()))?;
+    let allowed = crash_reports_allowed(graph.settings.as_ref());
+    let telemetry = Telemetry::init(telemetry_config(dsn, graph.settings.as_ref()), allowed)?;
     let sink = Arc::new(SentrySink { logs, policy: Arc::new(RemotePolicy(graph.remote.clone())) });
     sink.attach_logs_to_panics();
     setup.reports.set(sink);

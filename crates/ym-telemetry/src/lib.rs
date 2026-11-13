@@ -1,6 +1,7 @@
-//! Crash and error reporting to Sentry: warnings and errors ride as breadcrumbs, `capture_error`
-//! is the one event of a failed job (tagged with its trail and error code, carrying the newest
-//! unsent app-log lines), and panics are reported by the SDK.
+//! Crash and error reporting to Sentry, as the JVM app reports: warnings and errors ride as
+//! breadcrumbs, `capture_error` is the one event of a failed job (tagged with its trail and error
+//! code, grouped by that code, carrying the newest unsent app-log lines), panics are reported by the
+//! SDK with those lines too, and the user's switch gates every event live.
 
 mod feedback;
 
@@ -9,6 +10,7 @@ pub use feedback::{FeedbackError, FeedbackReport, send_feedback};
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::error::Error;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -30,6 +32,18 @@ const MAX_BREADCRUMBS: usize = 200;
 const IN_APP_CRATES: &[&str] = &["ymusic::", "ym_"];
 /// How long a panic waits for the app log's connection before it goes without its lines.
 const PANIC_CLAIM_WAIT: Duration = Duration::from_millis(200);
+
+/// The user's crash-reports switch: while off, nothing leaves the process (feedback has its own client).
+static REPORTS_ALLOWED: AtomicBool = AtomicBool::new(false);
+
+/// Applies the crash-reports switch at once, as the JVM app does.
+pub fn set_reports_allowed(allowed: bool) {
+    REPORTS_ALLOWED.store(allowed, Ordering::Relaxed);
+}
+
+fn reports_allowed() -> bool {
+    REPORTS_ALLOWED.load(Ordering::Relaxed)
+}
 
 /// Tags every event carries, whichever thread sends it: sentry-rust forks a scope per thread, so a
 /// tag set on one thread's scope never reaches another thread's events.
@@ -85,19 +99,26 @@ pub struct TelemetryConfig {
 }
 
 impl Telemetry {
-    /// `None` when there is no DSN: nothing is ever sent.
-    pub fn init(config: TelemetryConfig) -> Option<Self> {
+    /// `None` when there is no DSN: nothing is ever sent. Runs whatever `allowed` says, which gates
+    /// every event from then on ([`set_reports_allowed`]); sessions follow it as it stands at launch.
+    pub fn init(config: TelemetryConfig, allowed: bool) -> Option<Self> {
         if config.dsn.trim().is_empty() {
             return None;
         }
+        set_reports_allowed(allowed);
         let mut options = sentry::ClientOptions::default();
         options.release = Some(config.release.into());
         options.environment = Some(config.environment.into());
         options.send_default_pii = false;
         options.max_breadcrumbs = MAX_BREADCRUMBS;
         options.in_app_include = IN_APP_CRATES.to_vec();
-        // The contexts integration fills in the host name, which can carry the user's name.
+        // Sessions have no send hook to gate, so the switch at launch decides them, as in the JVM app.
+        options.auto_session_tracking = allowed;
         options.before_send = Some(Arc::new(|mut event| {
+            if !reports_allowed() {
+                return None;
+            }
+            // The contexts integration fills in the host name, which can carry the user's name.
             event.server_name = None;
             stamp_tags(&mut event);
             Some(event)
@@ -121,7 +142,7 @@ impl SentrySink {
         let sink = self.clone();
         let next = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
-            let lines = sink.policy.error_log_lines();
+            let lines = if reports_allowed() { sink.policy.error_log_lines() } else { 0 };
             // A panic hook has nowhere to report a failed claim: the panic goes without its lines.
             let claimed = (lines > 0).then(|| sink.logs.try_claim_unsent(lines, PANIC_CLAIM_WAIT)).flatten();
             match claimed.and_then(Result::ok).and_then(log_attachment) {
@@ -188,6 +209,9 @@ impl LogSink for SentrySink {
     }
 
     fn capture_error(&self, trail: &[Crumb], message: &str, error: &(dyn Error + 'static)) {
+        if !reports_allowed() {
+            return;
+        }
         let description = error.to_string();
         let code = error_code(&description).or_else(|| error_code(message));
         if code.as_deref().is_some_and(|code| IGNORED_CATEGORIES.contains(&code)) {
