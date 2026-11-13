@@ -98,6 +98,8 @@ pub fn elevation_shadow(upward: bool) -> Div {
 }
 
 const SHADOW_REACH: f32 = 12.;
+const BAR_PAD_TOP: f32 = 2.;
+const BAR_PAD_BOTTOM: f32 = 3.;
 
 /// Shared with the JVM app: the section and Discover tab a restart resumes, by their stable ids.
 const LAST_SECTION_KEY: &str = "app.lastSection";
@@ -1649,8 +1651,8 @@ impl Shell {
         h_flex()
             .gap_2()
             .px_2()
-            .pt(px(2.))
-            .pb(px(3.))
+            .pt(px(BAR_PAD_TOP))
+            .pb(px(BAR_PAD_BOTTOM))
             .items_center()
             .bg(chrome_tone(cx))
             .when(!rail_mode, |bar| {
@@ -1675,7 +1677,11 @@ impl Shell {
                     .when(!(discover && wide), |slot| slot.flex_1().min_w_0())
                     .child(title),
             )
-            .when(discover && wide, |bar| bar.child(div().pl_4().flex_1().child(self.discover_tabs(true, cx))))
+            .when(discover && wide, |bar| {
+                // Over the bar's padding, so the underline sits on the bar's bottom edge.
+                let slot = div().pl_4().flex_1().flex().self_stretch().mt(px(-BAR_PAD_TOP)).mb(px(-BAR_PAD_BOTTOM));
+                bar.child(slot.child(self.discover_tabs(true, cx)))
+            })
             .when(searchable, |bar| {
                 bar.child(
                     self.chrome_focus.button(
@@ -1693,9 +1699,11 @@ impl Shell {
     fn discover_tabs(&self, inline: bool, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme();
         let mut row = h_flex().id("discover-tabs").role(Role::TabList).aria_label(t(Str::SectionDiscover));
-        if !inline {
-            row = row.w_full().bg(chrome_tone(cx)).border_b_1().border_color(theme.border);
-        }
+        row = if inline {
+            row.items_stretch()
+        } else {
+            row.w_full().bg(chrome_tone(cx)).border_b_1().border_color(theme.border)
+        };
         let tabs = DiscoverTab::listed(self.guest);
         for (index, tab) in tabs.iter().copied().enumerate() {
             let selected = tab == self.discover_tab;
@@ -1704,13 +1712,12 @@ impl Shell {
                 .role(Role::Tab)
                 .aria_label(tab.label())
                 .aria_selected(selected)
-                .h(px(44.))
+                .map(|cell| if inline { cell.rounded_t(px(10.)) } else { cell.h(px(44.)).rounded(px(10.)) })
                 .flex()
                 .items_center()
                 .justify_center()
                 .relative()
                 .cursor_pointer()
-                .rounded(px(10.))
                 .hover(|style| style.bg(theme.primary.opacity(HOVER_ALPHA)))
                 .child(Icon::new(tab.icon()).text_color(if selected { theme.primary } else { theme.muted_foreground }))
                 .when(selected, |cell| {
