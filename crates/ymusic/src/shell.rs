@@ -687,7 +687,7 @@ impl Shell {
     }
 
     /// Debug builds only: `YMUSIC_DEV_ROUTE` opens a surface at start (`trending`, `music`,
-    /// `search:<query>`, `searchfilter:<n>:<query>` (the filter dialog once the results land; `n` > 0 first applies that option, counted across groups from 1), `open:<app link>`, `musictab:<n>`, `play:<youtube url>`, `nowplaying:<url>`, `library:<dir>`, `localplay:<dir>`, `libraryact:<a;b>` (`LibraryView::dev_action`), `details:<videoId>`, `addtoplaylist:<videoId>`, `feedback:message|send:<text>` (with `YMUSIC_DEV_FEEDBACK_ENVELOPE=<file>` the report is written there, not sent), `sleeptimer`, `signin-paste:<file>`, `devicelink`, `signout`, `protect` (the password step after a sign-in), `signin:paste`,
+    /// `search:<query>`, `searchfilter:<n>:<query>` (the filter dialog once the results land; `n` > 0 first applies that option, counted across groups from 1), `open:<app link>`, `musictab:<n>`, `play:<youtube url>`, `nowplaying:<url>`, `library:<dir>`, `localplay:<dir>`, `localnowplaying:<dir>` (with Now Playing open), `libraryact:<a;b>` (`LibraryView::dev_action`), `details:<videoId>`, `addtoplaylist:<videoId>`, `feedback:message|send:<text>` (with `YMUSIC_DEV_FEEDBACK_ENVELOPE=<file>` the report is written there, not sent), `sleeptimer`, `signin-paste:<file>`, `devicelink`, `signout`, `protect` (the password step after a sign-in), `signin:paste`,
     /// `download:<FORMAT>:<videoId>` into `YMUSIC_DEV_DOWNLOAD_DIR` or the chosen folder), for
     /// screenshots and checks without driving the UI. `YMUSIC_DEV_CAPTIONS=1|<vssId>` turns captions on (with that track), `YMUSIC_DEV_QUALITY=<token>` picks a quality, `YMUSIC_DEV_TRAY_POPUP=1|hidden` opens the tray popup.
     pub fn apply_dev_route(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -790,10 +790,11 @@ impl Shell {
                 }
             }
             Some(("play", url)) => self.play_link(url.to_owned(), cx),
-            Some((route @ ("library" | "localplay"), path)) => {
+            Some((route @ ("library" | "localplay" | "localnowplaying"), path)) => {
                 self.section = Section::Library;
+                self.now_playing_open = route == "localnowplaying";
                 let view = self.library_view(cx);
-                let play_first = route == "localplay";
+                let play_first = route != "library";
                 view.update(cx, |library, cx| library.scan_path(path.into(), play_first, cx));
             }
             Some(("librarytab", index)) => {
