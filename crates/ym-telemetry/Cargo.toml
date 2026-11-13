@@ -10,6 +10,8 @@ ym-common = { path = "../ym-common" }
 ym-logstore = { path = "../ym-logstore" }
 serde_json.workspace = true
 thiserror.workspace = true
+reqwest.workspace = true
+tokio.workspace = true
 sentry = { version = "0.49", default-features = false, features = ["backtrace", "contexts", "panic", "release-health", "reqwest", "rustls"] }
 
 [lints]

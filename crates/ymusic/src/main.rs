@@ -165,7 +165,7 @@ fn main() {
     let start = match opened {
         CookieOpen::Ready(session) => {
             let graph = tokio.block_on(inputs.boot(session)).unwrap_or_else(|error| boot_failed(&log, &error));
-            let reporting = crate::telemetry::start_reporting(&log_setup, &graph);
+            let reporting = crate::telemetry::start_reporting(&log_setup, &graph, http.following.clone());
             Start::Ready(Box::new(graph), reporting)
         }
         CookieOpen::Locked(locked) => {

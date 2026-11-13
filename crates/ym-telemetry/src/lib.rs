@@ -1,11 +1,14 @@
 //! Crash and error reporting to Sentry, as the JVM app reports: warnings and errors ride as
 //! breadcrumbs, `capture_error` is the one event of a failed job (tagged with its trail and error
-//! code, grouped by that code, carrying the newest unsent app-log lines), panics are reported by the
-//! SDK with those lines too, and the user's switch gates every event live.
+//! code, grouped by that code, its run's newest unsent app-log lines sent as Sentry Logs on its
+//! trace), panics are reported by the SDK with those lines too, and the user's switch gates every
+//! event live.
 
 mod feedback;
+mod log_shipper;
 
 pub use feedback::{FeedbackError, FeedbackReport, send_feedback};
+pub use log_shipper::LogShipper;
 
 use std::borrow::Cow;
 use std::collections::BTreeMap;
@@ -14,9 +17,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
-use sentry::protocol::{Attachment, Breadcrumb, Event, Level as SentryLevel};
+use sentry::protocol::{Breadcrumb, Context, Event, Level as SentryLevel, TraceContext, TraceId};
 use ym_common::log::{Crumb, Level, LogSink};
-use ym_logstore::{LogRecord, LogStore};
 
 const TRAIL_TAG: &str = "trail";
 const CODE_TAG: &str = "error.code";
@@ -90,6 +92,17 @@ fn is_panic_entry(function: &str) -> bool {
         || function.contains("rust_begin_unwind")
 }
 
+/// Puts the event on its launch's trace, the one its log lines carry.
+fn link_trace(event: &mut Event<'_>, trace_id: TraceId) {
+    match event.contexts.get_mut("trace") {
+        Some(Context::Trace(trace)) => trace.trace_id = trace_id,
+        _ => {
+            let trace = TraceContext { trace_id, ..Default::default() };
+            event.contexts.insert("trace".to_owned(), Context::Trace(Box::new(trace)));
+        }
+    }
+}
+
 /// An event's own tags win over the app's, and those over the remote config's.
 fn stamp_tags(event: &mut Event<'_>) {
     for tags in [&APP_TAGS, &REMOTE_TAGS] {
@@ -142,6 +155,9 @@ impl Telemetry {
             event.server_name = None;
             stamp_tags(&mut event);
             trim_panic_frames(&mut event);
+            if let Some(trace_id) = log_shipper::launch_trace() {
+                link_trace(&mut event, trace_id);
+            }
             Some(event)
         }));
         set_app_tag(DEVICE_ID_TAG, config.device_id);
@@ -152,44 +168,24 @@ impl Telemetry {
 
 /// The Sentry side of the logger.
 pub struct SentrySink {
-    pub logs: Arc<LogStore>,
+    pub logs: Arc<LogShipper>,
     pub policy: Arc<dyn ReportPolicy>,
 }
 
 impl SentrySink {
-    /// Panics reported from now on carry the newest unsent app-log lines too, as error events do.
-    /// Call after [`Telemetry::init`], whose panic hook this wraps.
+    /// Panics reported from now on take their run's newest unsent app-log lines too, as error events
+    /// do. Call after [`Telemetry::init`], whose panic hook this wraps.
     pub fn attach_logs_to_panics(self: &Arc<Self>) {
         let sink = self.clone();
         let next = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
             let lines = if reports_allowed() { sink.policy.error_log_lines() } else { 0 };
-            // A panic hook has nowhere to report a failed claim: the panic goes without its lines.
-            let claimed = (lines > 0).then(|| sink.logs.try_claim_unsent(lines, PANIC_CLAIM_WAIT)).flatten();
-            match claimed.and_then(Result::ok).and_then(log_attachment) {
-                Some(log) => sentry::with_scope(|scope| scope.add_attachment(log), || next(info)),
-                None => next(info),
+            if lines > 0 {
+                sink.logs.claim_now(lines, PANIC_CLAIM_WAIT);
             }
+            next(info);
         }));
     }
-}
-
-/// The claimed lines as the event's `log.txt`; none when nothing was claimed.
-fn log_attachment(lines: Vec<LogRecord>) -> Option<Attachment> {
-    if lines.is_empty() {
-        return None;
-    }
-    let text = lines
-        .iter()
-        .map(|line| format!("{} {} [{}] {}", line.epoch_ms, line.level, line.trail, line.message))
-        .collect::<Vec<_>>()
-        .join("\n");
-    Some(Attachment {
-        buffer: text.into_bytes(),
-        filename: "log.txt".into(),
-        content_type: Some("text/plain".into()),
-        ..Default::default()
-    })
 }
 
 fn trail_path(trail: &[Crumb]) -> String {
@@ -243,7 +239,9 @@ impl LogSink for SentrySink {
             return;
         }
         let lines = self.policy.error_log_lines();
-        let log = if lines > 0 { self.logs.claim_unsent(lines).ok().and_then(log_attachment) } else { None };
+        if lines > 0 {
+            self.logs.claim(lines);
+        }
         let path = trail_path(trail);
         sentry::with_scope(
             |scope| {
@@ -258,9 +256,6 @@ impl LogSink for SentrySink {
                             scope.set_extra(&format!("{}.{key}", crumb.tag), value.clone());
                         }
                     }
-                }
-                if let Some(log) = log {
-                    scope.add_attachment(log);
                 }
             },
             || {

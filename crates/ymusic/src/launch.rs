@@ -90,7 +90,7 @@ impl Launch {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let (tokio, log) = (inputs.tokio.clone(), inputs.log.clone());
+        let (tokio, log, http) = (inputs.tokio.clone(), inputs.log.clone(), inputs.http.following.clone());
         let booted = tokio.spawn(inputs.boot(session));
         cx.spawn_in(window, async move |this, cx| {
             let graph = match booted.await {
@@ -99,7 +99,7 @@ impl Launch {
                 Err(error) => crate::boot_failed(&log, &ym_engine::EngineError::site("R98003", error.to_string())),
             };
             this.update_in(cx, |launch, window, cx| {
-                let reporting = crate::telemetry::start_reporting(&log_setup, &graph);
+                let reporting = crate::telemetry::start_reporting(&log_setup, &graph, http);
                 cx.set_global(graph);
                 cx.set_global(Reporting { _guard: reporting });
                 launch.stage = Stage::Shell(Self::new_shell(window, cx));

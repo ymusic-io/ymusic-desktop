@@ -8,7 +8,7 @@ use ym_common::log::{DeferredSink, Level, LogSink, Logger, StderrSink, TeeSink};
 use ym_logstore::{LogStore, LogStoreSink};
 use ym_remote_config::RemoteConfig;
 use ym_settings::SettingsStore;
-use ym_telemetry::{FeedbackReport, ReportPolicy, SentrySink, Telemetry, TelemetryConfig};
+use ym_telemetry::{FeedbackReport, LogShipper, ReportPolicy, SentrySink, Telemetry, TelemetryConfig};
 
 use crate::graph::AppGraph;
 
@@ -138,19 +138,29 @@ pub fn crash_reports_changed(value: &str) {
 }
 
 /// After boot: trims the app log to the configured size, and starts Sentry when this build has a
-/// DSN; the user's crash-reports switch gates what leaves, live. The returned guard keeps reporting alive.
-pub fn start_reporting(setup: &LogSetup, graph: &AppGraph) -> Option<Telemetry> {
+/// DSN; the user's crash-reports switch gates what leaves, live. Error events' log lines go out as
+/// Sentry Logs over `http`. The returned guard keeps reporting alive.
+pub fn start_reporting(setup: &LogSetup, graph: &AppGraph, http: reqwest::Client) -> Option<Telemetry> {
     let logs = setup.logs.clone()?;
     logs.set_max_lines(graph.remote.current().log_lines());
     let dsn = sentry_dsn();
     if dsn.is_empty() {
         return None;
     }
-    let allowed = crash_reports_allowed(graph.settings.as_ref());
-    let telemetry = Telemetry::init(telemetry_config(dsn, graph.settings.as_ref()), allowed)?;
-    let sink = Arc::new(SentrySink { logs, policy: Arc::new(RemotePolicy(graph.remote.clone())) });
-    sink.attach_logs_to_panics();
-    setup.reports.set(sink);
+    let config = telemetry_config(dsn, graph.settings.as_ref());
+    let shipper =
+        LogShipper::start(logs, &config, crate::graph::APP_VERSION, http, &graph.tokio, graph.log.fork("sentry-logs"));
+    let telemetry = Telemetry::init(config, crash_reports_allowed(graph.settings.as_ref()))?;
+    match shipper {
+        Ok(shipper) => {
+            let sink = Arc::new(SentrySink { logs: shipper, policy: Arc::new(RemotePolicy(graph.remote.clone())) });
+            sink.attach_logs_to_panics();
+            setup.reports.set(sink);
+        }
+        Err(error) => {
+            graph.log.warn("R90025 Sentry reporting runs without its sink: the DSN does not parse", Some(&error))
+        }
+    }
     follow_remote_tags(graph);
     Some(telemetry)
 }

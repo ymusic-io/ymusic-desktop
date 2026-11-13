@@ -32,6 +32,8 @@ DROP TABLE sent_mark;
 "];
 const QUEUE_CAPACITY: usize = 4_096;
 const MIN_LINES: i64 = 100;
+/// The JVM schema's states: 0 unsent, 1 claimed for an error event and waiting to go out, 2 sent.
+const STATE_PENDING: i64 = 1;
 const STATE_SENT: i64 = 2;
 const CLAIM_RETRY: Duration = Duration::from_millis(5);
 
@@ -127,14 +129,15 @@ impl LogStore {
         rows.collect()
     }
 
-    /// Blocking: this launch's newest `limit` lines not yet sent with an error event, marked sent.
-    pub fn claim_unsent(&self, limit: i64) -> rusqlite::Result<Vec<LogRecord>> {
+    /// Blocking: claims this launch's unsent lines among its newest `limit` for an error event; they
+    /// stay [`Self::pending`] until [`Self::mark_sent`]. Returns how many it claimed.
+    pub fn claim_unsent(&self, limit: i64) -> rusqlite::Result<usize> {
         claim(&self.db.lock().unwrap(), &self.launch, limit)
     }
 
     /// [`Self::claim_unsent`] for a panic hook: `None` when the connection stays busy past `wait`,
     /// as it does when the panicking thread holds it; a poisoned lock still reads.
-    pub fn try_claim_unsent(&self, limit: i64, wait: Duration) -> Option<rusqlite::Result<Vec<LogRecord>>> {
+    pub fn try_claim_unsent(&self, limit: i64, wait: Duration) -> Option<rusqlite::Result<usize>> {
         let deadline = Instant::now() + wait;
         loop {
             match self.db.try_lock() {
@@ -146,6 +149,27 @@ impl LogStore {
                 Err(TryLockError::WouldBlock) => return None,
             }
         }
+    }
+
+    /// Blocking: claimed lines of any launch after `after_seq` not yet marked sent, oldest first.
+    pub fn pending(&self, limit: i64, after_seq: i64) -> rusqlite::Result<Vec<LogRecord>> {
+        let db = self.db.lock().unwrap();
+        let mut statement = db.prepare(
+            "SELECT seq, ts, level, launch, trail, message FROM log_line WHERE state = ?1 AND seq > ?2 \
+             ORDER BY seq LIMIT ?3",
+        )?;
+        let rows = statement.query_map(params![STATE_PENDING, after_seq, limit], record)?;
+        rows.collect()
+    }
+
+    /// Blocking: these lines reached Sentry; they are never pending again.
+    pub fn mark_sent(&self, seqs: &[i64]) -> rusqlite::Result<()> {
+        let db = self.db.lock().unwrap();
+        let transaction = db.unchecked_transaction()?;
+        for seq in seqs {
+            transaction.execute("UPDATE log_line SET state = ?1 WHERE seq = ?2", params![STATE_SENT, seq])?;
+        }
+        transaction.commit()
     }
 
     /// Blocking: the whole log, gzipped text, for the feedback report.
@@ -169,16 +193,15 @@ impl LogStore {
     }
 }
 
-fn claim(db: &Connection, launch: &str, limit: i64) -> rusqlite::Result<Vec<LogRecord>> {
-    let mut statement = db.prepare(
-        "SELECT seq, ts, level, launch, trail, message FROM log_line WHERE state = 0 AND seq IN \
-         (SELECT seq FROM log_line WHERE launch = ?1 ORDER BY seq DESC LIMIT ?2) ORDER BY seq",
+fn claim(db: &Connection, launch: &str, limit: i64) -> rusqlite::Result<usize> {
+    let transaction = db.unchecked_transaction()?;
+    let claimed = transaction.execute(
+        "UPDATE log_line SET state = ?1 WHERE state = 0 AND seq IN \
+         (SELECT seq FROM log_line WHERE launch = ?2 ORDER BY seq DESC LIMIT ?3)",
+        params![STATE_PENDING, launch, limit],
     )?;
-    let lines: Vec<LogRecord> = statement.query_map(params![launch, limit], record)?.collect::<Result<_, _>>()?;
-    for line in &lines {
-        db.execute("UPDATE log_line SET state = ?1 WHERE seq = ?2", params![STATE_SENT, line.seq])?;
-    }
-    Ok(lines)
+    transaction.commit()?;
+    Ok(claimed)
 }
 
 impl Drop for LogStore {
