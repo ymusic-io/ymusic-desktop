@@ -19,7 +19,7 @@ use gpui_kit::*;
 use ym_i18n::{Str, t, tf};
 use ym_store::{Bucket, MediaItem, MediaStore, Playlist, PlaylistItemDetail};
 
-use crate::a11y::{DragRow, FocusList};
+use crate::a11y::{DragRow, FocusList, label};
 use crate::action_icon::action_icon;
 use crate::file_rename::RenameFileDialog;
 use crate::graph::{AppGraph, on_core};
@@ -164,6 +164,10 @@ const TOOL_PLAYLIST_MENU: usize = 5;
 const TOOL_EMPTY_RESTORE: usize = 6;
 const TOOL_RESCAN: usize = 7;
 const TOOL_SCAN_EMPTY: usize = 8;
+const TOOL_SUMMARY: usize = 9;
+const TOOL_EMPTY_TITLE: usize = 10;
+const TOOL_EMPTY_HINT: usize = 11;
+const TOOL_EMPTY_MESSAGE: usize = 12;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tab {
@@ -1718,20 +1722,26 @@ impl LibraryView {
             .gap_2()
             .items_center()
             .child(
-                div()
-                    .id("playlists-empty-title")
-                    .role(Role::Heading)
+                self.tool_focus
+                    .text(
+                        TOOL_EMPTY_TITLE,
+                        div()
+                            .id("playlists-empty-title")
+                            .role(Role::Heading)
+                            .aria_label(t(Str::PlaylistsEmptyTitle))
+                            .child(t(Str::PlaylistsEmptyTitle)),
+                        cx,
+                    )
                     .text_size(px(16.))
                     .font_medium()
-                    .text_color(theme.foreground)
-                    .child(t(Str::PlaylistsEmptyTitle)),
+                    .text_color(theme.foreground),
             )
             .child(
-                div()
+                self.tool_focus
+                    .text(TOOL_EMPTY_HINT, label("playlists-empty-desc", t(Str::PlaylistsEmptyDesc)), cx)
                     .text_size(px(13.))
                     .text_center()
-                    .text_color(theme.muted_foreground)
-                    .child(t(Str::PlaylistsEmptyDesc)),
+                    .text_color(theme.muted_foreground),
             )
             .child(div().pt_2().child(self.tool_focus.button(TOOL_EMPTY_RESTORE, restore, cx)))
     }
@@ -1949,7 +1959,11 @@ impl Render for LibraryView {
                         .items_center()
                         .justify_center()
                         .gap(px(14.))
-                        .child(div().text_color(theme.muted_foreground).child(t(Str::LibraryEmpty)))
+                        .child(
+                            self.tool_focus
+                                .text(TOOL_EMPTY_MESSAGE, label("library-empty", t(Str::LibraryEmpty)), cx)
+                                .text_color(theme.muted_foreground),
+                        )
                         .child(
                             self.tool_focus.button(
                                 TOOL_SCAN_EMPTY,
@@ -1962,7 +1976,12 @@ impl Render for LibraryView {
                             ),
                         )
                         .when_some(self.summary.clone(), |column, summary| {
-                            column.child(div().text_sm().text_color(theme.muted_foreground).child(summary))
+                            column.child(
+                                self.tool_focus
+                                    .text(TOOL_SUMMARY, label("library-summary", summary), cx)
+                                    .text_sm()
+                                    .text_color(theme.muted_foreground),
+                            )
                         }),
                 )
                 .into_any_element();
@@ -1985,7 +2004,14 @@ impl Render for LibraryView {
         let mut body = v_flex().w_full().pt_1().pb_4().px(px(if grid { GRID_PADDING } else { 0. }));
         body = body.child(div().mx(px(if grid { -GRID_PADDING } else { 0. })).child(self.toolbar(cx)));
         if let Some(summary) = self.summary.clone() {
-            body = body.child(div().px_4().pb_2().text_sm().text_color(theme.muted_foreground).child(summary));
+            body = body.child(
+                div().px_4().pb_2().child(
+                    self.tool_focus
+                        .text(TOOL_SUMMARY, label("library-summary", summary), cx)
+                        .text_sm()
+                        .text_color(theme.muted_foreground),
+                ),
+            );
         }
         let empty = cards.is_empty() && songs.is_empty();
         let (card_count, song_count) = (cards.len(), songs.len());
@@ -2014,7 +2040,13 @@ impl Render for LibraryView {
                 Tab::Albums => Str::LibraryNoAlbums,
                 Tab::Genres => Str::LibraryNoGenres,
             });
-            body = body.child(div().py_16().flex().justify_center().text_color(theme.muted_foreground).child(message));
+            body = body.child(
+                div().py_16().flex().justify_center().child(
+                    self.tool_focus
+                        .text(TOOL_EMPTY_MESSAGE, label("library-tab-empty", message), cx)
+                        .text_color(theme.muted_foreground),
+                ),
+            );
         }
         v_flex()
             .size_full()

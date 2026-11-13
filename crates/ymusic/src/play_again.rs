@@ -11,7 +11,7 @@ use gpui_kit::*;
 use ym_history::{PlayAgainSession, PlayHistory};
 use ym_i18n::{Str, t, tf};
 
-use crate::a11y::FocusList;
+use crate::a11y::{FocusList, label};
 use crate::action_icon::action_icon;
 use crate::graph::{AppGraph, on_core};
 use crate::local_art::{self, from_jvm_art};
@@ -33,7 +33,8 @@ pub struct PlayAgainView {
     error: Option<String>,
     scroll: ScrollHandle,
     focus: FocusList,
-    retry_focus: FocusList,
+    /// The error's or the empty state's message, then Retry.
+    message_focus: FocusList,
 }
 
 impl EventEmitter<ResumeQueue> for PlayAgainView {}
@@ -47,7 +48,7 @@ impl PlayAgainView {
             error: None,
             scroll: scroll.clone(),
             focus: FocusList::new(Some(scroll)),
-            retry_focus: FocusList::new(None),
+            message_focus: FocusList::new(None),
         };
         view.refresh(cx);
         view
@@ -304,9 +305,9 @@ impl Render for PlayAgainView {
                 .items_center()
                 .justify_center()
                 .gap_3()
-                .child(div().text_color(theme.danger).child(error))
-                .child(self.retry_focus.button(
-                    0,
+                .child(self.message_focus.text(0, label("play-again-error", error), cx).text_color(theme.danger))
+                .child(self.message_focus.button(
+                    1,
                     Button::new("reload").label(t(Str::Retry)).on_click(cx.listener(|view, _, _, cx| view.refresh(cx))),
                     cx,
                 ))
@@ -321,11 +322,12 @@ impl Render for PlayAgainView {
                 .p_6()
                 .child(Icon::new(Lucide::RotateCcwClock).size(px(56.)).text_color(theme.muted_foreground))
                 .child(
-                    div()
-                        .max_w(px(420.))
-                        .text_center()
-                        .text_color(theme.muted_foreground)
-                        .child(t(Str::PlayAgainEmpty)),
+                    div().max_w(px(420.)).child(
+                        self.message_focus
+                            .text(0, label("play-again-empty", t(Str::PlayAgainEmpty)), cx)
+                            .text_center()
+                            .text_color(theme.muted_foreground),
+                    ),
                 )
                 .into_any_element();
         }

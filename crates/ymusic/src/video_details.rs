@@ -17,7 +17,7 @@ use ym_engine::EngineError;
 use ym_engine::yt::{YtComment, YtCommentPage, YtThumb, YtVideoDetails};
 use ym_i18n::{Str, t, tf};
 
-use crate::a11y::FocusList;
+use crate::a11y::{FocusList, label};
 use crate::action_icon::{HIT, action_icon};
 use crate::elevated_dialog::{ConfirmDialog, button_bar, chrome, press, scroll_body, text_button, title_bar};
 use crate::feed::{FeedSource, Navigate, error_text, thumb_for};
@@ -515,6 +515,10 @@ impl VideoDetailsView {
         self.focus.item(self.next_stop(), element, cx)
     }
 
+    fn stop_text(&self, element: Stateful<Div>, cx: &App) -> Stateful<Div> {
+        self.focus.text(self.next_stop(), element, cx)
+    }
+
     fn avatar(thumbs: &[YtThumb], size: f32, cx: &App) -> Div {
         let frame = div().size(px(size)).flex_shrink_0().rounded_full().overflow_hidden().bg(cx.theme().secondary);
         match thumb_for(thumbs, (size * 2.) as i32) {
@@ -908,7 +912,7 @@ impl VideoDetailsView {
                     .pl(px(start))
                     .gap_2()
                     .items_center()
-                    .child(div().text_xs().child(error_text(error)))
+                    .child(self.stop_text(label(format!("{id}-error"), error_text(error)), cx).text_xs())
                     .child(
                         self.stop(
                             Button::new(id)
@@ -1048,7 +1052,7 @@ impl Render for VideoDetailsView {
                 .items_center()
                 .justify_center()
                 .gap_3()
-                .child(div().text_center().child(error_text(error)))
+                .child(self.stop_text(label("details-error", error_text(error)), cx).text_center())
                 .child(
                     self.stop(
                         Button::new("details-retry")

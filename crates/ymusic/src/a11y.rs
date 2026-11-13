@@ -20,6 +20,9 @@ const REVEAL_MARGIN: f32 = 12.;
 /// FocusFinder's weight of the distance along the arrow against the sideways offset.
 const MAJOR_WEIGHT: f32 = 13.;
 const READING_ROW: f32 = 24.;
+/// Room around read-only text for its focus ring, taken back from the layout by a negative margin.
+const TEXT_INSET_X: f32 = 6.;
+const TEXT_INSET_Y: f32 = 3.;
 
 struct Slot {
     handle: FocusHandle,
@@ -381,6 +384,14 @@ impl FocusList {
         self.ringed(self.slot_for(index, handle, cx), element, None, cx)
     }
 
+    /// Makes `element`, read-only text with an id, a role and its accessible name ([`label`]), the
+    /// list's `index`th stop: Tab and the arrows reach it and the screen reader reads it, and a press
+    /// does nothing. It lays out as the bare text would; leave its width and margins alone.
+    pub fn text(&self, index: usize, element: Stateful<Div>, cx: &App) -> Stateful<Div> {
+        let (x, y) = (px(TEXT_INSET_X), px(TEXT_INSET_Y));
+        self.item(index, element, cx).px(x).py(y).mx(-x).my(-y).rounded(cx.theme().radius)
+    }
+
     fn ringed(&self, slot: Rc<Slot>, element: Stateful<Div>, row: Option<ScrollHandle>, cx: &App) -> Stateful<Div> {
         let ring = cx.theme().ring;
         on_arrows(
@@ -556,6 +567,13 @@ impl FocusList {
             }
         })
     }
+}
+
+/// `text` drawn and read as static text, for [`FocusList::text`].
+pub fn label(id: impl Into<ElementId>, text: impl Into<SharedString>) -> Stateful<Div> {
+    let text = text.into();
+    // AccessKit names a label by its value, not its label, on every platform.
+    div().id(id).role(Role::Label).aria_value(text.clone()).child(text)
 }
 
 /// A slider's arrow press, called with -1 or 1.

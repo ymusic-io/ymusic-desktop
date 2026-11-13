@@ -61,6 +61,7 @@ const OVERLAY_FULLSCREEN: usize = 9;
 const OVERLAY_SEEK: usize = 10;
 const OVERLAY_SIGN_IN: usize = 11;
 const OVERLAY_RETRY: usize = 12;
+const OVERLAY_ERROR: usize = 13;
 const MENU_CAPTIONS: u8 = 1;
 const MENU_QUALITY: u8 = 2;
 const MENU_MORE: u8 = 4;
@@ -881,15 +882,20 @@ impl NowPlaying {
                         .rounded(px(8.))
                         .bg(black().opacity(0.8))
                         .child(
-                            div()
-                                .id("np-error")
-                                .role(Role::Alert)
-                                .aria_label(failure.text())
+                            self.overlay_focus
+                                .text(
+                                    OVERLAY_ERROR,
+                                    div()
+                                        .id("np-error")
+                                        .role(Role::Alert)
+                                        .aria_label(failure.text())
+                                        .child(failure.text()),
+                                    cx,
+                                )
                                 .text_color(white())
                                 .text_size(px(13.))
                                 .text_center()
-                                .line_clamp(2)
-                                .child(failure.text()),
+                                .line_clamp(2),
                         )
                         .child(actions),
                 ),

@@ -16,7 +16,7 @@ use ym_engine::yt::{YtFeedItem, YtFeedPage, YtFilterGroup, YtPageHeader, YtSecti
 use ym_engine::{DynamicEngine, EngineError, ErrorKind};
 use ym_i18n::{Str, t, tf};
 
-use crate::a11y::{DragRow, FocusList};
+use crate::a11y::{DragRow, FocusList, label};
 use crate::action_icon::{HIT, action_icon, sized_action_icon};
 use crate::download_dialog::DownloadTarget;
 use crate::graph::{AppGraph, on_core};
@@ -255,6 +255,8 @@ pub struct FeedView {
     chips: FocusList,
     tabs: FocusList,
     actions: FocusList,
+    /// The failed page's message and Retry.
+    failure: FocusList,
     /// Drawn above the page, scrolling with it, in place of the page's own header (the Account
     /// tab's card, which already shows who the page belongs to).
     top: Option<AnyView>,
@@ -308,6 +310,7 @@ impl FeedView {
             chips: FocusList::new(Some(scroll.clone())),
             tabs: FocusList::new(None),
             actions: FocusList::new(Some(scroll)),
+            failure: FocusList::new(None),
             top: None,
             chips_drag: DragRow::default(),
             tabs_drag: DragRow::default(),
@@ -1018,7 +1021,8 @@ struct Bands {
 const CARD_MAX: f32 = 324.;
 /// The sort menu, after any chip.
 const CHIPS_SORT: usize = 63;
-/// The page header's, the empty state's and the error states' buttons, as arrow stops.
+/// The page header's buttons, the empty state's and the failed Show more's text and buttons, as
+/// focus stops.
 const ACTION_SAVE: usize = 0;
 const ACTION_SHARE: usize = 1;
 const ACTION_DOWNLOAD: usize = 2;
@@ -1029,8 +1033,10 @@ const ACTION_PLAY_ALL: usize = 6;
 const ACTION_SHUFFLE_ALL: usize = 7;
 const ACTION_RELOAD: usize = 8;
 const ACTION_SEARCH: usize = 9;
-const ACTION_RETRY: usize = 10;
-const ACTION_RETRY_MORE: usize = 11;
+const ACTION_RETRY_MORE: usize = 10;
+const ACTION_EMPTY_TITLE: usize = 11;
+const ACTION_EMPTY_MESSAGE: usize = 12;
+const ACTION_MORE_ERROR: usize = 13;
 /// The page's Show more, after any chip.
 const CHIPS_SHOW_MORE: usize = 64;
 const ROW_GAP: f32 = 16.;
@@ -1699,9 +1705,21 @@ impl FeedView {
                     .gap_2()
                     .child(div().pb_1().child(Icon::new(Lucide::Inbox).size(px(52.)).text_color(muted)))
                     .when_some(self.page.empty_title.clone(), |empty, title| {
-                        empty.child(div().text_base().font_semibold().text_color(ink).text_center().child(title))
+                        empty.child(
+                            self.actions
+                                .text(ACTION_EMPTY_TITLE, label("empty-title", title), cx)
+                                .text_base()
+                                .font_semibold()
+                                .text_color(ink)
+                                .text_center(),
+                        )
                     })
-                    .child(div().text_center().text_color(muted).child(message))
+                    .child(
+                        self.actions
+                            .text(ACTION_EMPTY_MESSAGE, label("empty-message", message), cx)
+                            .text_center()
+                            .text_color(muted),
+                    )
                     .child(actions.pt_2()),
             )
             .into_any_element()
@@ -1776,10 +1794,10 @@ impl Render for FeedView {
                         .items_center()
                         .max_w(px(420.))
                         .p_6()
-                        .child(div().text_center().child(message))
+                        .child(self.failure.text(0, label("feed-error", message), cx).text_center())
                         .child(
-                            self.actions.button(
-                                ACTION_RETRY,
+                            self.failure.button(
+                                1,
                                 Button::new("retry")
                                     .label(t(Str::Retry))
                                     .on_click(cx.listener(|view, _, _, cx| view.reload(cx))),
@@ -1866,8 +1884,12 @@ impl Render for FeedView {
             column = column.child(h_flex().justify_center().p_3().child(Spinner::new()));
         } else if let Some(error) = &self.more_failed {
             column = column.child(
-                v_flex().items_center().gap_2().py_4().child(div().text_sm().child(error_text(error))).child(
-                    self.actions.button(
+                v_flex()
+                    .items_center()
+                    .gap_2()
+                    .py_4()
+                    .child(self.actions.text(ACTION_MORE_ERROR, label("more-error", error_text(error)), cx).text_sm())
+                    .child(self.actions.button(
                         ACTION_RETRY_MORE,
                         Button::new("retry-more").small().label(t(Str::Retry)).on_click(cx.listener(
                             |view, _, _, cx| {
@@ -1876,8 +1898,7 @@ impl Render for FeedView {
                             },
                         )),
                         cx,
-                    ),
-                ),
+                    )),
             );
         } else if self.page.continuation.is_some() {
             column = column.child(

@@ -11,7 +11,7 @@ use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use ym_i18n::{Str, t};
 
-use crate::a11y::FocusList;
+use crate::a11y::{FocusList, label};
 use crate::action_icon::action_icon;
 use crate::graph::{AppGraph, on_core};
 use crate::settings_view::HOVER_ALPHA;
@@ -43,6 +43,7 @@ pub struct SearchView {
     history: Vec<String>,
     generation: u64,
     focus: FocusList,
+    /// Back and the field, then the hint under them while there is nothing to list.
     bar_focus: FocusList,
     _subscription: Subscription,
 }
@@ -222,13 +223,11 @@ impl Render for SearchView {
             );
         let typed = self.input.read(cx).value().trim().to_owned();
         if typed.is_empty() && self.history.is_empty() {
-            let hint = div()
-                .flex_1()
-                .flex()
-                .items_center()
-                .justify_center()
-                .text_color(theme.muted_foreground)
-                .child(t(Str::SearchTypeToSearch));
+            let hint = div().flex_1().flex().items_center().justify_center().child(
+                self.bar_focus
+                    .text(2, label("search-hint", t(Str::SearchTypeToSearch)), cx)
+                    .text_color(theme.muted_foreground),
+            );
             return v_flex().size_full().child(bar).child(hint);
         }
         let (history, suggestions): (Vec<String>, Vec<String>) = if typed.is_empty() {
