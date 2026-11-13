@@ -79,24 +79,25 @@ pub fn chrome_tone(cx: &App) -> Hsla {
     if cx.global::<ScrollHost>().lifted.get() { tones.lifted } else { tones.flat }
 }
 
-/// The shadow a lifted bar casts on the page below it, laid over the page's top edge (the JVM app's
-/// painted 12 dp falloff).
+/// The shadow a lifted bar casts on the page below it, laid over the page's top edge.
 pub fn bar_shadow(cx: &App) -> Option<Div> {
-    if !cx.global::<ScrollHost>().lifted.get() {
-        return None;
-    }
-    let (near, mid) = (black().opacity(0.20), black().opacity(0.07));
-    let band = |height: f32, from: Hsla, to: Hsla| {
-        div().h(px(height)).bg(linear_gradient(180., linear_color_stop(from, 0.), linear_color_stop(to, 1.)))
-    };
-    Some(v_flex().absolute().top_0().left_0().right_0().child(band(BAR_SHADOW * 0.4, near, mid)).child(band(
-        BAR_SHADOW * 0.6,
-        mid,
-        transparent_black(),
-    )))
+    cx.global::<ScrollHost>().lifted.get().then(|| elevation_shadow(false))
 }
 
-const BAR_SHADOW: f32 = 12.;
+/// The JVM app's painted elevation falloff, darkest at the casting edge: along its parent's top,
+/// or `upward` from its bottom.
+pub fn elevation_shadow(upward: bool) -> Div {
+    let (near, mid) = (black().opacity(0.20), black().opacity(0.07));
+    let angle = if upward { 0. } else { 180. };
+    let band = |height: f32, from: Hsla, to: Hsla| {
+        div().h(px(height)).bg(linear_gradient(angle, linear_color_stop(from, 0.), linear_color_stop(to, 1.)))
+    };
+    let (edge, tail) = (band(SHADOW_REACH * 0.4, near, mid), band(SHADOW_REACH * 0.6, mid, transparent_black()));
+    let layer = v_flex().absolute().left_0().right_0();
+    if upward { layer.bottom_0().child(tail).child(edge) } else { layer.top_0().child(edge).child(tail) }
+}
+
+const SHADOW_REACH: f32 = 12.;
 
 /// Shared with the JVM app: the section and Discover tab a restart resumes, by their stable ids.
 const LAST_SECTION_KEY: &str = "app.lastSection";

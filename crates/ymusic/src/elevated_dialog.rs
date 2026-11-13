@@ -22,7 +22,6 @@ pub const DEFAULT_WIDTH: f32 = 560.;
 pub const ROW_HORIZONTAL: f32 = 24.;
 pub const ROW_VERTICAL: f32 = 12.;
 const WIDE_GUTTER: f32 = 24.;
-const SHADOW: f32 = 6.;
 const CORNER: f32 = 4.;
 
 /// `dialog` as the chrome for a body at most `max_width` wide; the view draws the bars itself.
@@ -193,23 +192,10 @@ pub fn scroll_body<V: 'static>(
 /// The edges a scrolled body casts under the bars: drawn over its top and bottom.
 pub fn scroll_shadows(scroll: &ScrollHandle) -> impl IntoElement {
     let (offset, max) = (scroll.offset().y, scroll.max_offset().y);
-    let edge = |top: bool| {
-        let shade = black().opacity(0.14);
-        div()
-            .absolute()
-            .left_0()
-            .right_0()
-            .h(px(SHADOW))
-            .map(|edge| if top { edge.top_0() } else { edge.bottom_0() })
-            .bg(linear_gradient(
-                if top { 180. } else { 0. },
-                linear_color_stop(shade, 0.),
-                linear_color_stop(shade.opacity(0.), 1.),
-            ))
-    };
     div()
-        .when(offset < px(0.), |layer| layer.child(edge(true)))
-        .when(offset > -max && max > px(0.), |layer| layer.child(edge(false)))
+        .size_full()
+        .when(offset < px(0.), |layer| layer.child(crate::shell::elevation_shadow(false)))
+        .when(offset > -max && max > px(0.), |layer| layer.child(crate::shell::elevation_shadow(true)))
 }
 
 /// The JVM app's message dialog: a paragraph (and a smaller note) under the title, a dismissing
