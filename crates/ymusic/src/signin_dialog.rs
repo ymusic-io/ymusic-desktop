@@ -11,7 +11,7 @@ use gpui_kit::*;
 use ym_i18n::{Str, t, tf};
 use ym_signin::DeviceLinkOffer;
 
-use crate::a11y::KeyboardFocusable;
+use crate::a11y::{FocusList, label};
 use crate::action_icon::action_icon;
 use crate::cookie_guide::CookieGuide;
 use crate::cookie_lock::{ProtectEvent, ProtectStep};
@@ -23,6 +23,16 @@ use crate::spinner::{BusyButton, Spinner};
 const FORM_MAX: f32 = 560.;
 const QR_BOX: f32 = 220.;
 const QR_PADDING: f32 = 8.;
+const STOP_BACK: usize = 0;
+const STOP_HEADING: usize = 1;
+const STOP_TITLE: usize = 2;
+const STOP_HINT: usize = 3;
+const STOP_CODE: usize = 4;
+const STOP_CODE_HINT: usize = 5;
+const STOP_STATUS: usize = 6;
+const STOP_RETRY: usize = 7;
+const STOP_PASTE_LINK: usize = 8;
+const STOP_SUBMIT: usize = 9;
 
 pub enum SignInEvent {
     /// Leave the screen without signing in.
@@ -54,6 +64,8 @@ pub struct SignInView {
     /// Signed in; the password step is up, or about to be built.
     protecting: bool,
     protect: Option<(Entity<ProtectStep>, Subscription)>,
+    /// The bar's and the page's text and buttons.
+    focus: FocusList,
     _link: Option<Task<()>>,
 }
 
@@ -72,6 +84,7 @@ impl SignInView {
             submitting: false,
             protecting: false,
             protect: None,
+            focus: FocusList::new(None),
             _link: None,
         };
         if !guest {
@@ -257,41 +270,67 @@ impl SignInView {
             _ => None,
         };
         let status: AnyElement = match (&self.error, &self.link) {
-            (Some(error), _) => {
-                div().text_sm().text_color(theme.danger).text_center().child(error.clone()).into_any_element()
-            }
+            (Some(error), _) => self
+                .focus
+                .text(STOP_STATUS, label("signin-error", error.clone()), cx)
+                .text_sm()
+                .text_color(theme.danger)
+                .text_center()
+                .into_any_element(),
             (None, Link::Ended) => div().into_any_element(),
             (None, _) => h_flex()
                 .gap_2()
                 .items_center()
                 .child(Spinner::new().small())
-                .child(div().text_sm().text_color(theme.muted_foreground).child(t(Str::SigninQrWaiting)))
+                .child(
+                    self.focus
+                        .text(STOP_STATUS, label("signin-waiting", t(Str::SigninQrWaiting)), cx)
+                        .text_sm()
+                        .text_color(theme.muted_foreground),
+                )
                 .into_any_element(),
         };
         let ended = matches!(self.link, Link::Ended);
         vec![
-            div().w_full().text_center().font_semibold().child(t(Str::SigninQrTitle)).into_any_element(),
-            div()
-                .w_full()
+            self.focus
+                .text(STOP_TITLE, label("signin-qr-title", t(Str::SigninQrTitle)), cx)
+                .text_center()
+                .font_semibold()
+                .into_any_element(),
+            self.focus
+                .text(STOP_HINT, label("signin-qr-hint", t(Str::SigninQrHint)), cx)
                 .text_center()
                 .text_sm()
                 .text_color(theme.muted_foreground)
-                .child(t(Str::SigninQrHint))
                 .into_any_element(),
             div().w_full().h(px(QR_BOX)).flex().items_center().justify_center().child(qr).into_any_element(),
             v_flex()
                 .w_full()
                 .items_center()
                 .gap_2()
-                .child(
-                    div()
+                .child(match code {
+                    Some(code) => self
+                        .focus
+                        .text(STOP_CODE, label("signin-code", code), cx)
                         .text_size(px(28.))
                         .font_bold()
                         .font_family("Menlo")
-                        .text_color(if code.is_some() { theme.foreground } else { transparent_black() })
-                        .child(code.unwrap_or_else(|| "000 000".to_owned())),
+                        .text_color(theme.foreground),
+                    None => div()
+                        .id("signin-code-placeholder")
+                        .text_size(px(28.))
+                        .font_bold()
+                        .font_family("Menlo")
+                        .text_color(transparent_black())
+                        .child("000 000"),
+                })
+                .child(
+                    self.focus
+                        .text(STOP_CODE_HINT, label("signin-code-hint", t(Str::SigninQrSasHint)), cx)
+                        .text_sm()
+                        .text_center()
+                        .text_color(theme.muted_foreground),
                 )
-                .child(div().text_sm().text_center().text_color(theme.muted_foreground).child(t(Str::SigninQrSasHint)))
                 .into_any_element(),
             v_flex()
                 .w_full()
@@ -301,19 +340,24 @@ impl SignInView {
                 .child(status)
                 .when(ended, |column| {
                     column.child(
-                        Button::new("signin-retry")
-                            .ghost()
-                            .icon(Lucide::RefreshCw)
-                            .label(t(Str::Retry))
-                            .on_click(cx.listener(|view, _, _, cx| view.start_link(cx))),
+                        self.focus.button(
+                            STOP_RETRY,
+                            Button::new("signin-retry")
+                                .ghost()
+                                .icon(Lucide::RefreshCw)
+                                .label(t(Str::Retry))
+                                .on_click(cx.listener(|view, _, _, cx| view.start_link(cx))),
+                            cx,
+                        ),
                     )
                 })
                 .into_any_element(),
-            div()
-                .id("signin-paste-link")
-                .role(Role::Link)
-                .aria_label(t(Str::SigninOrPaste))
-                .keyboard_focusable(theme.ring)
+            self.focus
+                .item(
+                    STOP_PASTE_LINK,
+                    div().id("signin-paste-link").role(Role::Link).aria_label(t(Str::SigninOrPaste)),
+                    cx,
+                )
                 .py_2()
                 .px_1()
                 .rounded(px(4.))
@@ -334,24 +378,39 @@ impl SignInView {
         let theme = cx.theme().clone();
         let blank = self.paste.read(cx).value().trim().is_empty();
         vec![
-            div().w_full().text_center().font_semibold().child(t(Str::SigninOrPaste)).into_any_element(),
+            self.focus
+                .text(STOP_TITLE, label("signin-paste-title", t(Str::SigninOrPaste)), cx)
+                .text_center()
+                .font_semibold()
+                .into_any_element(),
             self.guide.clone().into_any_element(),
             v_flex()
                 .w_full()
                 .gap_1()
                 .child(div().text_xs().text_color(theme.muted_foreground).child(t(Str::SigninPasteLabel)))
-                .child(Textarea::new(&self.paste).h(px(120.)))
+                .child(Textarea::new(&self.paste).aria_label(t(Str::SigninPasteLabel)).h(px(120.)))
                 .when_some(self.error.clone(), |column, error| {
-                    column.child(div().text_sm().text_color(theme.danger).child(error))
+                    column.child(
+                        self.focus
+                            .text(STOP_STATUS, label("signin-error", error), cx)
+                            .text_sm()
+                            .text_color(theme.danger),
+                    )
                 })
                 .into_any_element(),
-            Button::new("signin-use-cookies")
-                .primary()
+            self.focus
+                .button(
+                    STOP_SUBMIT,
+                    Button::new("signin-use-cookies")
+                        .primary()
+                        .w_full()
+                        .label(t(Str::SigninPasteSubmit))
+                        .busy(self.submitting)
+                        .disabled(blank || self.submitting)
+                        .on_click(cx.listener(|view, _, window, cx| view.submit_paste(window, cx))),
+                    cx,
+                )
                 .w_full()
-                .label(t(Str::SigninPasteSubmit))
-                .busy(self.submitting)
-                .disabled(blank || self.submitting)
-                .on_click(cx.listener(|view, _, window, cx| view.submit_paste(window, cx)))
                 .into_any_element(),
         ]
     }
@@ -380,16 +439,32 @@ impl Render for SignInView {
             .gap_2()
             .items_center()
             .child(
-                action_icon("signin-back", IconName::ArrowLeft, t(Str::CdBack))
-                    .on_click(cx.listener(|view, _, _, cx| view.back(cx))),
+                self.focus.button(
+                    STOP_BACK,
+                    action_icon("signin-back", IconName::ArrowLeft, t(Str::CdBack))
+                        .on_click(cx.listener(|view, _, _, cx| view.back(cx))),
+                    cx,
+                ),
             )
-            .child(div().id("signin-heading").role(Role::Heading).font_semibold().child(t(Str::SigninScreenTitle)));
+            .child(
+                self.focus
+                    .text(
+                        STOP_HEADING,
+                        div()
+                            .id("signin-heading")
+                            .role(Role::Heading)
+                            .aria_label(t(Str::SigninScreenTitle))
+                            .child(t(Str::SigninScreenTitle)),
+                        cx,
+                    )
+                    .font_semibold(),
+            );
         let content = match (&self.link, self.paste_mode) {
             (Link::Unavailable, _) => vec![
-                div()
+                self.focus
+                    .text(STOP_TITLE, label("signin-unavailable", t(Str::SigninUnavailable)), cx)
                     .text_center()
                     .text_color(theme.muted_foreground)
-                    .child(t(Str::SigninUnavailable))
                     .into_any_element(),
             ],
             (_, true) => self.render_paste(cx),

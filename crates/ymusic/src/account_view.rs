@@ -10,7 +10,7 @@ use gpui_kit::*;
 use ym_engine::yt::YtAccountInfo;
 use ym_i18n::{Str, t};
 
-use crate::a11y::{DragRow, FocusList};
+use crate::a11y::{DragRow, FocusList, label};
 use crate::action_icon::action_icon;
 use crate::feed::{FeedView, feed_width, thumb_for};
 use crate::graph::{AppGraph, on_core};
@@ -28,6 +28,11 @@ const FEATURES: [Str; 7] = [
     Str::SigninFeatureMore,
 ];
 const FORM_MAX: f32 = 560.;
+/// The preface's stops after Sign in (0): its text, the features last.
+const PREFACE_TITLE: usize = 1;
+const PREFACE_SUBTITLE: usize = 2;
+const PREFACE_ENABLES: usize = 3;
+const PREFACE_FEATURES: usize = 4;
 const CHIPS_MIN_WIDTH: f32 = 600.;
 
 pub struct AccountView {
@@ -131,14 +136,18 @@ impl AccountView {
         let margin = if width >= 840. { 24. } else { 16. };
         let center = width >= 840. && f32::from(window.viewport_size().height) >= 600.;
         let mut features = v_flex();
-        for feature in FEATURES {
+        for (index, feature) in FEATURES.into_iter().enumerate() {
             features = features.child(
                 h_flex()
                     .py_2()
                     .gap(px(14.))
                     .items_center()
                     .child(div().size(px(10.)).flex_shrink_0().rounded_full().bg(theme.primary))
-                    .child(div().child(t(feature))),
+                    .child(self.preface_focus.text(
+                        PREFACE_FEATURES + index,
+                        label(("signin-feature", index), t(feature)),
+                        cx,
+                    )),
             );
         }
         let column = v_flex()
@@ -164,20 +173,34 @@ impl AccountView {
                     .child(
                         v_flex()
                             .child(
-                                div()
-                                    .id("signin-title")
-                                    .role(Role::Heading)
+                                self.preface_focus
+                                    .text(
+                                        PREFACE_TITLE,
+                                        div()
+                                            .id("signin-title")
+                                            .role(Role::Heading)
+                                            .aria_label(t(Str::SigninPrefaceTitle))
+                                            .child(t(Str::SigninPrefaceTitle)),
+                                        cx,
+                                    )
                                     .text_xl()
-                                    .font_bold()
-                                    .child(t(Str::SigninPrefaceTitle)),
+                                    .font_bold(),
                             )
                             .child(
-                                div().text_sm().text_color(theme.muted_foreground).child(t(Str::SigninPrefaceSubtitle)),
+                                self.preface_focus
+                                    .text(PREFACE_SUBTITLE, label("signin-subtitle", t(Str::SigninPrefaceSubtitle)), cx)
+                                    .text_sm()
+                                    .text_color(theme.muted_foreground),
                             ),
                     ),
             )
             .child(div().my(px(20.)).h(px(1.)).bg(theme.border))
-            .child(div().font_bold().text_color(theme.muted_foreground).child(t(Str::SigninEnables)))
+            .child(
+                self.preface_focus
+                    .text(PREFACE_ENABLES, label("signin-enables", t(Str::SigninEnables)), cx)
+                    .font_bold()
+                    .text_color(theme.muted_foreground),
+            )
             .child(div().h(px(12.)))
             .child(features)
             .child(div().h(px(28.)))

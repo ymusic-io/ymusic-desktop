@@ -13,12 +13,21 @@ use tokio::runtime::Handle;
 use ym_common::log::Logger;
 use ym_i18n::{Str, t, tf};
 
-use crate::a11y::FocusList;
+use crate::a11y::{FocusList, label};
 use crate::cookie_session::{CookieSession, CookieStoreError, LockedJar, SealedJar};
 use crate::elevated_dialog::ConfirmDialog;
 use crate::spinner::Spinner;
 
 const FORM_MAX: f32 = 560.;
+/// A form's stops after its buttons (0 to 2): the title, the body, each field and its error, then the
+/// unlock screen's text.
+const STOP_TITLE: usize = 3;
+const STOP_BODY: usize = 4;
+const STOP_PASSWORD: usize = 5;
+const STOP_CONFIRM: usize = 7;
+const STOP_CANT_UNLOCK: usize = 9;
+/// The hint under each escape choice, at the choice's index plus this.
+const STOP_HINT_AFTER: usize = 10;
 
 type OnSession = Box<dyn FnOnce(CookieSession, &mut Window, &mut App)>;
 
@@ -26,21 +35,26 @@ fn password_input(window: &mut Window, cx: &mut App) -> Entity<InputState> {
     cx.new(|cx| InputState::new(window, cx).masked(true))
 }
 
+/// The field is `focus`'s `index`th stop, its error the next.
 fn password_field(
     id: &'static str,
     state: &Entity<InputState>,
-    label: &'static str,
+    name: &'static str,
     error: Option<&str>,
+    (focus, index): (&FocusList, usize),
     cx: &App,
 ) -> AnyElement {
     let theme = cx.theme();
+    let input = Input::new(state).id(id).aria_label(name).content_type(InputContentType::Password);
     v_flex()
         .w_full()
         .gap_1()
-        .child(div().text_xs().text_color(theme.muted_foreground).child(label))
-        .child(Input::new(state).id(id).aria_label(label).content_type(InputContentType::Password))
+        .child(div().text_xs().text_color(theme.muted_foreground).child(name))
+        .child(focus.field(index, &state.focus_handle(cx), input, cx))
         .when_some(error.map(str::to_owned), |column, error| {
-            column.child(div().text_sm().text_color(theme.danger).child(error))
+            column.child(
+                focus.text(index + 1, label(format!("{id}-error"), error), cx).text_sm().text_color(theme.danger),
+            )
         })
         .into_any_element()
 }
@@ -54,7 +68,7 @@ fn busy_or(busy: bool, button: Div) -> AnyElement {
     }
 }
 
-fn lock_form(title: &'static str, body: &'static str, content: Vec<AnyElement>, cx: &App) -> Div {
+fn lock_form(title: &'static str, body: &'static str, content: Vec<AnyElement>, focus: &FocusList, cx: &App) -> Div {
     let theme = cx.theme();
     v_flex().size_full().bg(theme.background).child(
         div().id("lock-scroll").flex_1().min_h_0().overflow_y_scroll().child(
@@ -67,9 +81,22 @@ fn lock_form(title: &'static str, body: &'static str, content: Vec<AnyElement>, 
                     .gap_4()
                     .items_center()
                     .child(
-                        div().id("lock-title").role(Role::Heading).w_full().text_center().font_semibold().child(title),
+                        focus
+                            .text(
+                                STOP_TITLE,
+                                div().id("lock-title").role(Role::Heading).aria_label(title).child(title),
+                                cx,
+                            )
+                            .text_center()
+                            .font_semibold(),
                     )
-                    .child(div().w_full().text_center().text_sm().text_color(theme.muted_foreground).child(body))
+                    .child(
+                        focus
+                            .text(STOP_BODY, label("lock-body", body), cx)
+                            .text_center()
+                            .text_sm()
+                            .text_color(theme.muted_foreground),
+                    )
                     .children(content),
             ),
         ),
@@ -188,7 +215,7 @@ impl UnlockView {
     fn escape_choice(
         &self,
         index: usize,
-        label: &'static str,
+        name: &'static str,
         hint: &'static str,
         danger: bool,
         on_click: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
@@ -197,7 +224,7 @@ impl UnlockView {
         let theme = cx.theme().clone();
         let button = Button::new(("unlock-choice", index))
             .ghost()
-            .label(label)
+            .label(name)
             .disabled(self.busy)
             .when(danger, |button| button.text_color(theme.danger))
             .on_click(cx.listener(move |view, _, window, cx| on_click(view, window, cx)));
@@ -207,7 +234,13 @@ impl UnlockView {
             .items_center()
             .gap_1()
             .child(self.focus.button(index, button, cx))
-            .child(div().text_xs().text_center().text_color(theme.muted_foreground).child(hint))
+            .child(
+                self.focus
+                    .text(STOP_HINT_AFTER + index, label(("unlock-choice-hint", index), hint), cx)
+                    .text_xs()
+                    .text_center()
+                    .text_color(theme.muted_foreground),
+            )
             .into_any_element()
     }
 }
@@ -224,14 +257,26 @@ impl Render for UnlockView {
             .on_click(cx.listener(|view, _, window, cx| view.unlock(window, cx)));
         let divider = || div().flex_1().h(px(1.)).bg(theme.border);
         let content = vec![
-            password_field("unlock-password", &self.password, t(Str::CookiePassword), self.error.as_deref(), cx),
+            password_field(
+                "unlock-password",
+                &self.password,
+                t(Str::CookiePassword),
+                self.error.as_deref(),
+                (&self.focus, STOP_PASSWORD),
+                cx,
+            ),
             busy_or(self.busy, self.focus.button(0, submit, cx)),
             h_flex()
                 .w_full()
                 .gap_4()
                 .items_center()
                 .child(divider())
-                .child(div().text_xs().text_color(theme.muted_foreground).child(t(Str::CookieUnlockCantUnlock)))
+                .child(
+                    self.focus
+                        .text(STOP_CANT_UNLOCK, label("unlock-cant", t(Str::CookieUnlockCantUnlock)), cx)
+                        .text_xs()
+                        .text_color(theme.muted_foreground),
+                )
                 .child(divider())
                 .into_any_element(),
             h_flex()
@@ -260,6 +305,7 @@ impl Render for UnlockView {
             t(Str::CookieUnlockTitle),
             t(Str::CookieUnlockBody),
             content,
+            &self.focus,
             cx,
         ))
     }
@@ -379,11 +425,25 @@ impl Render for ProtectStep {
             .disabled(self.busy)
             .on_click(cx.listener(|_, _, _, cx| cx.emit(ProtectEvent::Done)));
         let content = vec![
-            password_field("protect-password", &self.password, t(Str::CookiePassword), None, cx),
-            password_field("protect-confirm", &self.confirm, t(Str::CookieProtectConfirm), self.error.as_deref(), cx),
+            password_field(
+                "protect-password",
+                &self.password,
+                t(Str::CookiePassword),
+                None,
+                (&self.focus, STOP_PASSWORD),
+                cx,
+            ),
+            password_field(
+                "protect-confirm",
+                &self.confirm,
+                t(Str::CookieProtectConfirm),
+                self.error.as_deref(),
+                (&self.focus, STOP_CONFIRM),
+                cx,
+            ),
             busy_or(self.busy, self.focus.button(0, submit, cx)),
             self.focus.button(1, skip, cx).w_full().into_any_element(),
         ];
-        lock_form(t(Str::CookieProtectTitle), t(Str::CookieProtectBody), content, cx)
+        lock_form(t(Str::CookieProtectTitle), t(Str::CookieProtectBody), content, &self.focus, cx)
     }
 }

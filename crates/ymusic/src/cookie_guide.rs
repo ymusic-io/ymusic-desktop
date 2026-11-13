@@ -12,7 +12,7 @@ use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use ym_i18n::{Str, t};
 
-use crate::a11y::FocusList;
+use crate::a11y::{FocusList, label};
 use crate::action_icon::sized_action_icon;
 
 const WINDOW_MAX: f32 = 380.;
@@ -451,6 +451,12 @@ impl Render for CookieGuide {
                             .child(marks),
                     ),
             )
-            .child(div().w_full().text_center().text_sm().text_color(theme.muted_foreground).child(self.browser.hint()))
+            .child(
+                self.focus
+                    .text(Browser::ALL.len() + 1 + Step::ALL.len(), label("signin-paste-hint", self.browser.hint()), cx)
+                    .text_center()
+                    .text_sm()
+                    .text_color(theme.muted_foreground),
+            )
     }
 }
