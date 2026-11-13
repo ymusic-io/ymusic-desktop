@@ -158,6 +158,12 @@ pub(crate) struct A11y {
     /// Retains the last tree update (and, in debug builds, per-node provenance)
     /// so it can be dumped via [`crate::Window::debug_a11y_tree_json`].
     debug: debug::A11yDebug,
+    /// The live regions of the last frame. A live region that appears goes out with its live
+    /// setting off for one frame, so its announcement follows the focus and selection changes
+    /// of the frame it appeared in (AccessKit raises a frame's events in no set order).
+    live_shown: FxHashSet<NodeId>,
+    /// A live region was held back this frame: the next frame announces it.
+    pub(crate) announce_next_frame: bool,
     /// Maps a view's [`EntityId`] to its `Render` type name
     #[cfg(debug_assertions)]
     pub(crate) view_type_names: FxHashMap<EntityId, &'static str>,
@@ -180,6 +186,8 @@ impl A11y {
             window_title,
             last_focus_without_node: None,
             debug: debug::A11yDebug::default(),
+            live_shown: FxHashSet::default(),
+            announce_next_frame: false,
             #[cfg(debug_assertions)]
             view_type_names: FxHashMap::default(),
         }
@@ -281,7 +289,19 @@ impl A11y {
 
     /// Finalize the tree and produce a [`TreeUpdate`] for the platform adapter.
     pub(crate) fn end_frame(&mut self, frame: debug::FrameDebugInfo) -> TreeUpdate {
-        let update = self.nodes.finalize();
+        let mut update = self.nodes.finalize();
+        let mut live_now = FxHashSet::default();
+        self.announce_next_frame = false;
+        for (id, node) in update.nodes.iter_mut() {
+            if node.live().is_some_and(|live| live != accesskit::Live::Off) {
+                live_now.insert(*id);
+                if !self.live_shown.contains(id) {
+                    node.set_live(accesskit::Live::Off);
+                    self.announce_next_frame = true;
+                }
+            }
+        }
+        self.live_shown = live_now;
         self.debug.capture(
             &update,
             self.nodes.focus,

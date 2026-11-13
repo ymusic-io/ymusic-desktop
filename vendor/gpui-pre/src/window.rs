@@ -4029,6 +4029,9 @@ impl Window {
                 );
                 self.platform_window.a11y_tree_update(tree_update);
             }
+            if self.a11y.announce_next_frame {
+                self.on_next_frame(|window, _| window.refresh());
+            }
         }
     }
 
