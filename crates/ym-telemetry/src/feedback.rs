@@ -105,6 +105,7 @@ pub fn send_feedback(
     // The contexts integration fills in the host name, which can carry the user's name.
     options.before_send = Some(Arc::new(|mut event| {
         event.server_name = None;
+        crate::lean_contexts(&mut event);
         Some(event)
     }));
     options.default_integrations = false;

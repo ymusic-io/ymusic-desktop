@@ -17,7 +17,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
-use sentry::protocol::{Attachment, Breadcrumb, Context, Event, Level as SentryLevel, TraceContext, TraceId};
+use sentry::protocol::{
+    Attachment, Breadcrumb, Context, DeviceContext, Event, Level as SentryLevel, OsContext, TraceContext, TraceId,
+};
 use ym_common::log::{CaptureExtras, Crumb, Level, LogSink};
 
 const TRAIL_TAG: &str = "trail";
@@ -92,6 +94,18 @@ fn is_panic_entry(function: &str) -> bool {
         || function.contains("rust_begin_unwind")
 }
 
+/// The JVM app's desktop context and no more: the OS name and version and the CPU arch, where the
+/// contexts integration adds the OS build, the kernel, the device model and a Rust runtime.
+fn lean_contexts(event: &mut Event<'_>) {
+    event.contexts.remove("rust");
+    if let Some(Context::Os(os)) = event.contexts.get_mut("os") {
+        **os = OsContext { name: os.name.take(), version: os.version.take(), ..Default::default() };
+    }
+    if let Some(Context::Device(device)) = event.contexts.get_mut("device") {
+        **device = DeviceContext { arch: device.arch.take(), ..Default::default() };
+    }
+}
+
 /// Puts the event on its launch's trace, the one its log lines carry.
 fn link_trace(event: &mut Event<'_>, trace_id: TraceId) {
     match event.contexts.get_mut("trace") {
@@ -153,6 +167,7 @@ impl Telemetry {
             }
             // The contexts integration fills in the host name, which can carry the user's name.
             event.server_name = None;
+            lean_contexts(&mut event);
             stamp_tags(&mut event);
             trim_panic_frames(&mut event);
             if let Some(trace_id) = log_shipper::launch_trace() {
