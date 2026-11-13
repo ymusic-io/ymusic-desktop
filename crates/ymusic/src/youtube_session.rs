@@ -88,11 +88,14 @@ impl YoutubeSessions {
                     continue;
                 }
             };
-            if let Err(error) = engine.health_check().await {
-                self.log.warn("a player bundle failed its health check", Some(&error));
-                engine.close().await;
-                last_error = Some(error);
-                continue;
+            match engine.health_check().await {
+                Ok(version) => ym_telemetry::set_player_version(version),
+                Err(error) => {
+                    self.log.warn("a player bundle failed its health check", Some(&error));
+                    engine.close().await;
+                    last_error = Some(error);
+                    continue;
+                }
             }
             if let Some(bundle) = staged {
                 let source = self.player_source.clone();

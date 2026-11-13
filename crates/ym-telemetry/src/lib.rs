@@ -7,8 +7,9 @@ mod feedback;
 pub use feedback::{FeedbackError, FeedbackReport, send_feedback};
 
 use std::borrow::Cow;
+use std::collections::BTreeMap;
 use std::error::Error;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use sentry::protocol::{Attachment, Breadcrumb, Event, Level as SentryLevel};
 use ym_common::log::{Crumb, Level, LogSink};
@@ -18,12 +19,48 @@ const TRAIL_TAG: &str = "trail";
 const CODE_TAG: &str = "error.code";
 const DEVICE_ID_TAG: &str = "device_id";
 const REPORT_TYPE_TAG: &str = "report_type";
+const ENGINE_VERSION_TAG: &str = "engine.version";
+const PLAYER_VERSION_TAG: &str = "player.version";
 /// Failures that are never defects: the UI already shows their localized category.
 const IGNORED_CATEGORIES: &[&str] = &["network"];
 /// As the JVM app keeps.
 const MAX_BREADCRUMBS: usize = 200;
 /// This workspace's crates: a panic's culprit is the topmost of their frames, never the SDK's or gpui's.
 const IN_APP_CRATES: &[&str] = &["ymusic::", "ym_"];
+
+/// Tags every event carries, whichever thread sends it: sentry-rust forks a scope per thread, so a
+/// tag set on one thread's scope never reaches another thread's events.
+static APP_TAGS: Mutex<BTreeMap<String, String>> = Mutex::new(BTreeMap::new());
+/// The remote config's `sentryTags`, replaced whole as the config changes.
+static REMOTE_TAGS: Mutex<BTreeMap<String, String>> = Mutex::new(BTreeMap::new());
+
+/// Names the engine-js bundle that is live: set at boot and on every swap.
+pub fn set_engine_version(version: i32) {
+    set_app_tag(ENGINE_VERSION_TAG, version.to_string());
+}
+
+/// Names the player.js bundle of the newest playback session, once it passed its health check.
+pub fn set_player_version(version: i32) {
+    set_app_tag(PLAYER_VERSION_TAG, version.to_string());
+}
+
+/// The remote config's `sentryTags`; a key it drops leaves later events too.
+pub fn set_remote_tags(tags: &BTreeMap<String, String>) {
+    *REMOTE_TAGS.lock().unwrap_or_else(PoisonError::into_inner) = tags.clone();
+}
+
+fn set_app_tag(key: &str, value: String) {
+    APP_TAGS.lock().unwrap_or_else(PoisonError::into_inner).insert(key.to_owned(), value);
+}
+
+/// An event's own tags win over the app's, and those over the remote config's.
+fn stamp_tags(event: &mut Event<'_>) {
+    for tags in [&APP_TAGS, &REMOTE_TAGS] {
+        for (key, value) in tags.lock().unwrap_or_else(PoisonError::into_inner).iter() {
+            event.tags.entry(key.clone()).or_insert_with(|| value.clone());
+        }
+    }
+}
 
 /// What a report may carry, read at send time (the remote config can change it).
 pub trait ReportPolicy: Send + Sync {
@@ -59,10 +96,11 @@ impl Telemetry {
         // The contexts integration fills in the host name, which can carry the user's name.
         options.before_send = Some(Arc::new(|mut event| {
             event.server_name = None;
+            stamp_tags(&mut event);
             Some(event)
         }));
+        set_app_tag(DEVICE_ID_TAG, config.device_id);
         let guard = sentry::init((config.dsn.as_str(), options));
-        sentry::configure_scope(|scope| scope.set_tag(DEVICE_ID_TAG, &config.device_id));
         Some(Self { _guard: guard })
     }
 }

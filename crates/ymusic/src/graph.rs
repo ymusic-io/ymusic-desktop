@@ -183,6 +183,7 @@ impl AppGraph {
         candidates.push((ENGINE_JS.to_owned(), format!("embedded v{ENGINE_JS_VERSION}")));
         let engines = Arc::new(EngineManager::start(candidates, template).await?);
         remote.set_running_bundles(Some(i64::from(engines.backend_version())), None);
+        ym_telemetry::set_engine_version(engines.backend_version());
 
         let pending_player: Arc<Mutex<Option<VerifiedBundle>>> = Arc::new(Mutex::new(None));
         let media = Arc::new(media);
@@ -311,6 +312,7 @@ impl AppGraph {
                                 let source = engine_source.clone();
                                 let _ = tokio::task::spawn_blocking(move || source.store(&bundle)).await;
                                 remote.set_running_bundles(Some(i64::from(version)), None);
+                                ym_telemetry::set_engine_version(version);
                             }
                             Err(error) => log
                                 .warn(&format!("R90012 engine v{} did not boot", remote_engine.version), Some(&error)),

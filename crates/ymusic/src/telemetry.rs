@@ -143,5 +143,19 @@ pub fn start_reporting(setup: &LogSetup, graph: &AppGraph) -> Option<Telemetry> 
     }
     let telemetry = Telemetry::init(telemetry_config(dsn, graph.settings.as_ref()))?;
     setup.reports.set(Arc::new(SentrySink { logs, policy: Arc::new(RemotePolicy(graph.remote.clone())) }));
+    follow_remote_tags(graph);
     Some(telemetry)
+}
+
+/// Keeps the events' remote tags equal to the config's `sentryTags`, from the cached config on.
+fn follow_remote_tags(graph: &AppGraph) {
+    let mut config = graph.remote.subscribe();
+    graph.tokio.spawn(async move {
+        loop {
+            ym_telemetry::set_remote_tags(&config.borrow_and_update().sentry_tags);
+            if config.changed().await.is_err() {
+                return;
+            }
+        }
+    });
 }
