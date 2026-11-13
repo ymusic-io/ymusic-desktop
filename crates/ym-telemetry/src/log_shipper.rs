@@ -86,7 +86,7 @@ impl LogShipper {
     }
 
     /// An error event's claim, off the caller's thread: the worker claims this launch's newest `limit`
-    /// unsent lines and sends them.
+    /// unsent lines, the event's own among them, and sends them.
     pub fn claim(&self, limit: i64) {
         let limit = limit.min(MAX_LINES);
         {

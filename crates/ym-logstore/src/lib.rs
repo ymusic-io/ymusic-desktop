@@ -36,6 +36,8 @@ const MIN_LINES: i64 = 100;
 const STATE_PENDING: i64 = 1;
 const STATE_SENT: i64 = 2;
 const CLAIM_RETRY: Duration = Duration::from_millis(5);
+/// How long a claim waits for the lines queued before it to be written.
+const FLUSH_WAIT: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct LogRecord {
@@ -57,10 +59,13 @@ struct Line {
 struct Queue {
     lines: VecDeque<Line>,
     closed: bool,
+    /// Lines ever queued, and those written or dropped since: a flush waits for the second to catch up.
+    queued: u64,
+    done: u64,
 }
 
 /// Lines are queued without blocking (the oldest queued line drops under a burst) and written one
-/// at a time by a writer thread; queries take the same connection, after the queued writes.
+/// at a time by a writer thread; a claim first waits for the lines queued before it.
 pub struct LogStore {
     /// This app open's id on each of its lines: 32 hex chars, so Sentry takes it as a trace id.
     pub launch: String,
@@ -91,7 +96,10 @@ impl LogStore {
         let store = Arc::new(Self {
             launch,
             db: Arc::new(Mutex::new(db)),
-            queue: Arc::new((Mutex::new(Queue { lines: VecDeque::new(), closed: false }), Condvar::new())),
+            queue: Arc::new((
+                Mutex::new(Queue { lines: VecDeque::new(), closed: false, queued: 0, done: 0 }),
+                Condvar::new(),
+            )),
             max_lines: Arc::new(AtomicI64::new(0)),
         });
         let (db, queue, max_lines, launch) =
@@ -114,9 +122,35 @@ impl LogStore {
         let mut queue = queue.lock().unwrap();
         if queue.lines.len() >= QUEUE_CAPACITY {
             queue.lines.pop_front();
+            queue.done += 1;
         }
         queue.lines.push_back(Line { ts: now_millis(), level: level_code(level), trail, message });
+        queue.queued += 1;
         wake.notify_one();
+    }
+
+    /// Blocking: returns once every line queued before the call is written (or dropped), or at
+    /// `deadline`. It polls, so a panic hook on a thread holding the queue gives up at the deadline
+    /// rather than deadlocking.
+    fn flush_until(&self, deadline: Instant) {
+        let mut target = None;
+        loop {
+            let queue = match self.queue.0.try_lock() {
+                Ok(queue) => Some(queue),
+                Err(TryLockError::Poisoned(poisoned)) => Some(poisoned.into_inner()),
+                Err(TryLockError::WouldBlock) => None,
+            };
+            if let Some(queue) = queue {
+                let target = *target.get_or_insert(queue.queued);
+                if queue.done >= target || queue.closed {
+                    return;
+                }
+            }
+            if Instant::now() >= deadline {
+                return;
+            }
+            std::thread::sleep(CLAIM_RETRY);
+        }
     }
 
     /// Blocking: lines after `after_seq`, oldest first, at most `limit`.
@@ -129,16 +163,19 @@ impl LogStore {
         rows.collect()
     }
 
-    /// Blocking: claims this launch's unsent lines among its newest `limit` for an error event; they
-    /// stay [`Self::pending`] until [`Self::mark_sent`]. Returns how many it claimed.
+    /// Blocking: claims this launch's unsent lines among its newest `limit` for an error event, the
+    /// lines queued before the call among them (it waits for their write, at most 2 s);
+    /// they stay [`Self::pending`] until [`Self::mark_sent`]. Returns how many it claimed.
     pub fn claim_unsent(&self, limit: i64) -> rusqlite::Result<usize> {
+        self.flush_until(Instant::now() + FLUSH_WAIT);
         claim(&self.db.lock().unwrap(), &self.launch, limit)
     }
 
-    /// [`Self::claim_unsent`] for a panic hook: `None` when the connection stays busy past `wait`,
-    /// as it does when the panicking thread holds it; a poisoned lock still reads.
+    /// [`Self::claim_unsent`] for a panic hook, within `wait` in all: `None` when the connection stays
+    /// busy that long, as it does when the panicking thread holds it; a poisoned lock still reads.
     pub fn try_claim_unsent(&self, limit: i64, wait: Duration) -> Option<rusqlite::Result<usize>> {
         let deadline = Instant::now() + wait;
+        self.flush_until(deadline);
         loop {
             match self.db.try_lock() {
                 Ok(db) => return Some(claim(&db, &self.launch, limit)),
@@ -248,6 +285,7 @@ fn writer(db: Arc<Mutex<Connection>>, queue: Arc<(Mutex<Queue>, Condvar)>, max_l
             }
             queue.lines.drain(..).collect()
         };
+        let count = batch.len() as u64;
         let db = db.lock().unwrap();
         // A failed write loses its lines; the log is the last place to report that.
         for line in batch {
@@ -269,6 +307,8 @@ fn writer(db: Arc<Mutex<Connection>>, queue: Arc<(Mutex<Queue>, Condvar)>, max_l
                 rows = cap;
             }
         }
+        drop(db);
+        lock.lock().unwrap().done += count;
     }
 }
 
