@@ -53,9 +53,11 @@ impl Backend {
         };
         request_name(&connection)?;
         let (outbox, inbox) = mpsc::channel::<Snapshot>();
+        let runtime = tokio::runtime::Handle::current();
         std::thread::Builder::new()
             .name("mpris-outbox".into())
             .spawn(move || {
+                let _runtime = runtime.enter();
                 let mut track_counter = 0_u64;
                 for snapshot in inbox {
                     if let Err(error) = publish(&player, snapshot, &mut track_counter) {

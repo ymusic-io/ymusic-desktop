@@ -867,7 +867,7 @@ impl LibraryView {
         if self.scanning {
             return;
         }
-        let pick = rfd::AsyncFileDialog::new().set_title(t(Str::FolderPickerTitle)).pick_folder();
+        let pick = crate::desktop::file_dialog(rfd::AsyncFileDialog::new().set_title(t(Str::FolderPickerTitle)).pick_folder(), cx);
         cx.spawn(async move |this, cx| {
             let Some(folder) = pick.await else { return };
             this.update(cx, |view, cx| view.scan_path(folder.path().to_path_buf(), false, cx)).ok();

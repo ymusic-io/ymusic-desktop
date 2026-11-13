@@ -234,10 +234,11 @@ impl PlaylistTransfer {
         }
         let busy = self.busy.clone();
         let pick = target.is_none().then(|| {
-            rfd::AsyncFileDialog::new()
+            let dialog = rfd::AsyncFileDialog::new()
                 .set_title(t(Str::PlaylistMenuBackup))
                 .set_file_name(backup_file_name())
-                .save_file()
+                .save_file();
+            crate::desktop::file_dialog(dialog, cx)
         });
         window
             .spawn(cx, async move |cx| {
@@ -284,7 +285,9 @@ impl PlaylistTransfer {
         }
         let transfer = self.clone();
         let pick = source.is_none().then(|| {
-            rfd::AsyncFileDialog::new().set_title(t(Str::PlaylistMenuRestore)).add_filter("JSON", &["json"]).pick_file()
+            let dialog =
+                rfd::AsyncFileDialog::new().set_title(t(Str::PlaylistMenuRestore)).add_filter("JSON", &["json"]).pick_file();
+            crate::desktop::file_dialog(dialog, cx)
         });
         window
             .spawn(cx, async move |cx| {

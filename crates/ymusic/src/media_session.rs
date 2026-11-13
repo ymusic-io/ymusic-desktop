@@ -85,7 +85,12 @@ impl MediaSession {
     pub fn new(playback: Entity<Playback>, cx: &mut Context<Self>) -> Self {
         let (sender, mut receiver) = mpsc::unbounded::<Command>();
         let log = cx.global::<AppGraph>().log.fork("media-session");
-        let backend = match Backend::start(sender, log.clone()) {
+        // zbus runs on Tokio once a dependency enables its tokio feature: connecting outside the
+        // runtime panics ("there is no reactor running").
+        let runtime = cx.global::<AppGraph>().tokio.enter();
+        let started = Backend::start(sender, log.clone());
+        drop(runtime);
+        let backend = match started {
             Ok(backend) => Some(backend),
             Err(error) => {
                 log.warn(&format!("R90004 media controls unavailable: {error}"), None);

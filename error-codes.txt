@@ -129,6 +129,7 @@ R90028 - Sentry Logs: Sentry refused a batch of log lines (HTTP status, rate lim
 R90029 - Sentry Logs: delivered log lines could not be marked sent in logs.db (logged; they may go again)
 R90030 - media session: an update could not be published to MPRIS (property change or Seeked signal on the session bus; logged)
 R90031 - media session: an update could not be posted to the Windows SMTC thread (logged)
+R90040 - Linux file dialog: the Tokio task driving the portal dialog failed (logged; treated as canceled)
 R90200 - data dir: a database this app's earlier builds named differently could not take the JVM app's name (logged; retried next launch)
 R90201 - data dir: the window bounds kept in app.db could not move to window.properties (logged)
 R90202 - data dir: the old window.bounds setting could not be removed from app.db (logged)

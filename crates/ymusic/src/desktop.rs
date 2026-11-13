@@ -1371,3 +1371,28 @@ pub fn os_version() -> String {
 pub fn os_version() -> String {
     "10.0".to_owned()
 }
+
+/// rfd's portal dialogs talk D-Bus through zbus, which runs on Tokio here (a dependency enables its
+/// tokio feature), so the dialog is driven on the runtime; polled anywhere else it panics.
+#[cfg(target_os = "linux")]
+pub fn file_dialog<T: Send + 'static, F: Future<Output = Option<T>> + Send + 'static>(
+    dialog: F,
+    cx: &App,
+) -> impl Future<Output = Option<T>> + use<T, F> {
+    let graph = cx.global::<crate::graph::AppGraph>();
+    let (task, log) = (graph.tokio.spawn(dialog), graph.log.fork("file-dialog"));
+    async move {
+        match task.await {
+            Ok(picked) => picked,
+            Err(error) => {
+                log.warn("R90040 the file dialog task failed", Some(&error));
+                None
+            }
+        }
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn file_dialog<T, F: Future<Output = Option<T>> + 'static>(dialog: F, _: &App) -> F {
+    dialog
+}
