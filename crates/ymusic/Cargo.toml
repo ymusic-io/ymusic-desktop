@@ -77,6 +77,10 @@ souvlaki = { version = "0.9", default-features = false, features = ["use_zbus"] 
 rfd = { version = "0.15", default-features = false, features = ["tokio", "xdg-portal"] }
 ksni = "=0.3.6"
 
+[features]
+# Shipped builds (the packaging scripts' release profile), as the JVM app's -Pproduction.
+production = ["ym-common/production"]
+
 [lints]
 workspace = true
 

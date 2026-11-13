@@ -60,7 +60,7 @@ min_os=$(sed -n 's/.*const val macosMin = "\([0-9.]*\)".*/\1/p' "$v4/buildSrc/sr
 
 if [[ $build == 1 ]]; then
     cargo_profile=()
-    [[ $profile == release ]] && cargo_profile=(--release)
+    [[ $profile == release ]] && cargo_profile=(--release --features production)
     (cd "$root" && MACOSX_DEPLOYMENT_TARGET=$min_os YMUSIC_V4_DIR=$v4 FFMPEG_ROOT=$ffmpeg_root cargo build ${cargo_profile[@]+"${cargo_profile[@]}"} -p ymusic)
 fi
 binary=$target_dir/$profile/ymusic

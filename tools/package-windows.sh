@@ -57,7 +57,7 @@ fi
 
 if [[ $build == 1 ]]; then
     cargo_profile=()
-    [[ $profile == release ]] && cargo_profile=(--release)
+    [[ $profile == release ]] && cargo_profile=(--release --features production)
     (cd "$root" && YMUSIC_V4_DIR=$v4 FFMPEG_ROOT=$ffmpeg_root cargo build ${cargo_profile[@]+"${cargo_profile[@]}"} -p ymusic)
 fi
 binary=$target_dir/$profile/ymusic.exe
