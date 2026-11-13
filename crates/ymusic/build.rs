@@ -55,6 +55,8 @@ fn main() {
         }
         println!("cargo:rustc-env=YM_{}={value}", variable.trim_start_matches("YMUSIC_"));
     }
+    // The Sentry release names the commit a build was cut from, as the JVM app's.
+    println!("cargo:rustc-env=YM_GIT_COMMIT={}", git_commit());
     // Private release inputs; empty leaves the app on its embedded bundles and defaults. The
     // environment wins over the gitignored secret.properties at the workspace root.
     for variable in [
@@ -87,6 +89,42 @@ fn main() {
             println!("cargo:rustc-env={variable}={value}");
         }
     }
+}
+
+/// `git rev-parse --short=10 HEAD` of this workspace (the JVM build's `gitCommit()`), else "unknown";
+/// reruns when HEAD moves.
+fn git_commit() -> String {
+    let root = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap()).join("../..");
+    if let Some(git_dir) = git_dir(&root) {
+        let head = git_dir.join("HEAD");
+        println!("cargo:rerun-if-changed={}", head.display());
+        let branch = std::fs::read_to_string(&head)
+            .ok()
+            .and_then(|text| text.trim().strip_prefix("ref:").map(|reference| git_dir.join(reference.trim())));
+        for path in branch.into_iter().chain([git_dir.join("packed-refs")]).filter(|path| path.exists()) {
+            println!("cargo:rerun-if-changed={}", path.display());
+        }
+    }
+    std::process::Command::new("git")
+        .args(["rev-parse", "--short=10", "HEAD"])
+        .current_dir(&root)
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .map(|commit| commit.trim().to_owned())
+        .filter(|commit| !commit.is_empty())
+        .unwrap_or_else(|| "unknown".to_owned())
+}
+
+/// The repository's git directory: `.git`, or where a submodule's or worktree's `.git` file points.
+fn git_dir(root: &std::path::Path) -> Option<PathBuf> {
+    let dot_git = root.join(".git");
+    if dot_git.is_dir() {
+        return Some(dot_git);
+    }
+    let text = std::fs::read_to_string(&dot_git).ok()?;
+    Some(root.join(text.trim().strip_prefix("gitdir:")?.trim()))
 }
 
 /// Java properties escapes (`\:`, `\=`, `\\`), which the JVM build's files may carry.

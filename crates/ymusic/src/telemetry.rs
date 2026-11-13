@@ -30,11 +30,17 @@ fn sentry_dsn() -> &'static str {
     option_env!("YMUSIC_SENTRY_DSN").unwrap_or_default()
 }
 
+/// A shipped build's Sentry environment: the `YMUSIC_SENTRY_ENVIRONMENT` build input (the JVM app's
+/// `-PsentryEnvironment`, "beta" for a prerelease), else production.
+fn sentry_environment() -> &'static str {
+    option_env!("YMUSIC_SENTRY_ENVIRONMENT").filter(|environment| !environment.is_empty()).unwrap_or("production")
+}
+
 fn telemetry_config(dsn: &str, settings: &dyn SettingsStore) -> TelemetryConfig {
     TelemetryConfig {
         dsn: dsn.to_owned(),
-        release: format!("ymusic-rust@{}", crate::graph::APP_VERSION_NAME),
-        environment: if cfg!(debug_assertions) { "debug".into() } else { "production".into() },
+        release: format!("ymusic-rust@{}+{}", crate::graph::APP_VERSION_NAME, env!("YM_GIT_COMMIT")),
+        environment: if cfg!(debug_assertions) { "debug" } else { sentry_environment() }.to_owned(),
         device_id: settings.string(DEVICE_ID_KEY, "").unwrap_or_default(),
     }
 }
