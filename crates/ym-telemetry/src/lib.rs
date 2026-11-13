@@ -70,6 +70,26 @@ fn set_app_tag(key: &str, value: String) {
     APP_TAGS.lock().unwrap_or_else(PoisonError::into_inner).insert(key.to_owned(), value);
 }
 
+/// Drops a panic's frames from its entry into the panic machinery on (the hooks, this crate's among
+/// them, and the SDK's capture), which sentry-panic keeps: the top frame left is where it panicked.
+fn trim_panic_frames(event: &mut Event<'_>) {
+    for exception in &mut event.exception.values {
+        let Some(stacktrace) = exception.stacktrace.as_mut().filter(|_| exception.ty == "panic") else { continue };
+        let entry = stacktrace.frames.iter().position(|frame| frame.function.as_deref().is_some_and(is_panic_entry));
+        if let Some(entry) = entry {
+            stacktrace.frames.truncate(entry);
+        }
+    }
+}
+
+/// Frames are oldest first, and `std::panicking::catch_unwind` sits near the root, so only the
+/// functions a panic starts in match.
+fn is_panic_entry(function: &str) -> bool {
+    function.starts_with("core::panicking::")
+        || function.starts_with("std::panicking::begin_panic")
+        || function.contains("rust_begin_unwind")
+}
+
 /// An event's own tags win over the app's, and those over the remote config's.
 fn stamp_tags(event: &mut Event<'_>) {
     for tags in [&APP_TAGS, &REMOTE_TAGS] {
@@ -121,6 +141,7 @@ impl Telemetry {
             // The contexts integration fills in the host name, which can carry the user's name.
             event.server_name = None;
             stamp_tags(&mut event);
+            trim_panic_frames(&mut event);
             Some(event)
         }));
         set_app_tag(DEVICE_ID_TAG, config.device_id);
