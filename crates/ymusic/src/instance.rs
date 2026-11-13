@@ -11,7 +11,7 @@ use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender};
 use gpui_kit::Global;
@@ -23,6 +23,8 @@ const HANDOFF_ATTEMPTS: u32 = 60;
 const HANDOFF_RETRY: Duration = Duration::from_millis(150);
 const HANDOFF_TIMEOUT: Duration = Duration::from_secs(2);
 const WAKE_TIMEOUT: Duration = Duration::from_millis(500);
+/// How long a plain launch the running instance took watches for that instance to quit.
+const TAKEOVER_WINDOW: Duration = Duration::from_secs(5);
 const MAX_REQUEST_BYTES: u64 = 1 << 20;
 /// Not a JVM command: the JVM app reads the request and drops it, so it never takes links as files.
 const LINKS_COMMAND: &str = "Links";
@@ -200,23 +202,53 @@ pub fn claim(
         if attempt > 0 {
             std::thread::sleep(HANDOFF_RETRY);
         }
-        let lock =
-            OpenOptions::new().create(true).truncate(false).write(true).open(&lock_path).map_err(ClaimError::Setup)?;
+        let lock = open_lock(&lock_path)?;
         if try_lock(&lock).map_err(ClaimError::Setup)? {
-            let _ = HELD_LOCK.set(lock);
-            listen(&port_path, sender, log.clone()).map_err(ClaimError::Setup)?;
-            return Ok(Claim::Owner);
+            return own(lock, &port_path, sender, log);
         }
         drop(lock);
         if attempt == 0 && request.command == Command::Show {
             share_foreground(log);
         }
         match hand_off(&port_path, request, log) {
+            Ok(()) if request.is_empty() => return outlast(&lock_path, &port_path, sender, log),
             Ok(()) => return Ok(Claim::HandedOver),
             Err(error) => last_error = Some(error),
         }
     }
     Err(ClaimError::NoAnswer(last_error))
+}
+
+/// A plain launch may have reached an instance that is quitting: an updater starts the new version
+/// while the old one winds down, and JVM builds before the bridge release keep taking requests
+/// then. If the lock frees within the window this process becomes the instance; a request with
+/// files, links or a player command never waits.
+fn outlast(
+    lock_path: &Path,
+    port_path: &Path,
+    sender: UnboundedSender<Request>,
+    log: &Logger,
+) -> Result<Claim, ClaimError> {
+    let deadline = Instant::now() + TAKEOVER_WINDOW;
+    while Instant::now() < deadline {
+        std::thread::sleep(HANDOFF_RETRY);
+        let lock = open_lock(lock_path)?;
+        if try_lock(&lock).map_err(ClaimError::Setup)? {
+            log.info("instance: the instance that took this launch quit; this one takes over");
+            return own(lock, port_path, sender, log);
+        }
+    }
+    Ok(Claim::HandedOver)
+}
+
+fn open_lock(lock_path: &Path) -> Result<File, ClaimError> {
+    OpenOptions::new().create(true).truncate(false).write(true).open(lock_path).map_err(ClaimError::Setup)
+}
+
+fn own(lock: File, port_path: &Path, sender: UnboundedSender<Request>, log: &Logger) -> Result<Claim, ClaimError> {
+    let _ = HELD_LOCK.set(lock);
+    listen(port_path, sender, log.clone()).map_err(ClaimError::Setup)?;
+    Ok(Claim::Owner)
 }
 
 /// The JVM's `FileChannel.tryLock()`: an exclusive POSIX record lock over the whole file. Linux keeps
