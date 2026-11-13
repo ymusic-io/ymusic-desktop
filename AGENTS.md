@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Guidance for AI coding agents in this repository. Plan and milestones: [`PLAN.md`](PLAN.md).
+Guidance for AI coding agents in this repository.
 
 ## Project
 
