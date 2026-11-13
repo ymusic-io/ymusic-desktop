@@ -147,9 +147,9 @@ pub fn start_reporting(setup: &LogSetup, graph: &AppGraph, http: reqwest::Client
     if dsn.is_empty() {
         return None;
     }
-    let config = telemetry_config(dsn, graph.settings.as_ref());
     let shipper =
-        LogShipper::start(logs, &config, crate::graph::APP_VERSION, http, &graph.tokio, graph.log.fork("sentry-logs"));
+        LogShipper::start(logs, dsn, crate::graph::APP_VERSION, http, &graph.tokio, graph.log.fork("sentry-logs"));
+    let config = telemetry_config(dsn, graph.settings.as_ref());
     let telemetry = Telemetry::init(config, crash_reports_allowed(graph.settings.as_ref()))?;
     match shipper {
         Ok(shipper) => {

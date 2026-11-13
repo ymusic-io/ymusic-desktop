@@ -1,10 +1,9 @@
 //! The app-log lines an error event takes, as Sentry Logs (the JVM app's `ErrorLogShipper`): an
 //! event claims its launch's newest unsent lines, which wait in `logs.db` as pending, and one worker
 //! sends every pending line, this launch's or one an earlier run claimed before it died. Each goes
-//! with its body, level, timestamp, trail, `app.version_code` and its launch as trace id, which the
-//! events carry too, so an event and its run's lines share one trace.
+//! with its body, level, timestamp, `app.version_code` and its launch as trace id, which the events
+//! carry too, so an event and its run's lines share one trace.
 
-use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::{Duration, UNIX_EPOCH};
 
@@ -13,8 +12,6 @@ use sentry::types::{Dsn, ParseDsnError};
 use tokio::sync::Notify;
 use ym_common::log::Logger;
 use ym_logstore::{LogRecord, LogStore};
-
-use crate::TelemetryConfig;
 
 const BATCH: i64 = 100;
 /// As the JVM app caps a claim.
@@ -36,7 +33,7 @@ pub struct LogShipper {
     http: reqwest::Client,
     url: String,
     auth: String,
-    attributes: BTreeMap<String, LogAttribute>,
+    version_code: i32,
     /// The largest claim asked for since the worker last claimed.
     requested: Mutex<Option<i64>>,
     wake: Notify,
@@ -55,28 +52,23 @@ impl LogShipper {
     /// Starts the worker on `runtime`; its first pass sends what earlier runs left pending.
     pub fn start(
         store: Arc<LogStore>,
-        config: &TelemetryConfig,
+        dsn: &str,
         version_code: i32,
         http: reqwest::Client,
         runtime: &tokio::runtime::Handle,
         log: Logger,
     ) -> Result<Arc<Self>, ParseDsnError> {
-        let dsn: Dsn = config.dsn.parse()?;
+        let dsn: Dsn = dsn.parse()?;
         // The launch is 32 hex digits by construction; a second start keeps the first's trace.
         if let Ok(trace) = store.launch.parse() {
             let _ = LAUNCH_TRACE.set(trace);
         }
-        let attributes = BTreeMap::from([
-            ("app.version_code".to_owned(), LogAttribute::from(version_code)),
-            ("sentry.release".to_owned(), LogAttribute::from(config.release.clone())),
-            ("sentry.environment".to_owned(), LogAttribute::from(config.environment.clone())),
-        ]);
         let shipper = Arc::new(Self {
             store,
             http,
             url: dsn.envelope_api_url().to_string(),
             auth: dsn.to_auth(Some(CLIENT)).to_string(),
-            attributes,
+            version_code,
             requested: Mutex::new(None),
             wake: Notify::new(),
             log,
@@ -203,11 +195,9 @@ impl LogShipper {
         }
     }
 
+    /// Sentry bills logs by the byte: nothing rides per line that Sentry fills in itself (release,
+    /// environment, SDK) or that the JVM app's lines do not carry.
     fn to_log(&self, line: &LogRecord) -> Log {
-        let mut attributes = self.attributes.clone();
-        if !line.trail.is_empty() {
-            attributes.insert("trail".to_owned(), LogAttribute::from(line.trail.clone()));
-        }
         Log {
             level: match line.level {
                 0 => LogLevel::Debug,
@@ -219,7 +209,7 @@ impl LogShipper {
             trace_id: line.launch.parse().ok(),
             timestamp: UNIX_EPOCH + Duration::from_millis(line.epoch_ms.max(0) as u64),
             severity_number: None,
-            attributes,
+            attributes: [("app.version_code".to_owned(), LogAttribute::from(self.version_code))].into(),
         }
     }
 }
