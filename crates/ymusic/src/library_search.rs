@@ -11,7 +11,7 @@ use gpui_kit::*;
 use ym_i18n::{Str, t, tf};
 use ym_store::{MediaItem, MediaStore};
 
-use crate::a11y::FocusList;
+use crate::a11y::{FocusList, heading, list_item};
 use crate::action_icon::action_icon;
 use crate::graph::{AppGraph, on_core};
 use crate::library::{
@@ -138,13 +138,15 @@ impl LibrarySearchView {
             .pt_4()
             .pb_2()
             .items_baseline()
-            .child(div().font_semibold().child(title.to_owned()))
+            .child(heading(SharedString::from(format!("section-{title}")), 2, title.to_owned()).font_semibold())
             .child(div().text_sm().text_color(cx.theme().muted_foreground).child(count.to_string()))
     }
 
+    /// The `position`th row of its section's list, `index` its focus stop.
     fn group_row(
         &self,
         index: usize,
+        position: usize,
         icon: Lucide,
         name: &str,
         members: &[MediaItem],
@@ -157,7 +159,7 @@ impl LibrarySearchView {
         self.focus
             .item(
                 index,
-                h_flex().id(("library-group", index)).role(Role::ListItem).aria_label(format!("{name}, {count}")),
+                list_item(h_flex().id(("library-group", index)), position).aria_label(format!("{name}, {count}")),
                 cx,
             )
             .px_4()
@@ -181,17 +183,18 @@ impl LibrarySearchView {
             }))
     }
 
-    fn song_block(&self, columns: usize, cx: &mut Context<Self>) -> AnyElement {
+    fn song_block(&self, title: &str, columns: usize, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let menu = SongMenu { show_in_folder: true, ..SongMenu::default() };
+        let stops = self.song_focus.list_stops(0..self.songs.len(), window, cx);
         let cells: Vec<AnyElement> = self
             .songs
             .iter()
             .enumerate()
             .map(|(index, item)| song_cell(&self.song_focus, index, item, Self::play, menu, cx))
             .collect();
-        let count = cells.len();
         let rows = if columns > 1 { grid_rows(cells, columns) } else { cells };
-        self.song_focus.container(v_flex().children(rows), 0..count, cx).into_any_element()
+        let list = v_flex().id("library-search-songs").children(rows);
+        stops.wrap(list, Some(title.to_owned().into()), cx).into_any_element()
     }
 }
 
@@ -245,7 +248,7 @@ impl Render for LibrarySearchView {
         let body = if let Some((name, members)) = self.drill.clone() {
             self.songs = members;
             let header = Self::section_header(&name, self.songs.len(), cx);
-            v_flex().child(header).child(self.song_block(columns, cx)).into_any_element()
+            v_flex().child(header).child(self.song_block(&name, columns, window, cx)).into_any_element()
         } else if query.is_empty() {
             self.songs.clear();
             return v_flex().size_full().child(bar).child(centered(t(Str::LibrarySearchHint).to_owned()));
@@ -276,25 +279,33 @@ impl Render for LibrarySearchView {
             if !self.songs.is_empty() {
                 column = column
                     .child(Self::section_header(t(Str::LibraryTabSongs), self.songs.len(), cx))
-                    .child(self.song_block(columns, cx));
+                    .child(self.song_block(t(Str::LibraryTabSongs), columns, window, cx));
             }
-            for (title, icon, groups) in
+            for (section, (title, icon, groups)) in
                 [(t(Str::LibraryTabArtists), Lucide::User, &artists), (t(Str::LibraryTabAlbums), Lucide::Disc, &albums)]
+                    .into_iter()
+                    .enumerate()
             {
                 if groups.is_empty() {
                     continue;
                 }
-                column = column.child(Self::section_header(title, groups.len(), cx));
-                for (name, members) in groups {
-                    column = column.child(self.group_row(focus_count, icon, name, members, cx));
+                let stops = self.focus.list_stops(focus_count..focus_count + groups.len(), window, cx);
+                let mut list = v_flex().id(("library-search-groups", section));
+                for (position, (name, members)) in groups.iter().enumerate() {
+                    list = list.child(self.group_row(focus_count, position, icon, name, members, cx));
                     focus_count += 1;
                 }
+                column = column.child(Self::section_header(title, groups.len(), cx)).child(stops.wrap(
+                    list,
+                    Some(title.into()),
+                    cx,
+                ));
             }
             if self.songs.is_empty() && artists.is_empty() && albums.is_empty() {
                 column =
                     column.child(div().p_4().text_color(theme.muted_foreground).child(t(Str::LibrarySearchNoMatches)));
             }
-            self.focus.container(column, 0..focus_count, cx).into_any_element()
+            column.into_any_element()
         };
         v_flex().size_full().child(bar).child(
             div()

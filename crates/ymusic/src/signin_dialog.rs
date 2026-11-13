@@ -11,7 +11,7 @@ use gpui_kit::*;
 use ym_i18n::{Str, t, tf};
 use ym_signin::DeviceLinkOffer;
 
-use crate::a11y::{FocusList, label};
+use crate::a11y::{FocusList, heading, label};
 use crate::action_icon::action_icon;
 use crate::cookie_guide::CookieGuide;
 use crate::cookie_lock::{ProtectEvent, ProtectStep};
@@ -448,15 +448,7 @@ impl Render for SignInView {
             )
             .child(
                 self.focus
-                    .text(
-                        STOP_HEADING,
-                        div()
-                            .id("signin-heading")
-                            .role(Role::Heading)
-                            .aria_label(t(Str::SigninScreenTitle))
-                            .child(t(Str::SigninScreenTitle)),
-                        cx,
-                    )
+                    .text(STOP_HEADING, heading("signin-heading", 2, t(Str::SigninScreenTitle)), cx)
                     .font_semibold(),
             );
         let content = match (&self.link, self.paste_mode) {

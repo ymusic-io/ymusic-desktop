@@ -16,7 +16,7 @@ use ym_engine::yt::{YtFeedItem, YtFeedPage, YtFilterGroup, YtPageHeader, YtSecti
 use ym_engine::{DynamicEngine, EngineError, ErrorKind};
 use ym_i18n::{Str, t, tf};
 
-use crate::a11y::{DragRow, FocusList, label};
+use crate::a11y::{DragRow, FocusList, heading, label, list_item};
 use crate::action_icon::{HIT, action_icon, sized_action_icon};
 use crate::download_dialog::DownloadTarget;
 use crate::graph::{AppGraph, on_core};
@@ -1140,7 +1140,13 @@ impl FeedView {
         let channel_id = (item.kind == "channel" && self.signed_in)
             .then(|| item.channel_id.clone().unwrap_or_else(|| item.id.clone()))
             .filter(|id| !id.is_empty());
-        action_icon(key, Icon::new(IconName::EllipsisVertical).text_color(cx.theme().muted_foreground), t(Str::CdMore))
+        let more = action_icon(
+            key,
+            Icon::new(IconName::EllipsisVertical).text_color(cx.theme().muted_foreground),
+            t(Str::CdMore),
+        );
+        self.focus
+            .trailing_button(key.1, 0, more, cx)
             .dropdown_menu_with_anchor(Anchor::TopRight, move |mut menu, _, cx| {
                 let video = target.kind == "video";
                 let mut actions: Vec<(Str, MenuAction)> = Vec::new();
@@ -1255,9 +1261,11 @@ impl FeedView {
         }
     }
 
+    /// The `position`th item of its section's list, `id.1` its index on the page.
     fn clickable(
         &self,
         id: (&'static str, usize),
+        position: usize,
         item: &YtFeedItem,
         queue: Option<std::rc::Rc<Vec<YtFeedItem>>>,
         row: Option<ScrollHandle>,
@@ -1265,9 +1273,7 @@ impl FeedView {
     ) -> Stateful<Div> {
         let clicked = item.clone();
         let theme = cx.theme();
-        let element = div()
-            .id(id)
-            .role(Role::Button)
+        let element = list_item(div().id(id), position)
             .aria_label(item_label(item, self.downloaded(item, cx)))
             .cursor_pointer()
             .rounded(px(12.))
@@ -1286,12 +1292,17 @@ impl FeedView {
         &self,
         item: &YtFeedItem,
         index: usize,
+        position: usize,
         bands: Bands,
         queue: Option<std::rc::Rc<Vec<YtFeedItem>>>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = cx.theme().clone();
-        let card = self.clickable(("feed-card", index), item, queue, None, cx).flex_1().min_w_0().p(px(bands.inset()));
+        let card = self
+            .clickable(("feed-card", index), position, item, queue, None, cx)
+            .flex_1()
+            .min_w_0()
+            .p(px(bands.inset()));
         if item.kind == "channel" {
             return card
                 .relative()
@@ -1375,6 +1386,7 @@ impl FeedView {
         &self,
         item: &YtFeedItem,
         index: usize,
+        position: usize,
         bands: Bands,
         queue: Option<std::rc::Rc<Vec<YtFeedItem>>>,
         cx: &mut Context<Self>,
@@ -1413,7 +1425,7 @@ impl FeedView {
                         .child(text),
                 )
             });
-        self.clickable(("feed-row", index), item, queue, None, cx)
+        self.clickable(("feed-row", index), position, item, queue, None, cx)
             .child(
                 h_flex()
                     .pl_4()
@@ -1475,15 +1487,15 @@ impl FeedView {
             .child(div().w(px(4.)).h(px(16.)).rounded_sm().bg(theme.primary))
             .when_some(avatar, |row, url| row.child(img(url).size(px(26.)).rounded_full().object_fit(ObjectFit::Cover)))
             .child(
-                div()
-                    .id(("section-title", section_index))
-                    .flex_1()
-                    .min_w_0()
-                    .truncate()
-                    .text_size(px(16.5))
-                    .font_bold()
-                    .role(Role::Heading)
-                    .children(title.clone()),
+                match title.clone() {
+                    Some(title) => heading(("section-title", section_index), 2, title),
+                    None => div().id(("section-title", section_index)),
+                }
+                .flex_1()
+                .min_w_0()
+                .truncate()
+                .text_size(px(16.5))
+                .font_bold(),
             )
             .when_some(count, |row, count| row.child(div().text_sm().text_color(theme.muted_foreground).child(count)))
             .when_some(cta.filter(|_| !collapsible), |row, (link, label)| {
@@ -1520,10 +1532,12 @@ impl FeedView {
         section_index: usize,
         first_item: usize,
         bands: Bands,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = cx.theme().clone();
         let expanded = self.expanded.contains(&section_index);
+        let title = section.header.as_ref().and_then(section_title).map(SharedString::from);
         let mut block = v_flex().w_full();
         if section_index > 0 {
             block = block.child(div().px_4().pt_4().child(div().h(px(1.)).w_full().bg(theme.border)));
@@ -1542,7 +1556,8 @@ impl FeedView {
             "tags" => {
                 let shown =
                     if section.collapsible && !expanded { 10.min(section.items.len()) } else { section.items.len() };
-                let mut pills = h_flex().flex_wrap().gap_2().px_4().py_1();
+                let stops = self.focus.list_stops(first_item..first_item + shown, window, cx);
+                let mut pills = h_flex().id(("section-items", section_index)).flex_wrap().gap_2().px_4().py_1();
                 for (offset, item) in section.items.iter().take(shown).enumerate() {
                     let link = item.url.clone();
                     let title = SharedString::from(item.title.clone());
@@ -1572,11 +1587,12 @@ impl FeedView {
                         .on_click(cx.listener(move |view, _, _, cx| view.toggle_section(section_index, cx)));
                     pills = pills.child(self.controls.button(section_index * 3 + 2, more, cx));
                 }
-                return block.child(pills).into_any_element();
+                return block.child(stops.wrap(pills, title, cx)).into_any_element();
             }
             "carousel" => {
                 let drag = self.carousel_drags.borrow_mut().entry(section_index).or_default().clone();
                 let row_scroll = drag.scroll().clone();
+                let stops = self.focus.list_stops(first_item..first_item + section.items.len(), window, cx);
                 let mut row = h_flex()
                     .id(("carousel-scroll", section_index))
                     .track_scroll(&row_scroll)
@@ -1586,32 +1602,35 @@ impl FeedView {
                     .px_3();
                 for (offset, item) in section.items.iter().enumerate() {
                     row = row.child(
-                        self.clickable(("carousel", first_item + offset), item, None, Some(row_scroll.clone()), cx)
-                            .w(px(80.))
-                            .flex_shrink_0()
-                            .p_1()
-                            .child(
-                                v_flex()
-                                    .items_center()
-                                    .gap_1()
-                                    .child(
-                                        div()
-                                            .size(px(64.))
-                                            .rounded_full()
-                                            .overflow_hidden()
-                                            .bg(theme.secondary)
-                                            .when_some(thumb_for(&item.thumbs, 128), |frame, url| {
-                                                frame.child(
-                                                    img(url).size_full().rounded_full().object_fit(ObjectFit::Cover),
-                                                )
-                                            }),
-                                    )
-                                    .child(div().w_full().text_xs().text_center().truncate().child(item.title.clone())),
-                            ),
+                        self.clickable(
+                            ("carousel", first_item + offset),
+                            offset,
+                            item,
+                            None,
+                            Some(row_scroll.clone()),
+                            cx,
+                        )
+                        .w(px(80.))
+                        .flex_shrink_0()
+                        .p_1()
+                        .child(
+                            v_flex()
+                                .items_center()
+                                .gap_1()
+                                .child(
+                                    div().size(px(64.)).rounded_full().overflow_hidden().bg(theme.secondary).when_some(
+                                        thumb_for(&item.thumbs, 128),
+                                        |frame, url| {
+                                            frame
+                                                .child(img(url).size_full().rounded_full().object_fit(ObjectFit::Cover))
+                                        },
+                                    ),
+                                )
+                                .child(div().w_full().text_xs().text_center().truncate().child(item.title.clone())),
+                        ),
                     );
                 }
-                let row = self.focus.container(row, first_item..first_item + section.items.len(), cx);
-                return block.child(drag.wrap(row)).into_any_element();
+                return block.child(drag.wrap(stops.wrap(row, title, cx))).into_any_element();
             }
             _ => {}
         }
@@ -1625,10 +1644,11 @@ impl FeedView {
         let limit = bands.columns * rows;
         let shown = if section.collapsible && !expanded { limit.min(section.items.len()) } else { section.items.len() };
         let items = &section.items[..shown];
-        block = self.focus.container(block, first_item..first_item + shown, cx);
+        let stops = self.focus.list_stops(first_item..first_item + shown, window, cx);
+        let mut list = v_flex().id(("section-items", section_index)).w_full();
         if bands.columns == 1 {
             for (offset, item) in items.iter().enumerate() {
-                block = block.child(self.render_row(item, first_item + offset, bands, queue.clone(), cx));
+                list = list.child(self.render_row(item, first_item + offset, offset, bands, queue.clone(), cx));
             }
         } else {
             let inset = bands.inset();
@@ -1640,15 +1660,16 @@ impl FeedView {
                     .pb(px(ROW_GAP - 2. * inset))
                     .gap(px(bands.gutter - 2. * inset));
                 for (offset, item) in chunk.iter().enumerate() {
-                    let index = first_item + chunk_index * bands.columns + offset;
-                    row = row.child(self.render_card(item, index, bands, queue.clone(), cx));
+                    let position = chunk_index * bands.columns + offset;
+                    row = row.child(self.render_card(item, first_item + position, position, bands, queue.clone(), cx));
                 }
                 for _ in chunk.len()..bands.columns {
                     row = row.child(div().flex_1().min_w_0());
                 }
-                block = block.child(row);
+                list = list.child(row);
             }
         }
+        block = block.child(stops.wrap(list, title, cx));
         if section.collapsible && section.items.len() > limit {
             let label = if expanded {
                 t(Str::ShowLess).to_owned()
@@ -1877,7 +1898,7 @@ impl Render for FeedView {
         }
         let mut first_item = 0;
         for (section_index, section) in self.page.sections.clone().iter().enumerate() {
-            column = column.child(self.render_section(section, section_index, first_item, bands, cx));
+            column = column.child(self.render_section(section, section_index, first_item, bands, window, cx));
             first_item += section.items.len();
         }
         if self.loading_more {

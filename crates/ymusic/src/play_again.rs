@@ -11,7 +11,7 @@ use gpui_kit::*;
 use ym_history::{PlayAgainSession, PlayHistory};
 use ym_i18n::{Str, t, tf};
 
-use crate::a11y::{FocusList, label};
+use crate::a11y::{FocusList, label, list_item};
 use crate::action_icon::action_icon;
 use crate::graph::{AppGraph, on_core};
 use crate::local_art::{self, from_jvm_art};
@@ -221,8 +221,10 @@ impl PlayAgainView {
         let detail = detail.join(" · ");
         let view = cx.entity().downgrade();
         let (from_start, removed) = (session.clone(), session.queue_id.clone());
-        let more = action_icon(("play-again-more", position), IconName::EllipsisVertical, t(Str::CdMore))
-            .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, _| {
+        let more = action_icon(("play-again-more", position), IconName::EllipsisVertical, t(Str::CdMore));
+        let more = self.focus.trailing_button(position, 0, more, cx).dropdown_menu_with_anchor(
+            Anchor::TopRight,
+            move |menu, _, _| {
                 let (restart, remove) = (view.clone(), view.clone());
                 let (from_start, removed) = (from_start.clone(), removed.clone());
                 menu.item(PopupMenuItem::new(t(Str::MenuPlayFromBeginning)).on_click(move |_, _, cx| {
@@ -231,12 +233,11 @@ impl PlayAgainView {
                 .item(PopupMenuItem::new(t(Str::MenuRemove)).on_click(move |_, _, cx| {
                     remove.update(cx, |view, cx| view.remove(removed.clone(), cx)).ok();
                 }))
-            });
+            },
+        );
         let target = session.clone();
         let strip_width = card_width - 16. - 4. - 8. - 8. - RESUME_PILL;
-        let base = v_flex()
-            .id(("play-again", position))
-            .role(Role::ListItem)
+        let base = list_item(v_flex().id(("play-again", position)), position)
             .aria_label(format!("{}, {detail}", session.title));
         self.focus
             .item(position, base, cx)
@@ -334,8 +335,9 @@ impl Render for PlayAgainView {
         let width = crate::feed::feed_width(window);
         let columns = ((width - 2. * GAP + GAP) / (CARD_MIN + GAP)).floor().max(1.) as usize;
         let card_width = (width - 2. * GAP - GAP * (columns - 1) as f32) / columns as f32;
-        let mut grid = v_flex().w_full().p_4().gap_4();
         let sessions = self.sessions.clone();
+        let stops = self.focus.list_stops(0..sessions.len(), window, cx);
+        let mut grid = v_flex().id("play-again-sessions").w_full().p_4().gap_4();
         for (row_index, row) in sessions.chunks(columns).enumerate() {
             let mut cells = h_flex().w_full().gap_4().items_start();
             for (offset, session) in row.iter().enumerate() {
@@ -351,7 +353,7 @@ impl Render for PlayAgainView {
             }
             grid = grid.child(cells);
         }
-        let grid = self.focus.container(grid, 0..sessions.len(), cx);
+        let grid = stops.wrap(grid, Some(t(Str::SectionPlayAgain).into()), cx);
         div()
             .id("play-again-scroll")
             .size_full()

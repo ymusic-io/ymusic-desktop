@@ -13,7 +13,7 @@ use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use ym_i18n::{Str, t};
 
-use crate::a11y::FocusList;
+use crate::a11y::{FocusList, heading};
 use crate::spinner::Spinner;
 
 /// The picker width; anything wider keeps a 24px gutter to the window edge.
@@ -69,17 +69,14 @@ pub fn title_bar_with(title: impl Into<SharedString>, action: Option<impl IntoEl
                 .gap_2()
                 .items_center()
                 .child(
-                    div()
-                        .id("dialog-title")
-                        .role(Role::Heading)
+                    heading("dialog-title", 2, title)
                         .flex_1()
                         .min_w_0()
                         .py(px(16.))
                         .text_size(px(17.))
                         .line_height(px(22.))
                         .font_bold()
-                        .text_color(theme.foreground)
-                        .child(title.into()),
+                        .text_color(theme.foreground),
                 )
                 .children(action),
         )

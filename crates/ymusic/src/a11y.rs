@@ -1,10 +1,12 @@
 //! Keyboard reach the way the JVM app's Compose focus works: every list item, card, tab and chip is
-//! a real focus stop (Tab reaches it, Enter or Space activates it, the screen reader announces it),
-//! and an arrow key moves focus geometrically, to the nearest stop on screen in that direction,
-//! preferring one that lines up (Android's FocusFinder rule), so focus enters and leaves lists in
-//! screen order. The focused stop is ringed and scrolled into view.
+//! a real focus stop (Enter or Space activates it, the screen reader announces it), and an arrow key
+//! moves focus geometrically, to the nearest stop on screen in that direction, preferring one that
+//! lines up (Android's FocusFinder rule), so focus enters and leaves lists in screen order. A list
+//! ([`FocusList::list_stops`]) is one Tab stop, its item focused last; any other stop is its own. The
+//! focused stop is ringed and scrolled into view.
 
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::ops::Range;
 use std::rc::{Rc, Weak};
 
@@ -277,6 +279,10 @@ pub fn root_arrows<E: InteractiveElement>(element: E, root: FocusHandle) -> E {
 /// The focus handles of one list's items, kept across frames by item position.
 pub struct FocusList {
     slots: RefCell<Vec<Rc<Slot>>>,
+    /// The controls inside each item (a row's ⋮), by item.
+    trailing: RefCell<HashMap<usize, Vec<FocusHandle>>>,
+    /// The item focused last in each list, by the list's first item.
+    tab_items: RefCell<HashMap<usize, Rc<Cell<Option<usize>>>>>,
     scroll: Option<ScrollHandle>,
     group: u64,
     entry: Rc<RefCell<Option<FocusHandle>>>,
@@ -285,14 +291,25 @@ pub struct FocusList {
 impl FocusList {
     /// `scroll` is the scroll container the items live in, to reveal a focused item.
     pub fn new(scroll: Option<ScrollHandle>) -> Self {
-        Self { slots: RefCell::default(), scroll, group: 0, entry: Rc::default() }
+        Self::in_group(scroll, 0)
+    }
+
+    fn in_group(scroll: Option<ScrollHandle>, group: u64) -> Self {
+        Self {
+            slots: RefCell::default(),
+            trailing: RefCell::default(),
+            tab_items: RefCell::default(),
+            scroll,
+            group,
+            entry: Rc::default(),
+        }
     }
 
     /// A dialog's stops: arrows stay among them, never reaching the window behind.
     pub fn modal(scroll: Option<ScrollHandle>, cx: &App) -> Self {
         let items = cx.global::<RovingItems>();
         items.last_group.set(items.last_group.get() + 1);
-        Self { slots: RefCell::default(), scroll, group: items.last_group.get(), entry: Rc::default() }
+        Self::in_group(scroll, items.last_group.get())
     }
 
     fn slot(&self, index: usize, cx: &App) -> Rc<Slot> {
@@ -418,7 +435,9 @@ impl FocusList {
 
     /// [`Self::button`] inside a horizontally scrolling row, `row`.
     pub fn button_in(&self, index: usize, button: Button, row: Option<ScrollHandle>, cx: &App) -> Div {
-        let button = button.track_focus(&self.handle(index, cx));
+        let handle = self.handle(index, cx);
+        // The button writes its own Tab flag to the handle; a list's stop keeps the list's.
+        let button = button.tab_stop(handle.tab_stop).track_focus(&handle);
         let slot = self.slot(index, cx);
         // A press on the button is the button's: a clickable row or bar around it must not take it too.
         on_arrows(
@@ -549,6 +568,50 @@ impl FocusList {
         self.ringed(slot, element, None, cx)
     }
 
+    /// Makes `button` the `control`th control inside the `index`th item (its ⋮): in the Tab order with
+    /// its item when the item is in a [`Self::list_stops`] list, its own stop otherwise.
+    pub fn trailing_button(&self, index: usize, control: usize, button: Button, cx: &App) -> Button {
+        let handle = self.trailing(index, control, cx);
+        button.tab_stop(handle.tab_stop).track_focus(&handle)
+    }
+
+    fn trailing(&self, index: usize, control: usize, cx: &App) -> FocusHandle {
+        let item_stop = self.slots.borrow().get(index).is_none_or(|slot| slot.handle.clone().tab_stop);
+        let mut trailing = self.trailing.borrow_mut();
+        let controls = trailing.entry(index).or_default();
+        while controls.len() <= control {
+            controls.push(cx.focus_handle().tab_stop(item_stop));
+        }
+        controls[control].clone()
+    }
+
+    /// The stops in `items` as one list: a single Tab stop, the item focused last (until then the
+    /// [`Self::set_entry`] one, else the first) with its [`Self::trailing_button`]s, the arrows
+    /// within. Call it before rendering the items, whose focus handles copy the Tab order then;
+    /// [`ListStops::wrap`] makes their container the list.
+    pub fn list_stops(&self, items: Range<usize>, window: &Window, cx: &App) -> ListStops<'_> {
+        let held = self.tab_items.borrow_mut().entry(items.start).or_default().clone();
+        let trailing = self.trailing.borrow();
+        let controls = |index: usize| trailing.get(&index).into_iter().flatten();
+        let focused = items.clone().position(|index| {
+            self.handle(index, cx).is_focused(window) || controls(index).any(|handle| handle.is_focused(window))
+        });
+        if focused.is_some() {
+            held.set(focused);
+        }
+        let entry = self.entry.borrow().clone();
+        let entry = entry.and_then(|entry| items.clone().position(|index| self.handle(index, cx) == entry));
+        let active = held.get().or(entry).unwrap_or(0).min(items.len().saturating_sub(1));
+        for (position, index) in items.clone().enumerate() {
+            // Sets the shared flag, which each element's copy of the handle reads.
+            self.handle(index, cx).tab_stop(position == active);
+            for handle in controls(index) {
+                handle.clone().tab_stop(position == active);
+            }
+        }
+        ListStops { list: self, items }
+    }
+
     /// Home and End over the stops in `items`.
     pub fn container<E: InteractiveElement>(&self, element: E, items: Range<usize>, cx: &App) -> E {
         let handles: Vec<FocusHandle> = items.map(|index| self.handle(index, cx)).collect();
@@ -567,6 +630,37 @@ impl FocusList {
             }
         })
     }
+}
+
+/// A list's items, one Tab stop, from [`FocusList::list_stops`].
+pub struct ListStops<'a> {
+    list: &'a FocusList,
+    items: Range<usize>,
+}
+
+impl ListStops<'_> {
+    /// Makes `element`, holding the items, the list: named `label`, its size the items' count, Home
+    /// and End over them. Each item is a [`list_item`].
+    pub fn wrap(self, element: Stateful<Div>, label: Option<SharedString>, cx: &App) -> Stateful<Div> {
+        let element = element
+            .role(Role::List)
+            .aria_size_of_set(self.items.len())
+            .when_some(label, |list, label| list.aria_label(label));
+        self.list.container(element, self.items, cx)
+    }
+}
+
+/// Marks `element` the item at `position` (from 0) of the [`ListStops::wrap`] list around it, which
+/// the screen reader reads as "3 of 20".
+pub fn list_item(element: Stateful<Div>, position: usize) -> Stateful<Div> {
+    element.role(Role::ListItem).aria_position_in_set(position)
+}
+
+/// A heading named by `text`, at `level`: 1 is the page's title, 2 a section of it. A string child
+/// has no accessibility node of its own, so the name is set as well.
+pub fn heading(id: impl Into<ElementId>, level: usize, text: impl Into<SharedString>) -> Stateful<Div> {
+    let text = text.into();
+    div().id(id).role(Role::Heading).aria_level(level).aria_label(text.clone()).child(text)
 }
 
 /// `text` drawn and read as static text, for [`FocusList::text`].

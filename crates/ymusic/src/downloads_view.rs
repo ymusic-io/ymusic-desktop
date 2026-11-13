@@ -15,7 +15,7 @@ use gpui_kit::*;
 use ym_download::{DownloadChange, DownloadService, DownloadState, DownloadTask, TaskError};
 use ym_i18n::{Str, t, tf};
 
-use crate::a11y::{DragRow, FocusList, label};
+use crate::a11y::{DragRow, FocusList, label, list_item};
 use crate::action_icon::action_icon;
 use crate::download_dialog::{DownloadPicker, DownloadTarget};
 use crate::downloads::pick_download_folder;
@@ -493,7 +493,8 @@ impl DownloadsView {
     fn menu(&self, row: usize, task: &DownloadTask, cx: &mut Context<Self>) -> impl IntoElement {
         let view = cx.entity().downgrade();
         let task = task.clone();
-        action_icon(("download-more", row), IconName::EllipsisVertical, t(Str::CdMore)).dropdown_menu_with_anchor(
+        let more = action_icon(("download-more", row), IconName::EllipsisVertical, t(Str::CdMore));
+        self.focus.trailing_button(row, 0, more, cx).dropdown_menu_with_anchor(
             Anchor::TopRight,
             move |mut menu, _, _| {
                 let id = task.id.clone();
@@ -626,13 +627,20 @@ impl DownloadsView {
                             .line_clamp(2)
                             .child(task.error.as_ref().map(task_error_text).unwrap_or_default()),
                     )
-                    .child(Button::new(("retry", row)).outline().xsmall().rounded_full().label(t(Str::Retry)).on_click(
-                        cx.listener(move |view, _, window, cx| {
-                            if let Some(task) = view.tasks.iter().find(|task| task.id == id).cloned() {
-                                view.retry(&task, window, cx);
-                            }
-                        }),
-                    ))
+                    .child(
+                        self.focus
+                            .trailing_button(
+                                row,
+                                1,
+                                Button::new(("retry", row)).outline().xsmall().rounded_full().label(t(Str::Retry)),
+                                cx,
+                            )
+                            .on_click(cx.listener(move |view, _, window, cx| {
+                                if let Some(task) = view.tasks.iter().find(|task| task.id == id).cloned() {
+                                    view.retry(&task, window, cx);
+                                }
+                            })),
+                    )
                     .into_any_element()
             }
             _ => div().into_any_element(),
@@ -640,7 +648,7 @@ impl DownloadsView {
         let label =
             [task.title.clone(), status.to_owned()].into_iter().chain(percent.clone()).collect::<Vec<_>>().join(", ");
         self.focus
-            .item(row, v_flex().id(("download", row)).role(Role::ListItem).aria_label(label), cx)
+            .item(row, list_item(v_flex().id(("download", row)), row).aria_label(label), cx)
             .rounded(px(6.))
             .border_1()
             .border_color(theme.border)
@@ -769,7 +777,8 @@ impl Render for DownloadsView {
         let width = crate::feed::feed_width(window);
         let columns = ((width - 32. + 16.) / (CARD_MIN + 16.)).floor().max(1.) as usize;
         let mut grid = v_flex().w_full().px_4().pt_2().pb(px(88.)).gap(px(12.)).child(self.chip_drag.wrap(chips));
-        let mut cards = v_flex().w_full().gap(px(12.));
+        let stops = self.focus.list_stops(0..visible.len(), window, cx);
+        let mut cards = v_flex().id("download-cards").w_full().gap(px(12.));
         if visible.is_empty() {
             grid = grid.child(
                 div().py_16().flex().justify_center().child(
@@ -789,7 +798,7 @@ impl Render for DownloadsView {
             }
             cards = cards.child(cells);
         }
-        let grid = grid.child(self.focus.container(cards, 0..visible.len(), cx));
+        let grid = grid.child(stops.wrap(cards, Some(t(Str::SectionDownloads).into()), cx));
         let fab = if any_active {
             Some((t(Str::DownloadsPauseAll), Lucide::Pause, true))
         } else if any_paused {

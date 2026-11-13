@@ -11,7 +11,7 @@ use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use ym_i18n::{Str, t};
 
-use crate::a11y::{FocusList, label};
+use crate::a11y::{FocusList, label, list_item};
 use crate::action_icon::action_icon;
 use crate::graph::{AppGraph, on_core};
 use crate::settings_view::HOVER_ALPHA;
@@ -124,7 +124,7 @@ impl SearchView {
         let (submitted, inserted, removed) = (text.to_owned(), text.to_owned(), text.to_owned());
         let icon = if history { Icon::new(Lucide::Clock) } else { Icon::new(IconName::Search) };
         self.focus
-            .item(index, h_flex().id(("query", index)).role(Role::ListItem).aria_label(text.to_owned()), cx)
+            .item(index, list_item(h_flex().id(("query", index)), index).aria_label(text.to_owned()), cx)
             .gap_4()
             .pl_4()
             .pr_2()
@@ -137,23 +137,35 @@ impl SearchView {
                 h_flex()
                     .when(history, |actions| {
                         actions.child(
-                            action_icon(
-                                ("remove", index),
-                                Icon::new(IconName::Close).text_color(theme.muted_foreground),
-                                t(Str::CdRemoveFromHistory),
-                            )
-                            .on_click(cx.listener(move |view, _, _, cx| view.remove_from_history(&removed, cx))),
+                            self.focus
+                                .trailing_button(
+                                    index,
+                                    0,
+                                    action_icon(
+                                        ("remove", index),
+                                        Icon::new(IconName::Close).text_color(theme.muted_foreground),
+                                        t(Str::CdRemoveFromHistory),
+                                    ),
+                                    cx,
+                                )
+                                .on_click(cx.listener(move |view, _, _, cx| view.remove_from_history(&removed, cx))),
                         )
                     })
                     .child(
-                        action_icon(
-                            ("insert", index),
-                            Icon::new(Lucide::ArrowUpLeft).text_color(theme.muted_foreground),
-                            t(Str::CdInsertQuery),
-                        )
-                        .on_click(cx.listener(move |view, _, window, cx| {
-                            view.input.update(cx, |input, cx| input.set_value(inserted.clone(), window, cx));
-                        })),
+                        self.focus
+                            .trailing_button(
+                                index,
+                                1,
+                                action_icon(
+                                    ("insert", index),
+                                    Icon::new(Lucide::ArrowUpLeft).text_color(theme.muted_foreground),
+                                    t(Str::CdInsertQuery),
+                                ),
+                                cx,
+                            )
+                            .on_click(cx.listener(move |view, _, window, cx| {
+                                view.input.update(cx, |input, cx| input.set_value(inserted.clone(), window, cx));
+                            })),
                     ),
             )
             .on_click(cx.listener(move |view, _, _, cx| view.submit(submitted.clone(), cx)))
@@ -199,7 +211,7 @@ impl SearchView {
 }
 
 impl Render for SearchView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
         let bar = h_flex()
             .gap_2()
@@ -250,7 +262,8 @@ impl Render for SearchView {
                 .collect();
             (matches, fresh)
         };
-        let mut rows = v_flex();
+        let stops = self.focus.list_stops(0..history.len() + suggestions.len(), window, cx);
+        let mut rows = v_flex().id("search-queries");
         let mut count = 0;
         for entry in &history {
             rows = rows.child(self.query_row(count, entry, true, cx));
@@ -260,6 +273,7 @@ impl Render for SearchView {
             rows = rows.child(self.query_row(count, suggestion, false, cx));
             count += 1;
         }
+        let mut rows = v_flex().child(stops.wrap(rows, None, cx));
         if typed.is_empty() {
             let clear = Button::new("clear-history")
                 .ghost()

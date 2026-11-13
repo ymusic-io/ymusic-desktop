@@ -13,7 +13,7 @@ use tokio::runtime::Handle;
 use ym_common::log::Logger;
 use ym_i18n::{Str, t, tf};
 
-use crate::a11y::{FocusList, label};
+use crate::a11y::{FocusList, heading, label};
 use crate::cookie_session::{CookieSession, CookieStoreError, LockedJar, SealedJar};
 use crate::elevated_dialog::ConfirmDialog;
 use crate::spinner::Spinner;
@@ -80,16 +80,7 @@ fn lock_form(title: &'static str, body: &'static str, content: Vec<AnyElement>, 
                     .py_4()
                     .gap_4()
                     .items_center()
-                    .child(
-                        focus
-                            .text(
-                                STOP_TITLE,
-                                div().id("lock-title").role(Role::Heading).aria_label(title).child(title),
-                                cx,
-                            )
-                            .text_center()
-                            .font_semibold(),
-                    )
+                    .child(focus.text(STOP_TITLE, heading("lock-title", 1, title), cx).text_center().font_semibold())
                     .child(
                         focus
                             .text(STOP_BODY, label("lock-body", body), cx)

@@ -5,7 +5,7 @@ use gpui_kit::component::{ActiveTheme, WindowExt, h_flex, v_flex};
 use gpui_kit::*;
 use ym_i18n::{Str, t};
 
-use crate::a11y::FocusList;
+use crate::a11y::{FocusList, list_item};
 use crate::elevated_dialog::{
     DEFAULT_WIDTH, ROW_HORIZONTAL, ROW_VERTICAL, button_bar, chrome, press, scroll_body, text_button, title_bar,
 };
@@ -59,7 +59,8 @@ impl Render for ShortcutsHelp {
             window.defer(cx, move |window, cx| window.focus(&first, cx));
         }
         let theme = cx.theme().clone();
-        let mut rows = v_flex().w_full().py_2();
+        let stops = self.focus.list_stops(0..HELP.len(), window, cx);
+        let mut rows = v_flex().id("shortcut-list").w_full().py_2();
         for (index, row) in HELP.iter().enumerate() {
             let mut keys = h_flex().w(px(200.)).flex_shrink_0().flex_wrap().gap_1().items_center();
             let mut spoken_keys = Vec::new();
@@ -91,9 +92,7 @@ impl Render for ShortcutsHelp {
                 }
             }
             let label = t(row.label);
-            let line = h_flex()
-                .id(("shortcut", index))
-                .role(Role::ListItem)
+            let line = list_item(h_flex().id(("shortcut", index)), index)
                 .aria_label(format!("{label}, {}", spoken_keys.join(if row.range { " … " } else { ", " })))
                 .w_full()
                 .gap_4()
@@ -125,7 +124,13 @@ impl Render for ShortcutsHelp {
                 cx,
             )
             .child(title_bar(t(Str::ShortcutsTitle), cx))
-            .child(scroll_body("shortcuts", &self.scroll, rows, window, cx))
+            .child(scroll_body(
+                "shortcuts",
+                &self.scroll,
+                stops.wrap(rows, Some(t(Str::ShortcutsTitle).into()), cx),
+                window,
+                cx,
+            ))
             .child(button_bar(footer, cx))
     }
 }

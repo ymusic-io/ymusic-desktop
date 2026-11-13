@@ -10,7 +10,7 @@ use gpui_kit::*;
 use ym_engine::yt::YtAccountInfo;
 use ym_i18n::{Str, t};
 
-use crate::a11y::{DragRow, FocusList, label};
+use crate::a11y::{DragRow, FocusList, heading, label};
 use crate::action_icon::action_icon;
 use crate::feed::{FeedView, feed_width, thumb_for};
 use crate::graph::{AppGraph, on_core};
@@ -174,15 +174,7 @@ impl AccountView {
                         v_flex()
                             .child(
                                 self.preface_focus
-                                    .text(
-                                        PREFACE_TITLE,
-                                        div()
-                                            .id("signin-title")
-                                            .role(Role::Heading)
-                                            .aria_label(t(Str::SigninPrefaceTitle))
-                                            .child(t(Str::SigninPrefaceTitle)),
-                                        cx,
-                                    )
+                                    .text(PREFACE_TITLE, heading("signin-title", 2, t(Str::SigninPrefaceTitle)), cx)
                                     .text_xl()
                                     .font_bold(),
                             )

@@ -58,6 +58,8 @@ impl Render for SearchFilter {
                 div()
                     .id(("filter-group", group_index))
                     .role(Role::Heading)
+                    .aria_level(3)
+                    .aria_label(group.title.clone())
                     .pt_4()
                     .pb_2()
                     .text_size(px(12.))

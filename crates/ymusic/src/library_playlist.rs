@@ -822,9 +822,7 @@ impl ArrangePlaylist {
             .collect::<Vec<_>>()
             .join(", ");
         let stop = row_stop(index);
-        let row = h_flex()
-            .id(("arrange-row", index))
-            .role(Role::ListItem)
+        let row = crate::a11y::list_item(h_flex().id(("arrange-row", index)), index)
             .aria_label(label)
             .w_full()
             .gap_3()
@@ -890,7 +888,16 @@ impl Render for ArrangePlaylist {
                 cx.notify();
             }),
         );
-        let list = v_flex().w_full().py_1().gap_1().children(rows).child(tracker);
+        let list = v_flex()
+            .id("arrange-list")
+            .role(Role::List)
+            .aria_label(t(Str::ArrangeSongs))
+            .aria_size_of_set(items.len())
+            .w_full()
+            .py_1()
+            .gap_1()
+            .children(rows)
+            .child(tracker);
         let can_undo = !self.busy && !self.state.history.is_empty();
         let footer = h_flex()
             .w_full()

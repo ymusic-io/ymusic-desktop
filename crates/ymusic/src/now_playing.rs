@@ -17,7 +17,7 @@ use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use ym_i18n::{Str, t, tf};
 
-use crate::a11y::{FocusList, SliderStop};
+use crate::a11y::{FocusList, SliderStop, heading, list_item};
 use crate::action_icon::{HIT, glyph_action_icon, lucide_size, sized_action_icon};
 use crate::audio_only::AudioOnlyArt;
 use crate::download_dialog::DownloadTarget;
@@ -154,7 +154,7 @@ struct CachedPart {
 }
 
 impl Render for CachedPart {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let part = self.part;
         self.now_playing
             .update(cx, |view, cx| match part {
@@ -165,7 +165,7 @@ impl Render for CachedPart {
                 PanePart::Queue { large } => v_flex()
                     .size_full()
                     .child(view.render_queue_header(cx))
-                    .child(view.render_queue(large, cx))
+                    .child(view.render_queue(large, window, cx))
                     .into_any_element(),
             })
             .unwrap_or_else(|_| div().into_any_element())
@@ -1265,7 +1265,7 @@ impl NowPlaying {
             .items_center()
             .border_b_1()
             .border_color(theme.border)
-            .child(div().id("np-up-next").role(Role::Heading).font_semibold().child(t(Str::UpNext)))
+            .child(heading("np-up-next", 2, t(Str::UpNext)).font_semibold())
             .child(div().text_sm().text_color(theme.muted_foreground).child(position))
             .child(div().flex_1())
             .child(
@@ -1314,7 +1314,10 @@ impl NowPlaying {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let (playback, view, item) = (self.playback.clone(), cx.entity().downgrade(), item.clone());
-        sized_action_icon(("np-queue-more", position), IconName::EllipsisVertical, t(Str::CdMore), ICON, HIT)
+        let more =
+            sized_action_icon(("np-queue-more", position), IconName::EllipsisVertical, t(Str::CdMore), ICON, HIT);
+        self.queue_focus
+            .trailing_button(position, 0, more, cx)
             .text_color(cx.theme().muted_foreground)
             .dropdown_menu_with_anchor(Anchor::TopRight, move |mut menu, _, _| {
                 let video_id = item.video_id().map(str::to_owned);
@@ -1458,14 +1461,15 @@ impl NowPlaying {
         crate::a11y::cached_view(entity, style, window)
     }
 
-    fn render_queue(&self, large: bool, cx: &mut Context<Self>) -> AnyElement {
+    fn render_queue(&self, large: bool, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let playback = self.playback.read(cx);
         let (queue, index) = (playback.queue.clone(), playback.index);
         let theme = cx.theme().clone();
         let thumb = if large { 60. } else { 48. };
         let lifted = self.reorder.lifted();
         self.queue_focus.set_entry((index < queue.len()).then_some(index), cx);
-        let mut list = v_flex();
+        let stops = self.queue_focus.list_stops(0..queue.len(), window, cx);
+        let mut list = v_flex().id("np-queue-list");
         for (position, item) in queue.iter().enumerate() {
             let active = position == index;
             let label = [Some(item.title.clone()), item.artist.clone(), item.duration_label.clone()]
@@ -1492,7 +1496,7 @@ impl NowPlaying {
                     }),
                 );
             let row =
-                h_flex().id(("np-queue-item", position)).role(Role::ListItem).aria_label(label).aria_selected(active);
+                list_item(h_flex().id(("np-queue-item", position)), position).aria_label(label).aria_selected(active);
             let queue_len = queue.len();
             let row = self.reorder.row(
                 position,
@@ -1564,7 +1568,7 @@ impl NowPlaying {
             );
             list = list.child(row);
         }
-        let list = self.queue_focus.container(list, 0..queue.len(), cx);
+        let list = stops.wrap(list, Some(t(Str::UpNext).into()), cx);
         let tracker = self.reorder.tracker(
             queue.len(),
             cx.listener(|view, event: &ReorderEvent, _, cx| {

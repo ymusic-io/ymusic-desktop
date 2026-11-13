@@ -15,7 +15,7 @@ use ym_engine::yt::{YtAccountInfo, YtLocales};
 use ym_i18n::{Str, t, tf};
 use ym_settings::SettingsStore;
 
-use crate::a11y::FocusList;
+use crate::a11y::{FocusList, heading};
 use crate::accent::{ACCENT_KEY, AccentPicker, accent_color, oklab_lerp};
 use crate::caption_style::{CaptionLook, CaptionStyleDialog};
 use crate::downloads::download_folder;
@@ -494,16 +494,7 @@ fn section(label: &'static str, rows: Vec<AnyElement>, cx: &App) -> impl IntoEle
     let theme = cx.theme();
     v_flex()
         .child(
-            div()
-                .id(label)
-                .role(Role::Heading)
-                .px_8()
-                .pt_6()
-                .pb_2()
-                .text_sm()
-                .font_semibold()
-                .text_color(theme.muted_foreground)
-                .child(label),
+            heading(label, 2, label).px_8().pt_6().pb_2().text_sm().font_semibold().text_color(theme.muted_foreground),
         )
         .child(v_flex().mx_4().rounded(px(12.)).bg(theme.secondary).overflow_hidden().children(rows))
 }

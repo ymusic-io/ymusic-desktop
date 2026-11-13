@@ -1621,7 +1621,9 @@ impl Shell {
                     cx,
                 ),
             )
-            .child(div().flex_1().min_w_0().truncate().text_lg().font_semibold().child(title))
+            .child(
+                crate::a11y::heading("layer-title", 1, title).flex_1().min_w_0().truncate().text_lg().font_semibold(),
+            )
             .when_some(filter, |bar, view| {
                 bar.child(
                     self.chrome_focus.button(
@@ -1670,13 +1672,12 @@ impl Shell {
             })
             .when(rail_mode, |bar| bar.child(div().w(px(8.))))
             .child(
-                div()
+                crate::a11y::heading("page-title", 1, title)
                     .text_lg()
                     .font_semibold()
                     .truncate()
                     .when(discover && wide, |slot| slot.min_w(px(reserve)))
-                    .when(!(discover && wide), |slot| slot.flex_1().min_w_0())
-                    .child(title),
+                    .when(!(discover && wide), |slot| slot.flex_1().min_w_0()),
             )
             .when(discover && wide, |bar| {
                 // Over the bar's padding, so the underline sits on the bar's bottom edge.
