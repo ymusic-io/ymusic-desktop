@@ -41,7 +41,7 @@ R30004 - js bundle: the cached remote bundle failed its signature and was delete
 R90001 - app boot: the engine cache store could not be opened (data dir I/O, index)
 R90002 - playback: the native MSE host could not be created
 R90003 - playback: the player reported an error state without a code of its own
-R90004 - media session: the OS media controls could not be created or attached (logged; the app runs without them)
+R90004 - media session: the OS media controls could not be created (SMTC thread, MPRIS bus names, MPRemoteCommandCenter; logged; the app runs without them)
 R90005 - app boot: app.db could not be opened
 R90006 - a setting could not be saved to app.db (logged; the UI state stands)
 R90007 - playback: a local file could not be played (local player unavailable, or the file failed to open)
@@ -121,12 +121,14 @@ R90020 - top tracks: play history could not be read
 R90021 - sponsorblock: the per-video whitelist could not be saved
 R90022 - downloads: a finished file could not be deleted from disk
 R90023 - sign-in: the device-link QR could not be drawn
-R90024 - media session: the app could not be listed in or taken off the OS media surface (Windows SMTC IsEnabled; logged)
+R90024 - media session: an update could not be published to Windows SMTC (status, display properties, thumbnail, timeline, rate; logged)
 R90025 - Sentry: the log shipper did not start (the DSN does not parse); reporting runs without its sink (logged)
 R90026 - Sentry Logs: the log lines for an error event could not be claimed in logs.db (logged; the event goes without them)
 R90027 - Sentry Logs: the pending log lines could not be read from logs.db (logged; retried on the next event or start)
 R90028 - Sentry Logs: Sentry refused a batch of log lines (HTTP status, rate limit) or it did not serialize; the batch is dropped (logged)
 R90029 - Sentry Logs: delivered log lines could not be marked sent in logs.db (logged; they may go again)
+R90030 - media session: an update could not be published to MPRIS (property change or Seeked signal on the session bus; logged)
+R90031 - media session: an update could not be posted to the Windows SMTC thread (logged)
 R90200 - data dir: a database this app's earlier builds named differently could not take the JVM app's name (logged; retried next launch)
 R90201 - data dir: the window bounds kept in app.db could not move to window.properties (logged)
 R90202 - data dir: the old window.bounds setting could not be removed from app.db (logged)

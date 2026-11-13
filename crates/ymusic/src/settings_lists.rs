@@ -162,7 +162,7 @@ const COMPONENTS: &[Component] = &[
     component("flate2", "MIT / Apache-2.0", "https://github.com/rust-lang/flate2-rs"),
     component("url", "MIT / Apache-2.0", "https://github.com/servo/rust-url"),
     component("intl_pluralrules, unic-langid", "MIT / Apache-2.0", "https://github.com/zbraniecki/pluralrules"),
-    component("souvlaki", "MIT", "https://github.com/Sinono3/souvlaki"),
+    component("zbus", "MIT", "https://github.com/dbus2/zbus"),
     component("rfd", "MIT", "https://github.com/PolyMeilex/rfd"),
     component("tray-icon", "MIT / Apache-2.0", "https://github.com/tauri-apps/tray-icon"),
     component("objc2", "MIT", "https://github.com/madsmtm/objc2"),
