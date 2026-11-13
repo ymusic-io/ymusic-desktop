@@ -245,6 +245,11 @@ pub struct Playback {
     pub duration_ms: i64,
     /// How far a streamed item is loaded; 0 for a local file, which needs no loading line.
     pub buffered_ms: i64,
+    /// A live stream: the player maps its DVR window onto position and duration, the end being the
+    /// live head.
+    pub live: bool,
+    /// Whether the play-head may move; a live head without DVR may not.
+    pub seekable: bool,
     loading_video: Option<String>,
     gain: f32,
     /// The local item's attenuate-only loudness gain.
@@ -316,6 +321,8 @@ impl Playback {
             position_ms: 0,
             duration_ms: 0,
             buffered_ms: 0,
+            live: false,
+            seekable: true,
             loading_video: None,
             quality_options: Vec::new(),
             viewport: None,
@@ -1046,6 +1053,15 @@ impl Playback {
         }
     }
 
+    /// The current item's SponsorBlock spans (start, end ms); none while they are another item's.
+    pub fn skip_segments(&self) -> &[(i64, i64)] {
+        let key = self.current().map(QueueItem::key);
+        match &self.skip_segments {
+            Some((owner, segments)) if key.as_ref() == Some(owner) => segments,
+            _ => &[],
+        }
+    }
+
     /// Spans to skip in the item with `key`; spans under a second are ignored.
     pub fn set_skip_segments(&mut self, key: String, segments: Vec<(i64, i64)>) {
         let usable: Vec<(i64, i64)> = segments.into_iter().filter(|(start, end)| end - start >= MIN_SKIP_MS).collect();
@@ -1099,6 +1115,8 @@ impl Playback {
         self.position_ms = 0;
         self.buffered_ms = 0;
         self.duration_ms = item.duration_ms.unwrap_or(0);
+        self.live = false;
+        self.seekable = true;
         cx.notify();
         match item.source {
             Source::YouTube(video_id) => {
@@ -1339,9 +1357,14 @@ impl Playback {
                 if duration > 0 {
                     self.duration_ms = duration;
                 }
+                self.live = progress.get("live").and_then(Value::as_bool).unwrap_or(self.live);
+                self.seekable = progress.get("seekable").and_then(Value::as_bool).unwrap_or(duration > 0);
             }
         }
         if let Some(state) = status.get("state") {
+            if let Some(live) = state.get("live").and_then(Value::as_bool) {
+                self.live = live;
+            }
             let play_when_ready = state.get("playWhenReady").and_then(Value::as_bool).unwrap_or(false);
             self.state = match state.get("newState").and_then(Value::as_str) {
                 Some("buffering") => PlayState::Buffering,
