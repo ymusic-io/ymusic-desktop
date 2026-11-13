@@ -734,7 +734,7 @@ impl Render for DownloadsView {
                 .justify_center()
                 .gap_2()
                 .child(Icon::new(Lucide::Download).size(px(56.)).text_color(theme.muted_foreground))
-                .child(heading("downloads-none-title", 2, t(Str::DownloadsNoneTitle)).text_lg())
+                .child(heading("downloads-none-title", 2, t(Str::DownloadsNoneTitle)).aria_live(Live::Polite).text_lg())
                 .child(
                     announced("downloads-none-message", t(Str::DownloadsNoneMessage))
                         .text_sm()

@@ -1724,7 +1724,12 @@ impl FeedView {
                     .child(div().pb_1().child(Icon::new(Lucide::Inbox).size(px(52.)).text_color(muted)))
                     .when_some(self.page.empty_title.clone(), |empty, title| {
                         empty.child(
-                            heading("empty-title", 2, title).text_base().font_semibold().text_color(ink).text_center(),
+                            heading("empty-title", 2, title)
+                                .aria_live(Live::Polite)
+                                .text_base()
+                                .font_semibold()
+                                .text_color(ink)
+                                .text_center(),
                         )
                     })
                     .child(announced("empty-message", message).text_center().text_color(muted))
