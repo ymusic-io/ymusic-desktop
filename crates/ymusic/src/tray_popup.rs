@@ -1,6 +1,6 @@
 //! The tray icon's mini player (JVM `MiniPlayer.kt`): a small card under the icon with what is
-//! playing, open the app, stop (end the listening session), a seek bar and the transport. It
-//! closes when it loses focus, like a system notification.
+//! playing, open the app, close, a seek bar and the transport. It closes when it loses focus, like
+//! a system notification.
 
 use futures::channel::mpsc::UnboundedSender;
 use gpui_kit::assets::IconName as Lucide;
@@ -179,8 +179,8 @@ impl Render for TrayPopup {
                         .on_click(cx.listener(|popup, _, _, _| popup.command(TrayCommand::Open))),
                     )
                     .child(
-                        sized_action_icon("tray-dismiss", Lucide::X, t(Str::CdStopDismiss), HEADER_ICON, HEADER_HIT)
-                            .on_click(cx.listener(|popup, _, _, _| popup.command(TrayCommand::Stop))),
+                        sized_action_icon("tray-dismiss", Lucide::X, t(Str::CdClose), HEADER_ICON, HEADER_HIT)
+                            .on_click(cx.listener(|popup, _, window, cx| popup.close(window, cx))),
                     ),
             )
             .child(
