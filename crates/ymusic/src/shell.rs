@@ -1877,16 +1877,17 @@ impl Shell {
 
     fn render_rail(&self, expanded: bool, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme().clone();
+        let update_waiting = !expanded
+            && cx.try_global::<crate::app_update::UpdatesHandle>().is_some_and(|handle| handle.0.read(cx).waiting());
         let toggle = action_icon("rail-toggle", Icon::new(Lucide::Menu), t(Str::CdMenu))
+            .when(update_waiting, |toggle| toggle.tooltip(t(Str::UpdateAvailableTitle)))
             .on_click(cx.listener(move |shell, _, _, cx| shell.toggle_rail(expanded, cx)));
+        let toggle = self.chrome_focus.button(CHROME_RAIL_TOGGLE, toggle, cx).when(update_waiting, |toggle| {
+            toggle.child(div().absolute().top(px(4.)).right(px(4.)).size(px(8.)).rounded_full().bg(theme.primary))
+        });
         // The toggle and every section icon share the collapsed rail's centre line, so expanding moves
         // none of them.
-        let toggle = div()
-            .w(px(RAIL_COLLAPSED))
-            .flex_shrink_0()
-            .flex()
-            .justify_center()
-            .child(self.chrome_focus.button(CHROME_RAIL_TOGGLE, toggle, cx));
+        let toggle = div().w(px(RAIL_COLLAPSED)).flex_shrink_0().flex().justify_center().child(toggle);
         let header = h_flex()
             .min_h(px(48.))
             .items_center()
