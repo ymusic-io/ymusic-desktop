@@ -242,6 +242,7 @@ struct Loaded {
     recent: Vec<MediaItem>,
     top: Vec<MediaItem>,
     playlists: Vec<(Playlist, Vec<PlaylistItemDetail>)>,
+    folders_added: bool,
     ready: bool,
 }
 
@@ -274,6 +275,9 @@ pub struct LibraryView {
     /// The open folder chain; empty is the root.
     path: Vec<Bucket>,
     folders: Vec<Bucket>,
+    /// Whether a folder has been added, `None` until the store answers: without one the Library is
+    /// only its Scan folder prompt, no tabs.
+    folders_added: Option<bool>,
     items: Vec<MediaItem>,
     download_folder: Option<PathBuf>,
     sorts: HashMap<&'static str, SortState>,
@@ -323,6 +327,7 @@ impl LibraryView {
             open_playlist: None,
             path: Vec::new(),
             folders: Vec::new(),
+            folders_added: None,
             items: Vec::new(),
             download_folder: None,
             sorts,
@@ -385,6 +390,9 @@ impl LibraryView {
             this.update(cx, |view, cx| {
                 match result {
                     Some(Ok(Ok((folders, items)))) => {
+                        if folder.is_none() {
+                            view.folders_added = Some(!folders.is_empty());
+                        }
                         view.folders = folders;
                         view.items = items;
                     }
@@ -429,6 +437,7 @@ impl LibraryView {
                 items.sort_by_key(|item| item.title.to_lowercase());
                 let recent = history.local_recent(ym_history::RETAIN).map_err(|error| error.to_string())?;
                 let top = history.local_top(ym_history::RETAIN).map_err(|error| error.to_string())?;
+                let folders_added = !store.root_buckets().map_err(|error| error.to_string())?.is_empty();
                 let mut playlists = Vec::new();
                 for playlist in store.playlists().map_err(|error| error.to_string())? {
                     let details = store.playlist_item_details(playlist.id).map_err(|error| error.to_string())?;
@@ -439,6 +448,7 @@ impl LibraryView {
                     top: by_codes(&items, &top),
                     items,
                     playlists,
+                    folders_added,
                     ready: true,
                 })
             })
@@ -456,6 +466,7 @@ impl LibraryView {
                                 .find(|(playlist, _)| playlist.id == open.id)
                                 .map(|(playlist, _)| OpenPlaylist::User(playlist.clone()));
                         }
+                        view.folders_added = Some(loaded.folders_added);
                         view.loaded = loaded;
                     }
                     Some(Ok(Err(message))) => {
@@ -1956,11 +1967,12 @@ impl Render for LibraryView {
                 ),
             );
 
-        let nothing_indexed = self.tab == Tab::Folders && self.path.is_empty() && self.folders.is_empty();
-        if nothing_indexed && !self.scanning {
+        let Some(folders_added) = self.folders_added else {
+            return div().size_full().into_any_element();
+        };
+        if !folders_added && !self.scanning {
             return v_flex()
                 .size_full()
-                .child(tabs)
                 .child(
                     v_flex()
                         .flex_1()
