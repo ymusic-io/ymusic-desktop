@@ -660,7 +660,7 @@ pub fn install_debug_log() {
         }
         fn log(&self, record: &log::Record) {
             if self.enabled(record.metadata()) {
-                eprintln!("[{} {}] {}", record.level(), record.target(), record.args());
+                ym_common::log::stderr_line(format_args!("[{} {}] {}", record.level(), record.target(), record.args()));
             }
         }
         fn flush(&self) {}

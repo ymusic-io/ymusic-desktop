@@ -94,7 +94,7 @@ enum Start {
 /// A launch that cannot boot ends here, its error captured.
 pub fn boot_failed(log: &ym_common::log::Logger, error: &ym_engine::EngineError) -> ! {
     log.capture_error("engine boot failed", error);
-    eprintln!("{}", crate::feed::error_text(error));
+    ym_common::log::stderr_line(format_args!("{}", crate::feed::error_text(error)));
     std::process::exit(1);
 }
 

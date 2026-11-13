@@ -133,10 +133,17 @@ impl LogSink for StderrSink {
         }
         let path = trail.iter().map(|crumb| crumb.tag.as_str()).collect::<Vec<_>>().join("/");
         match error {
-            Some(error) => eprintln!("{level:?} [{path}] {message}: {error}"),
-            None => eprintln!("{level:?} [{path}] {message}"),
+            Some(error) => stderr_line(format_args!("{level:?} [{path}] {message}: {error}")),
+            None => stderr_line(format_args!("{level:?} [{path}] {message}")),
         }
     }
+}
+
+/// One line on stderr, fire-and-forget: a closed reader (the updater that launched this process
+/// exited) fails the write, which `eprintln!` would turn into a panic.
+pub fn stderr_line(line: fmt::Arguments<'_>) {
+    use std::io::Write;
+    let _ = writeln!(std::io::stderr().lock(), "{line}");
 }
 
 /// Fans every line out to several sinks.
