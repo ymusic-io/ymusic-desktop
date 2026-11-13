@@ -20,6 +20,10 @@ const DEVICE_ID_TAG: &str = "device_id";
 const REPORT_TYPE_TAG: &str = "report_type";
 /// Failures that are never defects: the UI already shows their localized category.
 const IGNORED_CATEGORIES: &[&str] = &["network"];
+/// As the JVM app keeps.
+const MAX_BREADCRUMBS: usize = 200;
+/// This workspace's crates: a panic's culprit is the topmost of their frames, never the SDK's or gpui's.
+const IN_APP_CRATES: &[&str] = &["ymusic::", "ym_"];
 
 /// What a report may carry, read at send time (the remote config can change it).
 pub trait ReportPolicy: Send + Sync {
@@ -50,6 +54,13 @@ impl Telemetry {
         options.release = Some(config.release.into());
         options.environment = Some(config.environment.into());
         options.send_default_pii = false;
+        options.max_breadcrumbs = MAX_BREADCRUMBS;
+        options.in_app_include = IN_APP_CRATES.to_vec();
+        // The contexts integration fills in the host name, which can carry the user's name.
+        options.before_send = Some(Arc::new(|mut event| {
+            event.server_name = None;
+            Some(event)
+        }));
         let guard = sentry::init((config.dsn.as_str(), options));
         sentry::configure_scope(|scope| scope.set_tag(DEVICE_ID_TAG, &config.device_id));
         Some(Self { _guard: guard })
