@@ -22,9 +22,6 @@ const REVEAL_MARGIN: f32 = 12.;
 /// FocusFinder's weight of the distance along the arrow against the sideways offset.
 const MAJOR_WEIGHT: f32 = 13.;
 const READING_ROW: f32 = 24.;
-/// Room around read-only text for its focus ring, taken back from the layout by a negative margin.
-const TEXT_INSET_X: f32 = 6.;
-const TEXT_INSET_Y: f32 = 3.;
 
 struct Slot {
     handle: FocusHandle,
@@ -401,14 +398,6 @@ impl FocusList {
         self.ringed(self.slot_for(index, handle, cx), element, None, cx)
     }
 
-    /// Makes `element`, read-only text with an id, a role and its accessible name ([`label`]), the
-    /// list's `index`th stop: Tab and the arrows reach it and the screen reader reads it, and a press
-    /// does nothing. It lays out as the bare text would; leave its width and margins alone.
-    pub fn text(&self, index: usize, element: Stateful<Div>, cx: &App) -> Stateful<Div> {
-        let (x, y) = (px(TEXT_INSET_X), px(TEXT_INSET_Y));
-        self.item(index, element, cx).px(x).py(y).mx(-x).my(-y).rounded(cx.theme().radius)
-    }
-
     fn ringed(&self, slot: Rc<Slot>, element: Stateful<Div>, row: Option<ScrollHandle>, cx: &App) -> Stateful<Div> {
         let ring = cx.theme().ring;
         on_arrows(
@@ -612,20 +601,23 @@ impl FocusList {
         ListStops { list: self, items }
     }
 
-    /// Home and End over the stops in `items`.
+    /// Home and End over the stops in `items` that are on screen.
     pub fn container<E: InteractiveElement>(&self, element: E, items: Range<usize>, cx: &App) -> E {
-        let handles: Vec<FocusHandle> = items.map(|index| self.handle(index, cx)).collect();
+        let slots: Vec<Rc<Slot>> = items.map(|index| self.slot(index, cx)).collect();
         element.on_key_down(move |event: &KeyDownEvent, window, cx| {
-            if !handles.iter().any(|handle| handle.is_focused(window)) {
+            if !slots.iter().any(|slot| slot.handle.is_focused(window)) {
                 return;
             }
+            let on_screen = RovingItems::on_screen(window, cx);
+            let mut shown = slots.iter().filter(|slot| on_screen.iter().any(|painted| Rc::ptr_eq(painted, slot)));
             let target = match event.keystroke.key.as_str() {
-                "home" => handles.first(),
-                "end" => handles.last(),
+                "home" => shown.next(),
+                "end" => shown.next_back(),
                 _ => None,
             };
             if let Some(target) = target {
-                window.focus(target, cx);
+                let handle = target.handle.clone();
+                window.focus(&handle, cx);
                 cx.stop_propagation();
             }
         })
@@ -663,11 +655,23 @@ pub fn heading(id: impl Into<ElementId>, level: usize, text: impl Into<SharedStr
     div().id(id).role(Role::Heading).aria_level(level).aria_label(text.clone()).child(text)
 }
 
-/// `text` drawn and read as static text, for [`FocusList::text`].
+/// `text` drawn and read as static text: the screen reader reads it with its reading keys, and Tab
+/// passes it by.
 pub fn label(id: impl Into<ElementId>, text: impl Into<SharedString>) -> Stateful<Div> {
     let text = text.into();
     // AccessKit names a label by its value, not its label, on every platform.
     div().id(id).role(Role::Label).aria_value(text.clone()).child(text)
+}
+
+/// A [`label`] the screen reader announces when it appears and whenever it changes: a status, the
+/// message of an empty page.
+pub fn announced(id: impl Into<ElementId>, text: impl Into<SharedString>) -> Stateful<Div> {
+    label(id, text).aria_live(Live::Polite)
+}
+
+/// An [`announced`] label that interrupts the screen reader: an error that stops what the user did.
+pub fn alert(id: impl Into<ElementId>, text: impl Into<SharedString>) -> Stateful<Div> {
+    label(id, text).aria_live(Live::Assertive)
 }
 
 /// A slider's arrow press, called with -1 or 1.

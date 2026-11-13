@@ -16,7 +16,7 @@ use ym_engine::yt::{YtFeedItem, YtFeedPage, YtFilterGroup, YtPageHeader, YtSecti
 use ym_engine::{DynamicEngine, EngineError, ErrorKind};
 use ym_i18n::{Str, t, tf};
 
-use crate::a11y::{DragRow, FocusList, heading, label, list_item};
+use crate::a11y::{DragRow, FocusList, alert, announced, heading, list_item};
 use crate::action_icon::{HIT, action_icon, sized_action_icon};
 use crate::download_dialog::DownloadTarget;
 use crate::graph::{AppGraph, on_core};
@@ -1034,9 +1034,6 @@ const ACTION_SHUFFLE_ALL: usize = 7;
 const ACTION_RELOAD: usize = 8;
 const ACTION_SEARCH: usize = 9;
 const ACTION_RETRY_MORE: usize = 10;
-const ACTION_EMPTY_TITLE: usize = 11;
-const ACTION_EMPTY_MESSAGE: usize = 12;
-const ACTION_MORE_ERROR: usize = 13;
 /// The page's Show more, after any chip.
 const CHIPS_SHOW_MORE: usize = 64;
 const ROW_GAP: f32 = 16.;
@@ -1727,20 +1724,10 @@ impl FeedView {
                     .child(div().pb_1().child(Icon::new(Lucide::Inbox).size(px(52.)).text_color(muted)))
                     .when_some(self.page.empty_title.clone(), |empty, title| {
                         empty.child(
-                            self.actions
-                                .text(ACTION_EMPTY_TITLE, label("empty-title", title), cx)
-                                .text_base()
-                                .font_semibold()
-                                .text_color(ink)
-                                .text_center(),
+                            heading("empty-title", 2, title).text_base().font_semibold().text_color(ink).text_center(),
                         )
                     })
-                    .child(
-                        self.actions
-                            .text(ACTION_EMPTY_MESSAGE, label("empty-message", message), cx)
-                            .text_center()
-                            .text_color(muted),
-                    )
+                    .child(announced("empty-message", message).text_center().text_color(muted))
                     .child(actions.pt_2()),
             )
             .into_any_element()
@@ -1815,7 +1802,7 @@ impl Render for FeedView {
                         .items_center()
                         .max_w(px(420.))
                         .p_6()
-                        .child(self.failure.text(0, label("feed-error", message), cx).text_center())
+                        .child(alert("feed-error", message).text_center())
                         .child(
                             self.failure.button(
                                 1,
@@ -1905,12 +1892,8 @@ impl Render for FeedView {
             column = column.child(h_flex().justify_center().p_3().child(Spinner::new()));
         } else if let Some(error) = &self.more_failed {
             column = column.child(
-                v_flex()
-                    .items_center()
-                    .gap_2()
-                    .py_4()
-                    .child(self.actions.text(ACTION_MORE_ERROR, label("more-error", error_text(error)), cx).text_sm())
-                    .child(self.actions.button(
+                v_flex().items_center().gap_2().py_4().child(alert("more-error", error_text(error)).text_sm()).child(
+                    self.actions.button(
                         ACTION_RETRY_MORE,
                         Button::new("retry-more").small().label(t(Str::Retry)).on_click(cx.listener(
                             |view, _, _, cx| {
@@ -1919,7 +1902,8 @@ impl Render for FeedView {
                             },
                         )),
                         cx,
-                    )),
+                    ),
+                ),
             );
         } else if self.page.continuation.is_some() {
             column = column.child(

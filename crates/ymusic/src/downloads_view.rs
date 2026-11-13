@@ -15,7 +15,7 @@ use gpui_kit::*;
 use ym_download::{DownloadChange, DownloadService, DownloadState, DownloadTask, TaskError};
 use ym_i18n::{Str, t, tf};
 
-use crate::a11y::{DragRow, FocusList, label, list_item};
+use crate::a11y::{DragRow, FocusList, announced, heading, list_item};
 use crate::action_icon::action_icon;
 use crate::download_dialog::{DownloadPicker, DownloadTarget};
 use crate::downloads::pick_download_folder;
@@ -85,7 +85,6 @@ pub struct DownloadsView {
     chip_focus: FocusList,
     fab_focus: FocusList,
     /// The no-downloads page's title and message.
-    none_focus: FocusList,
     chip_drag: DragRow,
     /// Sign-in-required failures to re-run once the account signs in.
     retry_after_sign_in: Vec<String>,
@@ -134,7 +133,6 @@ impl DownloadsView {
             focus: FocusList::new(Some(scroll.clone())),
             chip_focus: FocusList::new(Some(scroll)),
             fab_focus: FocusList::new(None),
-            none_focus: FocusList::new(None),
             chip_drag: DragRow::default(),
             retry_after_sign_in: Vec::new(),
             _changes: changes,
@@ -736,10 +734,9 @@ impl Render for DownloadsView {
                 .justify_center()
                 .gap_2()
                 .child(Icon::new(Lucide::Download).size(px(56.)).text_color(theme.muted_foreground))
-                .child(self.none_focus.text(0, label("downloads-none-title", t(Str::DownloadsNoneTitle)), cx).text_lg())
+                .child(heading("downloads-none-title", 2, t(Str::DownloadsNoneTitle)).text_lg())
                 .child(
-                    self.none_focus
-                        .text(1, label("downloads-none-message", t(Str::DownloadsNoneMessage)), cx)
+                    announced("downloads-none-message", t(Str::DownloadsNoneMessage))
                         .text_sm()
                         .text_color(theme.muted_foreground),
                 )
@@ -781,11 +778,11 @@ impl Render for DownloadsView {
         let mut cards = v_flex().id("download-cards").w_full().gap(px(12.));
         if visible.is_empty() {
             grid = grid.child(
-                div().py_16().flex().justify_center().child(
-                    self.chip_focus
-                        .text(Filter::ALL.len(), label("downloads-empty", filter.empty()), cx)
-                        .text_color(theme.muted_foreground),
-                ),
+                div()
+                    .py_16()
+                    .flex()
+                    .justify_center()
+                    .child(announced("downloads-empty", filter.empty()).text_color(theme.muted_foreground)),
             );
         }
         for (row_index, row) in visible.chunks(columns).enumerate() {

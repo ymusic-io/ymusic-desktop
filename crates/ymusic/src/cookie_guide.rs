@@ -452,8 +452,7 @@ impl Render for CookieGuide {
                     ),
             )
             .child(
-                self.focus
-                    .text(Browser::ALL.len() + 1 + Step::ALL.len(), label("signin-paste-hint", self.browser.hint()), cx)
+                label("signin-paste-hint", self.browser.hint())
                     .text_center()
                     .text_sm()
                     .text_color(theme.muted_foreground),

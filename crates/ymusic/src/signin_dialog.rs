@@ -11,7 +11,7 @@ use gpui_kit::*;
 use ym_i18n::{Str, t, tf};
 use ym_signin::DeviceLinkOffer;
 
-use crate::a11y::{FocusList, heading, label};
+use crate::a11y::{FocusList, alert, announced, heading, label};
 use crate::action_icon::action_icon;
 use crate::cookie_guide::CookieGuide;
 use crate::cookie_lock::{ProtectEvent, ProtectStep};
@@ -24,15 +24,9 @@ const FORM_MAX: f32 = 560.;
 const QR_BOX: f32 = 220.;
 const QR_PADDING: f32 = 8.;
 const STOP_BACK: usize = 0;
-const STOP_HEADING: usize = 1;
-const STOP_TITLE: usize = 2;
-const STOP_HINT: usize = 3;
-const STOP_CODE: usize = 4;
-const STOP_CODE_HINT: usize = 5;
-const STOP_STATUS: usize = 6;
-const STOP_RETRY: usize = 7;
-const STOP_PASTE_LINK: usize = 8;
-const STOP_SUBMIT: usize = 9;
+const STOP_RETRY: usize = 1;
+const STOP_PASTE_LINK: usize = 2;
+const STOP_SUBMIT: usize = 3;
 
 pub enum SignInEvent {
     /// Leave the screen without signing in.
@@ -270,35 +264,23 @@ impl SignInView {
             _ => None,
         };
         let status: AnyElement = match (&self.error, &self.link) {
-            (Some(error), _) => self
-                .focus
-                .text(STOP_STATUS, label("signin-error", error.clone()), cx)
-                .text_sm()
-                .text_color(theme.danger)
-                .text_center()
-                .into_any_element(),
+            (Some(error), _) => {
+                alert("signin-error", error.clone()).text_sm().text_color(theme.danger).text_center().into_any_element()
+            }
             (None, Link::Ended) => div().into_any_element(),
             (None, _) => h_flex()
                 .gap_2()
                 .items_center()
                 .child(Spinner::new().small())
                 .child(
-                    self.focus
-                        .text(STOP_STATUS, label("signin-waiting", t(Str::SigninQrWaiting)), cx)
-                        .text_sm()
-                        .text_color(theme.muted_foreground),
+                    announced("signin-waiting", t(Str::SigninQrWaiting)).text_sm().text_color(theme.muted_foreground),
                 )
                 .into_any_element(),
         };
         let ended = matches!(self.link, Link::Ended);
         vec![
-            self.focus
-                .text(STOP_TITLE, label("signin-qr-title", t(Str::SigninQrTitle)), cx)
-                .text_center()
-                .font_semibold()
-                .into_any_element(),
-            self.focus
-                .text(STOP_HINT, label("signin-qr-hint", t(Str::SigninQrHint)), cx)
+            label("signin-qr-title", t(Str::SigninQrTitle)).text_center().font_semibold().into_any_element(),
+            label("signin-qr-hint", t(Str::SigninQrHint))
                 .text_center()
                 .text_sm()
                 .text_color(theme.muted_foreground)
@@ -309,9 +291,12 @@ impl SignInView {
                 .items_center()
                 .gap_2()
                 .child(match code {
-                    Some(code) => self
-                        .focus
-                        .text(STOP_CODE, label("signin-code", code), cx)
+                    Some(code) => div()
+                        .id("signin-code")
+                        .role(Role::Label)
+                        .aria_value(format!("{code}. {}", t(Str::SigninQrSasHint)))
+                        .aria_live(Live::Polite)
+                        .child(code)
                         .text_size(px(28.))
                         .font_bold()
                         .font_family("Menlo")
@@ -325,8 +310,7 @@ impl SignInView {
                         .child("000 000"),
                 })
                 .child(
-                    self.focus
-                        .text(STOP_CODE_HINT, label("signin-code-hint", t(Str::SigninQrSasHint)), cx)
+                    label("signin-code-hint", t(Str::SigninQrSasHint))
                         .text_sm()
                         .text_center()
                         .text_color(theme.muted_foreground),
@@ -378,11 +362,7 @@ impl SignInView {
         let theme = cx.theme().clone();
         let blank = self.paste.read(cx).value().trim().is_empty();
         vec![
-            self.focus
-                .text(STOP_TITLE, label("signin-paste-title", t(Str::SigninOrPaste)), cx)
-                .text_center()
-                .font_semibold()
-                .into_any_element(),
+            label("signin-paste-title", t(Str::SigninOrPaste)).text_center().font_semibold().into_any_element(),
             self.guide.clone().into_any_element(),
             v_flex()
                 .w_full()
@@ -390,12 +370,7 @@ impl SignInView {
                 .child(div().text_xs().text_color(theme.muted_foreground).child(t(Str::SigninPasteLabel)))
                 .child(Textarea::new(&self.paste).aria_label(t(Str::SigninPasteLabel)).h(px(120.)))
                 .when_some(self.error.clone(), |column, error| {
-                    column.child(
-                        self.focus
-                            .text(STOP_STATUS, label("signin-error", error), cx)
-                            .text_sm()
-                            .text_color(theme.danger),
-                    )
+                    column.child(alert("signin-error", error).text_sm().text_color(theme.danger))
                 })
                 .into_any_element(),
             self.focus
@@ -446,15 +421,10 @@ impl Render for SignInView {
                     cx,
                 ),
             )
-            .child(
-                self.focus
-                    .text(STOP_HEADING, heading("signin-heading", 2, t(Str::SigninScreenTitle)), cx)
-                    .font_semibold(),
-            );
+            .child(heading("signin-heading", 2, t(Str::SigninScreenTitle)).font_semibold());
         let content = match (&self.link, self.paste_mode) {
             (Link::Unavailable, _) => vec![
-                self.focus
-                    .text(STOP_TITLE, label("signin-unavailable", t(Str::SigninUnavailable)), cx)
+                label("signin-unavailable", t(Str::SigninUnavailable))
                     .text_center()
                     .text_color(theme.muted_foreground)
                     .into_any_element(),

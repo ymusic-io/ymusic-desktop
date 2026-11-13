@@ -235,11 +235,12 @@ impl Render for SearchView {
             );
         let typed = self.input.read(cx).value().trim().to_owned();
         if typed.is_empty() && self.history.is_empty() {
-            let hint = div().flex_1().flex().items_center().justify_center().child(
-                self.bar_focus
-                    .text(2, label("search-hint", t(Str::SearchTypeToSearch)), cx)
-                    .text_color(theme.muted_foreground),
-            );
+            let hint = div()
+                .flex_1()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(label("search-hint", t(Str::SearchTypeToSearch)).text_color(theme.muted_foreground));
             return v_flex().size_full().child(bar).child(hint);
         }
         let (history, suggestions): (Vec<String>, Vec<String>) = if typed.is_empty() {

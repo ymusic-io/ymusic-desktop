@@ -17,7 +17,7 @@ use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use ym_i18n::{Str, t, tf};
 
-use crate::a11y::{FocusList, SliderStop, heading, list_item};
+use crate::a11y::{FocusList, SliderStop, alert, heading, list_item};
 use crate::action_icon::{HIT, glyph_action_icon, lucide_size, sized_action_icon};
 use crate::audio_only::AudioOnlyArt;
 use crate::download_dialog::DownloadTarget;
@@ -61,7 +61,6 @@ const OVERLAY_FULLSCREEN: usize = 9;
 const OVERLAY_SEEK: usize = 10;
 const OVERLAY_SIGN_IN: usize = 11;
 const OVERLAY_RETRY: usize = 12;
-const OVERLAY_ERROR: usize = 13;
 const MENU_CAPTIONS: u8 = 1;
 const MENU_QUALITY: u8 = 2;
 const MENU_MORE: u8 = 4;
@@ -882,16 +881,7 @@ impl NowPlaying {
                         .rounded(px(8.))
                         .bg(black().opacity(0.8))
                         .child(
-                            self.overlay_focus
-                                .text(
-                                    OVERLAY_ERROR,
-                                    div()
-                                        .id("np-error")
-                                        .role(Role::Alert)
-                                        .aria_label(failure.text())
-                                        .child(failure.text()),
-                                    cx,
-                                )
+                            alert("np-error", failure.text())
                                 .text_color(white())
                                 .text_size(px(13.))
                                 .text_center()

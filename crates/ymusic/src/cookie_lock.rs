@@ -13,21 +13,15 @@ use tokio::runtime::Handle;
 use ym_common::log::Logger;
 use ym_i18n::{Str, t, tf};
 
-use crate::a11y::{FocusList, heading, label};
+use crate::a11y::{FocusList, alert, heading, label};
 use crate::cookie_session::{CookieSession, CookieStoreError, LockedJar, SealedJar};
 use crate::elevated_dialog::ConfirmDialog;
 use crate::spinner::Spinner;
 
 const FORM_MAX: f32 = 560.;
-/// A form's stops after its buttons (0 to 2): the title, the body, each field and its error, then the
-/// unlock screen's text.
-const STOP_TITLE: usize = 3;
-const STOP_BODY: usize = 4;
-const STOP_PASSWORD: usize = 5;
-const STOP_CONFIRM: usize = 7;
-const STOP_CANT_UNLOCK: usize = 9;
-/// The hint under each escape choice, at the choice's index plus this.
-const STOP_HINT_AFTER: usize = 10;
+/// A form's stops after its buttons (0 to 2): its password fields.
+const STOP_PASSWORD: usize = 3;
+const STOP_CONFIRM: usize = 4;
 
 type OnSession = Box<dyn FnOnce(CookieSession, &mut Window, &mut App)>;
 
@@ -52,9 +46,7 @@ fn password_field(
         .child(div().text_xs().text_color(theme.muted_foreground).child(name))
         .child(focus.field(index, &state.focus_handle(cx), input, cx))
         .when_some(error.map(str::to_owned), |column, error| {
-            column.child(
-                focus.text(index + 1, label(format!("{id}-error"), error), cx).text_sm().text_color(theme.danger),
-            )
+            column.child(alert(format!("{id}-error"), error).text_sm().text_color(theme.danger))
         })
         .into_any_element()
 }
@@ -68,7 +60,7 @@ fn busy_or(busy: bool, button: Div) -> AnyElement {
     }
 }
 
-fn lock_form(title: &'static str, body: &'static str, content: Vec<AnyElement>, focus: &FocusList, cx: &App) -> Div {
+fn lock_form(title: &'static str, body: &'static str, content: Vec<AnyElement>, cx: &App) -> Div {
     let theme = cx.theme();
     v_flex().size_full().bg(theme.background).child(
         div().id("lock-scroll").flex_1().min_h_0().overflow_y_scroll().child(
@@ -80,14 +72,8 @@ fn lock_form(title: &'static str, body: &'static str, content: Vec<AnyElement>, 
                     .py_4()
                     .gap_4()
                     .items_center()
-                    .child(focus.text(STOP_TITLE, heading("lock-title", 1, title), cx).text_center().font_semibold())
-                    .child(
-                        focus
-                            .text(STOP_BODY, label("lock-body", body), cx)
-                            .text_center()
-                            .text_sm()
-                            .text_color(theme.muted_foreground),
-                    )
+                    .child(heading("lock-title", 1, title).text_center().font_semibold())
+                    .child(label("lock-body", body).text_center().text_sm().text_color(theme.muted_foreground))
                     .children(content),
             ),
         ),
@@ -226,11 +212,7 @@ impl UnlockView {
             .gap_1()
             .child(self.focus.button(index, button, cx))
             .child(
-                self.focus
-                    .text(STOP_HINT_AFTER + index, label(("unlock-choice-hint", index), hint), cx)
-                    .text_xs()
-                    .text_center()
-                    .text_color(theme.muted_foreground),
+                label(("unlock-choice-hint", index), hint).text_xs().text_center().text_color(theme.muted_foreground),
             )
             .into_any_element()
     }
@@ -263,10 +245,7 @@ impl Render for UnlockView {
                 .items_center()
                 .child(divider())
                 .child(
-                    self.focus
-                        .text(STOP_CANT_UNLOCK, label("unlock-cant", t(Str::CookieUnlockCantUnlock)), cx)
-                        .text_xs()
-                        .text_color(theme.muted_foreground),
+                    label("unlock-cant", t(Str::CookieUnlockCantUnlock)).text_xs().text_color(theme.muted_foreground),
                 )
                 .child(divider())
                 .into_any_element(),
@@ -296,7 +275,6 @@ impl Render for UnlockView {
             t(Str::CookieUnlockTitle),
             t(Str::CookieUnlockBody),
             content,
-            &self.focus,
             cx,
         ))
     }
@@ -435,6 +413,6 @@ impl Render for ProtectStep {
             busy_or(self.busy, self.focus.button(0, submit, cx)),
             self.focus.button(1, skip, cx).w_full().into_any_element(),
         ];
-        lock_form(t(Str::CookieProtectTitle), t(Str::CookieProtectBody), content, &self.focus, cx)
+        lock_form(t(Str::CookieProtectTitle), t(Str::CookieProtectBody), content, cx)
     }
 }

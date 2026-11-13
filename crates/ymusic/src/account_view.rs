@@ -28,11 +28,6 @@ const FEATURES: [Str; 7] = [
     Str::SigninFeatureMore,
 ];
 const FORM_MAX: f32 = 560.;
-/// The preface's stops after Sign in (0): its text, the features last.
-const PREFACE_TITLE: usize = 1;
-const PREFACE_SUBTITLE: usize = 2;
-const PREFACE_ENABLES: usize = 3;
-const PREFACE_FEATURES: usize = 4;
 const CHIPS_MIN_WIDTH: f32 = 600.;
 
 pub struct AccountView {
@@ -143,11 +138,7 @@ impl AccountView {
                     .gap(px(14.))
                     .items_center()
                     .child(div().size(px(10.)).flex_shrink_0().rounded_full().bg(theme.primary))
-                    .child(self.preface_focus.text(
-                        PREFACE_FEATURES + index,
-                        label(("signin-feature", index), t(feature)),
-                        cx,
-                    )),
+                    .child(label(("signin-feature", index), t(feature))),
             );
         }
         let column = v_flex()
@@ -172,27 +163,16 @@ impl AccountView {
                     )
                     .child(
                         v_flex()
+                            .child(heading("signin-title", 2, t(Str::SigninPrefaceTitle)).text_xl().font_bold())
                             .child(
-                                self.preface_focus
-                                    .text(PREFACE_TITLE, heading("signin-title", 2, t(Str::SigninPrefaceTitle)), cx)
-                                    .text_xl()
-                                    .font_bold(),
-                            )
-                            .child(
-                                self.preface_focus
-                                    .text(PREFACE_SUBTITLE, label("signin-subtitle", t(Str::SigninPrefaceSubtitle)), cx)
+                                label("signin-subtitle", t(Str::SigninPrefaceSubtitle))
                                     .text_sm()
                                     .text_color(theme.muted_foreground),
                             ),
                     ),
             )
             .child(div().my(px(20.)).h(px(1.)).bg(theme.border))
-            .child(
-                self.preface_focus
-                    .text(PREFACE_ENABLES, label("signin-enables", t(Str::SigninEnables)), cx)
-                    .font_bold()
-                    .text_color(theme.muted_foreground),
-            )
+            .child(label("signin-enables", t(Str::SigninEnables)).font_bold().text_color(theme.muted_foreground))
             .child(div().h(px(12.)))
             .child(features)
             .child(div().h(px(28.)))

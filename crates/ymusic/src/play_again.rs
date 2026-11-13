@@ -11,7 +11,7 @@ use gpui_kit::*;
 use ym_history::{PlayAgainSession, PlayHistory};
 use ym_i18n::{Str, t, tf};
 
-use crate::a11y::{FocusList, label, list_item};
+use crate::a11y::{FocusList, alert, announced, list_item};
 use crate::action_icon::action_icon;
 use crate::graph::{AppGraph, on_core};
 use crate::local_art::{self, from_jvm_art};
@@ -306,7 +306,7 @@ impl Render for PlayAgainView {
                 .items_center()
                 .justify_center()
                 .gap_3()
-                .child(self.message_focus.text(0, label("play-again-error", error), cx).text_color(theme.danger))
+                .child(alert("play-again-error", error).text_color(theme.danger))
                 .child(self.message_focus.button(
                     1,
                     Button::new("reload").label(t(Str::Retry)).on_click(cx.listener(|view, _, _, cx| view.refresh(cx))),
@@ -324,8 +324,7 @@ impl Render for PlayAgainView {
                 .child(Icon::new(Lucide::RotateCcwClock).size(px(56.)).text_color(theme.muted_foreground))
                 .child(
                     div().max_w(px(420.)).child(
-                        self.message_focus
-                            .text(0, label("play-again-empty", t(Str::PlayAgainEmpty)), cx)
+                        announced("play-again-empty", t(Str::PlayAgainEmpty))
                             .text_center()
                             .text_color(theme.muted_foreground),
                     ),
