@@ -10,7 +10,7 @@ use gpui_kit::*;
 use ym_engine::yt::YtAccountInfo;
 use ym_i18n::{Str, t};
 
-use crate::a11y::{DragRow, FocusList, announced, heading, list_item};
+use crate::a11y::{DragRow, FocusList, announced, heading};
 use crate::action_icon::action_icon;
 use crate::feed::{FeedView, feed_width, thumb_for};
 use crate::graph::{AppGraph, on_core};
@@ -130,15 +130,11 @@ impl AccountView {
         let width = feed_width(window);
         let margin = if width >= 840. { 24. } else { 16. };
         let center = width >= 840. && f32::from(window.viewport_size().height) >= 600.;
-        let mut features = v_flex()
-            .id("signin-features")
-            .role(Role::List)
-            .aria_label(t(Str::SigninEnables))
-            .aria_size_of_set(FEATURES.len());
-        for (index, feature) in FEATURES.into_iter().enumerate() {
+        // What signing in enables is shown, not read: the title and subtitle say it.
+        let mut features = v_flex();
+        for feature in FEATURES {
             features = features.child(
-                list_item(h_flex().id(("signin-feature", index)), index)
-                    .aria_label(t(feature))
+                h_flex()
                     .py_2()
                     .gap(px(14.))
                     .items_center()
