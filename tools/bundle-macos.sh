@@ -10,7 +10,7 @@
 #   --release  the shipped identity: the JVM app's bundle id (its Keychain item and updater carry
 #              over), a DMG, a real signing identity, notarized when the Apple ID inputs are set
 # env:   YMUSIC_V4_DIR      YMusicV4 checkout (default ../YMusicV4): icon sources, the version line
-#        FFMPEG_ROOT        ffmpeg build (default <YMusicV4>/../ffmpeg-build/out/macos-<arch>)
+#        FFMPEG_BUILD_DIR   ffmpeg-build checkout (default <workspace>/../ffmpeg-build), its out/macos-<arch>
 #        CODESIGN_IDENTITY  default "-" (ad-hoc); a real identity also gets the hardened runtime.
 #                           The JVM updater swaps in only a bundle signed by the installed app's team.
 #        YMUSIC_VERSION_NAME, YMUSIC_VERSION_CODE  as for the build (crates/ymusic/build.rs)
@@ -42,7 +42,8 @@ done
 
 v4=$(cd "${YMUSIC_V4_DIR:-$root/../YMusicV4}" && pwd)
 arch=$(uname -m)
-ffmpeg_root=${FFMPEG_ROOT:-$(cd "$v4/.." && pwd)/ffmpeg-build/out/macos-$arch}
+ffmpeg_build=$(cd "${FFMPEG_BUILD_DIR:-$root/../ffmpeg-build}" && pwd)
+ffmpeg_root=$ffmpeg_build/out/macos-$arch
 target_dir=${CARGO_TARGET_DIR:-$root/target}
 out=${out:-$target_dir/bundle}
 identity=${CODESIGN_IDENTITY:--}
@@ -50,7 +51,7 @@ bundle_id=$DEV_BUNDLE_ID
 [[ $release == 1 ]] && bundle_id=$RELEASE_BUNDLE_ID
 
 die() { echo "bundle-macos: $*" >&2; exit 1; }
-[[ -f $ffmpeg_root/pack/ffmpeg ]] || die "no packed ffmpeg at $ffmpeg_root/pack/ffmpeg (set FFMPEG_ROOT)"
+[[ -f $ffmpeg_root/pack/ffmpeg ]] || die "no packed ffmpeg at $ffmpeg_root/pack/ffmpeg (set FFMPEG_BUILD_DIR)"
 [[ -f $v4/desktopApp/ymusic.icns ]] || die "no icon at $v4/desktopApp/ymusic.icns (set YMUSIC_V4_DIR)"
 [[ $release == 1 && $identity == - ]] && die "--release needs CODESIGN_IDENTITY (the JVM app's Developer ID)"
 [[ $release == 1 && $profile == debug ]] && die "--release ships the release profile, not --debug"
@@ -61,7 +62,7 @@ min_os=$(sed -n 's/.*const val macosMin = "\([0-9.]*\)".*/\1/p' "$v4/buildSrc/sr
 if [[ $build == 1 ]]; then
     cargo_profile=()
     [[ $profile == release ]] && cargo_profile=(--release --features production)
-    (cd "$root" && MACOSX_DEPLOYMENT_TARGET=$min_os YMUSIC_V4_DIR=$v4 FFMPEG_ROOT=$ffmpeg_root cargo build ${cargo_profile[@]+"${cargo_profile[@]}"} -p ymusic)
+    (cd "$root" && MACOSX_DEPLOYMENT_TARGET=$min_os YMUSIC_V4_DIR=$v4 FFMPEG_BUILD_DIR=$ffmpeg_build cargo build ${cargo_profile[@]+"${cargo_profile[@]}"} -p ymusic)
 fi
 binary=$target_dir/$profile/ymusic
 [[ -f $binary ]] || die "no $profile binary at $binary"

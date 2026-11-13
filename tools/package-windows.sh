@@ -8,7 +8,7 @@
 # usage: tools/package-windows.sh [--no-build] [--debug] [--setup] [--out <dir>]
 #   --debug    stage target/debug/ymusic.exe (local update tests; dev hooks stay on)
 # env:   YMUSIC_V4_DIR      YMusicV4 checkout (default ../YMusicV4): icon, version line
-#        FFMPEG_ROOT        ffmpeg build (default <YMusicV4>/../ffmpeg-build/out/windows-<arch>)
+#        FFMPEG_BUILD_DIR   ffmpeg-build checkout (default <workspace>/../ffmpeg-build), its out/windows-<arch>
 #        ISCC               Inno Setup's compiler (default: the newest installed Inno Setup)
 #        YMUSIC_VERSION_NAME, YMUSIC_VERSION_CODE  as for the build (crates/ymusic/build.rs)
 #        CARGO_TARGET_DIR   default <workspace>/target
@@ -40,11 +40,12 @@ case $(rustc -vV | sed -n 's/^host: //p') in
     *) arch=x86_64; inno_arch=x64compatible ;;
 esac
 asset_arch=$([[ $arch == arm64 ]] && echo arm64 || echo x64)
-ffmpeg_root=${FFMPEG_ROOT:-$(cd "$v4/.." && pwd)/ffmpeg-build/out/windows-$arch}
+ffmpeg_build=$(cd "${FFMPEG_BUILD_DIR:-$root/../ffmpeg-build}" && pwd)
+ffmpeg_root=$ffmpeg_build/out/windows-$arch
 target_dir=${CARGO_TARGET_DIR:-$root/target}
 out=${out:-$target_dir/bundle}
 icon=$v4/desktopApp/ymusic.ico
-[[ -f $ffmpeg_root/pack/ffmpeg.exe ]] || die "no packed ffmpeg at $ffmpeg_root/pack/ffmpeg.exe (set FFMPEG_ROOT)"
+[[ -f $ffmpeg_root/pack/ffmpeg.exe ]] || die "no packed ffmpeg at $ffmpeg_root/pack/ffmpeg.exe (set FFMPEG_BUILD_DIR)"
 [[ -f $icon ]] || die "no icon at $icon (set YMUSIC_V4_DIR)"
 # By arch, not by what PATH has first: a runner may carry another gcc further down its PATH.
 if [[ $arch == arm64 ]]; then
@@ -58,7 +59,7 @@ fi
 if [[ $build == 1 ]]; then
     cargo_profile=()
     [[ $profile == release ]] && cargo_profile=(--release --features production)
-    (cd "$root" && YMUSIC_V4_DIR=$v4 FFMPEG_ROOT=$ffmpeg_root cargo build ${cargo_profile[@]+"${cargo_profile[@]}"} -p ymusic)
+    (cd "$root" && YMUSIC_V4_DIR=$v4 FFMPEG_BUILD_DIR=$ffmpeg_build cargo build ${cargo_profile[@]+"${cargo_profile[@]}"} -p ymusic)
 fi
 binary=$target_dir/$profile/ymusic.exe
 [[ -f $binary ]] || die "no $profile binary at $binary"

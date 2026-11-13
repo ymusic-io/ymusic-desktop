@@ -10,7 +10,7 @@
 #
 # usage: tools/package-linux.sh [--no-build] [--debug] [--deb] [--appimage] [--out <dir>]
 # env:   YMUSIC_V4_DIR      YMusicV4 checkout (default ../YMusicV4): icon, version line
-#        FFMPEG_ROOT        ffmpeg build (default <YMusicV4>/../ffmpeg-build/out/linux-<x86_64|arm64>)
+#        FFMPEG_BUILD_DIR   ffmpeg-build checkout (default <workspace>/../ffmpeg-build), its out/linux-<x86_64|arm64>
 #        APPIMAGETOOL       appimagetool (default: on PATH), APPIMAGE_RUNTIME its type2 runtime file
 #        YMUSIC_VERSION_NAME, YMUSIC_VERSION_CODE  as for the build (crates/ymusic/build.rs)
 #        CARGO_TARGET_DIR   default <workspace>/target
@@ -51,19 +51,20 @@ case $(uname -m) in
     aarch64 | arm64) slug=linux-arm64; deb_arch=arm64; asset_arch=arm64; appimage_arch=aarch64 ;;
     *) die "unsupported architecture $(uname -m)" ;;
 esac
-ffmpeg_root=${FFMPEG_ROOT:-$(cd "$v4/.." && pwd)/ffmpeg-build/out/$slug}
+ffmpeg_build=$(cd "${FFMPEG_BUILD_DIR:-$root/../ffmpeg-build}" && pwd)
+ffmpeg_root=$ffmpeg_build/out/$slug
 target_dir=${CARGO_TARGET_DIR:-$root/target}
 out=${out:-$target_dir/bundle}
 icon=$v4/desktopApp/ymusic.png
 pack=$ffmpeg_root/pack
-[[ -x $pack/ffmpeg ]] || die "no packed ffmpeg at $pack/ffmpeg (set FFMPEG_ROOT)"
+[[ -x $pack/ffmpeg ]] || die "no packed ffmpeg at $pack/ffmpeg (set FFMPEG_BUILD_DIR)"
 [[ -f $icon ]] || die "no icon at $icon (set YMUSIC_V4_DIR)"
 command -v patchelf > /dev/null || die "patchelf is missing"
 
 if [[ $build == 1 ]]; then
     cargo_profile=()
     [[ $profile == release ]] && cargo_profile=(--release --features production)
-    (cd "$root" && YMUSIC_V4_DIR=$v4 FFMPEG_ROOT=$ffmpeg_root cargo build ${cargo_profile[@]+"${cargo_profile[@]}"} -p ymusic)
+    (cd "$root" && YMUSIC_V4_DIR=$v4 FFMPEG_BUILD_DIR=$ffmpeg_build cargo build ${cargo_profile[@]+"${cargo_profile[@]}"} -p ymusic)
 fi
 binary=$target_dir/$profile/ymusic
 [[ -f $binary ]] || die "no $profile binary at $binary"

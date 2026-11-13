@@ -1,5 +1,5 @@
 //! Builds YMusicV4's `:mse` C host (MSE over ffmpeg, the audio DAC, video decode + presenters)
-//! against the shared libav in `ffmpeg-build/out/<slug>`. Exports the lib dir as
+//! against the shared libav in `$FFMPEG_BUILD_DIR/out/<slug>`. Exports the lib dir as
 //! `DEP_MSEHOST_FFMPEG_LIB` so executables can add it as an rpath.
 
 use std::path::PathBuf;
@@ -37,7 +37,7 @@ const LIBAV: &[&str] = &["avformat", "avcodec", "swscale", "swresample", "avutil
 
 fn main() {
     println!("cargo:rerun-if-env-changed=YMUSIC_V4_DIR");
-    println!("cargo:rerun-if-env-changed=FFMPEG_ROOT");
+    println!("cargo:rerun-if-env-changed=FFMPEG_BUILD_DIR");
     let v4 = PathBuf::from(std::env::var("YMUSIC_V4_DIR").expect("YMUSIC_V4_DIR (set in .cargo/config.toml)"));
     let native = v4.join("mse/native");
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap();
@@ -51,10 +51,14 @@ fn main() {
     };
     let apple = target_os == "macos";
     let windows = target_os == "windows";
-    let ffmpeg = std::env::var("FFMPEG_ROOT")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| v4.parent().unwrap().join("ffmpeg-build/out").join(&slug));
-    assert!(ffmpeg.join("include").is_dir(), "no ffmpeg build at {} (set FFMPEG_ROOT)", ffmpeg.display());
+    let ffmpeg_build =
+        PathBuf::from(std::env::var("FFMPEG_BUILD_DIR").expect("FFMPEG_BUILD_DIR (set in .cargo/config.toml)"));
+    let ffmpeg = ffmpeg_build.join("out").join(&slug);
+    assert!(
+        ffmpeg.join("include").is_dir(),
+        "no ffmpeg build at {} (run scripts/build-desktop.sh in ffmpeg-build, or set FFMPEG_BUILD_DIR)",
+        ffmpeg.display()
+    );
 
     let production = if std::env::var("PROFILE").as_deref() == Ok("release") { "1" } else { "0" };
     let mut c = cc::Build::new();

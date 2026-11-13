@@ -55,6 +55,10 @@ Needs Rust 1.99.1, and:
 - **Linux**: `libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libxcb1-dev libfreetype-dev libfontconfig-dev libpulse-dev libvulkan-dev`.
 - **Windows**: the `x86_64-pc-windows-gnu` toolchain with MSYS2's MinGW gcc on `PATH` (arm64: `aarch64-pc-windows-gnullvm` with CLANGARM64's clang).
 
+The two sibling checkouts are found through `YMUSIC_V4_DIR` and `FFMPEG_BUILD_DIR`, set in
+`.cargo/config.toml` to `../YMusicV4` and `../ffmpeg-build`; an environment variable of the same name
+points elsewhere.
+
 Debug builds keep their own data dir, apart from the installed app's `~/.ymusic`; `YMUSIC_DATA_DIR`
 picks another. Without a `secret.properties` (keys in `secret.properties.example`) the app runs on
 its embedded bundles, with no config service, QR sign-in, self-update or crash reports.
