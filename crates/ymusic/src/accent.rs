@@ -125,6 +125,46 @@ pub fn accent_color(saved: &str) -> Hsla {
     accent_rgb(saved).hsla()
 }
 
+/// Compose's `lerp(start, stop, fraction)`: interpolated in Oklab, opaque.
+pub fn oklab_lerp(start: Hsla, stop: Hsla, fraction: f32) -> Hsla {
+    let (from, to) = (oklab(start.to_rgb()), oklab(stop.to_rgb()));
+    let fraction = f64::from(fraction);
+    let mixed: [f64; 3] = std::array::from_fn(|axis| from[axis] + (to[axis] - from[axis]) * fraction);
+    from_oklab(mixed).into()
+}
+
+fn oklab(color: Rgba) -> [f64; 3] {
+    let linear = |value: f32| {
+        let value = f64::from(value);
+        if value <= 0.04045 { value / 12.92 } else { ((value + 0.055) / 1.055).powf(2.4) }
+    };
+    let (red, green, blue) = (linear(color.r), linear(color.g), linear(color.b));
+    let long = (0.4122214708 * red + 0.5363325363 * green + 0.0514459929 * blue).cbrt();
+    let medium = (0.2119034982 * red + 0.6806995451 * green + 0.1073969566 * blue).cbrt();
+    let short = (0.0883024619 * red + 0.2817188376 * green + 0.6299787005 * blue).cbrt();
+    [
+        0.2104542553 * long + 0.7936177850 * medium - 0.0040720468 * short,
+        1.9779984951 * long - 2.4285922050 * medium + 0.4505937099 * short,
+        0.0259040371 * long + 0.7827717662 * medium - 0.8086757660 * short,
+    ]
+}
+
+fn from_oklab([lightness, green_red, blue_yellow]: [f64; 3]) -> Rgba {
+    let long = (lightness + 0.3963377774 * green_red + 0.2158037573 * blue_yellow).powi(3);
+    let medium = (lightness - 0.1055613458 * green_red - 0.0638541728 * blue_yellow).powi(3);
+    let short = (lightness - 0.0894841775 * green_red - 1.2914855480 * blue_yellow).powi(3);
+    let encoded = |value: f64| {
+        let value = if value <= 0.0031308 { value * 12.92 } else { 1.055 * value.powf(1. / 2.4) - 0.055 };
+        value.clamp(0., 1.) as f32
+    };
+    Rgba {
+        r: encoded(4.0767416621 * long - 3.3077115913 * medium + 0.2309699292 * short),
+        g: encoded(-1.2684380046 * long + 2.6097574011 * medium - 0.3413193965 * short),
+        b: encoded(-0.0041960863 * long - 0.7034186147 * medium + 1.7076147010 * short),
+        a: 1.,
+    }
+}
+
 fn accent_rgb(saved: &str) -> Rgb {
     Rgb::parse(saved).map(Rgb::darkened).unwrap_or(DEFAULT_ACCENT)
 }

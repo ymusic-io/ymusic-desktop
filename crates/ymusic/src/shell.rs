@@ -1785,6 +1785,8 @@ impl Shell {
     fn section_entry(&self, section: Section, labelled: bool, icon_start: f32, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme();
         let selected = self.section == section;
+        let container = *cx.global::<crate::settings_view::AccentTones>();
+        let hover = theme.primary.opacity(HOVER_ALPHA);
         let entry = div()
             .id(("section", section.id() as usize))
             .role(Role::Tab)
@@ -1792,12 +1794,12 @@ impl Shell {
             .aria_selected(selected)
             .cursor_pointer()
             .relative()
-            .when(selected, |entry| entry.bg(theme.secondary))
-            .hover(|style| style.bg(theme.primary.opacity(HOVER_ALPHA)))
+            .when(selected, |entry| entry.bg(container.ground))
+            .hover(move |style| style.bg(if selected { container.ground.blend(hover) } else { hover }))
             .on_click(cx.listener(move |shell, _, _, cx| shell.select_section(section, cx)));
         let position = Section::groups(self.guest).iter().flatten().position(|entry| *entry == section);
         let entry = self.nav_focus.item(position.unwrap_or(0), entry, cx);
-        let tint = if selected { theme.primary } else { theme.foreground };
+        let tint = if selected { container.ink } else { theme.foreground };
         if !labelled {
             return entry
                 .size(px(48.))
@@ -1823,7 +1825,7 @@ impl Shell {
                             .flex_1()
                             .truncate()
                             .text_color(tint)
-                            .when(selected, |label| label.font_bold())
+                            .when(selected, |label| label.font_extrabold())
                             .child(section.label()),
                     ),
             )

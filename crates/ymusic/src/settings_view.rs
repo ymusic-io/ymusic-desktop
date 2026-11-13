@@ -16,7 +16,7 @@ use ym_i18n::{Str, t, tf};
 use ym_settings::SettingsStore;
 
 use crate::a11y::FocusList;
-use crate::accent::{ACCENT_KEY, AccentPicker, accent_color};
+use crate::accent::{ACCENT_KEY, AccentPicker, accent_color, oklab_lerp};
 use crate::caption_style::{CaptionLook, CaptionStyleDialog};
 use crate::downloads::download_folder;
 use crate::feedback_view::link;
@@ -62,6 +62,7 @@ fn apply_theme(choice: &str, accent: &str, cx: &mut App) {
     let ui_font = linux_ui_font(cx);
     let mut tones = ChromeTones { flat: black(), lifted: black(), dialog: black() };
     let mut stack = StackTones { near: black(), far: black(), tab: black() };
+    let mut container = AccentTones { ground: black(), ink: black() };
     Theme::update(cx, |theme| {
         if let Some(font) = ui_font {
             theme.font_family = font;
@@ -112,10 +113,26 @@ fn apply_theme(choice: &str, accent: &str, cx: &mut App) {
         let dialog = if theme.mode.is_dark() { palette.surface_dim } else { palette.surface_elevated };
         tones = ChromeTones { flat: palette.surface, lifted: palette.surface_elevated, dialog };
         stack = StackTones { near: palette.stack_near, far: palette.stack_far, tab: palette.stack_tab };
+        container = if theme.mode.is_dark() {
+            AccentTones { ground: oklab_lerp(palette.surface, accent, 0.3), ink: oklab_lerp(accent, white(), 0.35) }
+        } else {
+            AccentTones { ground: oklab_lerp(palette.surface, accent, 0.15), ink: oklab_lerp(accent, black(), 0.4) }
+        };
     });
     cx.set_global(tones);
     cx.set_global(stack);
+    cx.set_global(container);
 }
+
+/// The JVM app's `primaryContainer` / `onPrimaryContainer`: a selected rail or drawer entry, the
+/// armed sleep timer card.
+#[derive(Clone, Copy)]
+pub struct AccentTones {
+    pub ground: Hsla,
+    pub ink: Hsla,
+}
+
+impl Global for AccentTones {}
 
 /// The bars' grounds: flat over a page at its top, lifted while the page is scrolled from it, and a
 /// dialog's title and button bars.

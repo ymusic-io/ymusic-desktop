@@ -191,9 +191,11 @@ impl SleepTimerDialog {
                 cx,
             ),
         );
+        let container = *cx.global::<crate::settings_view::AccentTones>();
         v_flex()
             .rounded(px(12.))
-            .bg(theme.secondary)
+            .bg(container.ground)
+            .text_color(container.ink)
             .pl_4()
             .pr_1()
             .pt_4()
