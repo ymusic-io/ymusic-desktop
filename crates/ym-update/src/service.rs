@@ -239,10 +239,11 @@ impl UpdateService {
         }
     }
 
-    /// Runs the downloaded installer. `true`: the new version is starting and the caller must exit
-    /// at once. `false`: nothing changed (not ready, or the admin prompt was declined), and the state
-    /// is again whatever the config offers now.
-    pub async fn install(self: &Arc<Self>) -> bool {
+    /// Runs the downloaded installer. `before_relaunch` runs (blocking pool) once the install is
+    /// certain to go ahead, before the new version can start. `true`: the new version is starting
+    /// and the caller must exit at once. `false`: nothing changed (not ready, or the admin prompt was
+    /// declined), and the state is again whatever the config offers now.
+    pub async fn install(self: &Arc<Self>, before_relaunch: impl Fn() + Send + 'static) -> bool {
         let (update, file) = {
             let mut inner = self.inner.lock().unwrap();
             if inner.installing.is_some() {
@@ -263,7 +264,7 @@ impl UpdateService {
         };
         let release = release_of(&update);
         let (installer, installing, target) = (self.config.installer.clone(), update.clone(), file.clone());
-        let result = tokio::task::spawn_blocking(move || installer.install(&target, &installing))
+        let result = tokio::task::spawn_blocking(move || installer.install(&target, &installing, &before_relaunch))
             .await
             .unwrap_or_else(|error| Err(InstallError::Failed(format!("installer task failed: {error}"))));
         let failure = match result {

@@ -48,7 +48,7 @@ impl Installer for WindowsSetupInstaller {
         self.launcher.is_none().then_some(Blocked::NotInstalled)
     }
 
-    fn install(&self, file: &Path, _update: &AppUpdate) -> Result<bool, InstallError> {
+    fn install(&self, file: &Path, _update: &AppUpdate, before_relaunch: &dyn Fn()) -> Result<bool, InstallError> {
         let launcher = self.launcher.as_deref().ok_or(InstallError::NotInstalled)?;
         let script = file.parent().ok_or(InstallError::NotInstalled)?.join("install-update.ps1");
         std::fs::write(&script, SCRIPT)?;
@@ -64,6 +64,8 @@ impl Installer for WindowsSetupInstaller {
             .arg(launcher);
         detach(&mut command);
         command.spawn()?;
+        // The step waits for this process to exit, so nothing starts before the hook has run.
+        before_relaunch();
         Ok(true)
     }
 }

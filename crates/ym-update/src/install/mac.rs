@@ -37,7 +37,7 @@ impl Installer for MacDmgInstaller {
         None
     }
 
-    fn install(&self, file: &Path, update: &AppUpdate) -> Result<bool, InstallError> {
+    fn install(&self, file: &Path, update: &AppUpdate, before_relaunch: &dyn Fn()) -> Result<bool, InstallError> {
         let bundle = self.bundle.as_deref().ok_or(InstallError::NotInstalled)?;
         let parent = bundle.parent().ok_or(InstallError::NotInstalled)?;
         let name = bundle.file_name().ok_or(InstallError::NotInstalled)?.to_string_lossy();
@@ -79,6 +79,7 @@ impl Installer for MacDmgInstaller {
         for variable in &self.relaunch_env {
             open.arg("--env").arg(variable);
         }
+        before_relaunch();
         open.arg(bundle).spawn()?;
         Ok(true)
     }

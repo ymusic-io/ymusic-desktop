@@ -39,7 +39,7 @@ impl Installer for LinuxDebInstaller {
         None
     }
 
-    fn install(&self, file: &Path, update: &AppUpdate) -> Result<bool, InstallError> {
+    fn install(&self, file: &Path, update: &AppUpdate, before_relaunch: &dyn Fn()) -> Result<bool, InstallError> {
         let launcher = self.launcher.as_deref().ok_or(InstallError::NotInstalled)?;
         let file = std::path::absolute(file)?;
         let file = file.to_str().ok_or_else(|| InstallError::Failed("installer path is not UTF-8".into()))?;
@@ -60,6 +60,7 @@ impl Installer for LinuxDebInstaller {
             }
             return Err(InstallError::Failed(failure));
         }
+        before_relaunch();
         Command::new(launcher).spawn()?;
         Ok(true)
     }

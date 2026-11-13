@@ -172,16 +172,14 @@ pub fn sync_prompt(window: &mut Window, cx: &mut App) {
 }
 
 /// Runs the ready installer and quits for the new version (two copies would fight over the data
-/// dir, and the Windows setup waits for this process to exit).
+/// dir, and the Windows setup waits for this process to exit). Hand-offs stop before the new version
+/// starts: it must wait for this process to exit, not hand its launch to it.
 fn install_and_restart(cx: &mut App) {
     let Some(service) = cx.global::<AppGraph>().updates.clone() else { return };
-    let started = on_core(cx, async move { service.install().await });
+    let started = on_core(cx, async move { service.install(crate::instance::stop_accepting).await });
     cx.spawn(async move |cx| {
         if started.await == Some(true) {
-            cx.update(|cx| {
-                crate::instance::stop_accepting();
-                cx.quit();
-            });
+            cx.update(|cx| cx.quit());
         }
     })
     .detach();

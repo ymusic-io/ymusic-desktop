@@ -45,10 +45,11 @@ pub trait Installer: Send + Sync {
     /// `None` when an in-place update is possible here.
     fn blocked(&self) -> Option<Blocked>;
 
-    /// Installs `file`, already checked against `update`'s signed hash. Blocking. `Ok(true)`: the
-    /// new version is starting and this process must exit now. `Ok(false)`: the user declined the
-    /// admin prompt and nothing changed.
-    fn install(&self, file: &Path, update: &AppUpdate) -> Result<bool, InstallError>;
+    /// Installs `file`, already checked against `update`'s signed hash. Blocking. `before_relaunch`
+    /// runs once the install is certain to go ahead, before the new version can start. `Ok(true)`:
+    /// the new version is starting and this process must exit now. `Ok(false)`: the user declined
+    /// the admin prompt and nothing changed.
+    fn install(&self, file: &Path, update: &AppUpdate, before_relaunch: &dyn Fn()) -> Result<bool, InstallError>;
 }
 
 /// `macos-arm64`, `windows-x64`, `linux-x64`: the key the config service publishes releases by.
