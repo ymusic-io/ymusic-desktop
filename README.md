@@ -1,39 +1,61 @@
-# ymusic-rust
+# ymusic-desktop
 
-The YMusic desktop app in Rust: a Rust core under a [gpui-kit](https://gpui-kit.com) UI. Plan and
-milestones: [`PLAN.md`](PLAN.md).
+YMusicV4 Desktop written in Rust.
 
 ## Build
 
-Needs a YMusicV4 checkout next to this one (or `YMUSIC_V4_DIR` pointing at it): the C sources
-(QuickJS, MSE) and the engine bundle come from there.
+The three checkouts sit side by side:
 
-```sh
-cargo run -p ymusic
+```
+projects/
+├── ffmpeg-build/     the libav the app links and the ffmpeg it packs
+├── YMusicV4/         C sources, engine bundles, strings, version
+└── ymusic-desktop/   this repo
 ```
 
-macOS needs Xcode's Metal toolchain (gpui compiles its shaders at build time).
-
-## Package (macOS)
+### 1. ffmpeg
 
 ```sh
-tools/bundle-macos.sh            # → target/bundle/YMusic.app
+git clone --recursive --shallow-submodules https://github.com/ymusic-io/ffmpeg-build.git
+cd ffmpeg-build && scripts/build-desktop.sh      # → out/<os>-<arch>
 ```
 
-Builds `--release` and assembles `YMusic.app` (bundle id `io.ymusic.desktop.rust`): `ymusic://` links,
-media files under Open With (rank Alternate), the icon from YMusicV4, and the libav dylibs
-(`Contents/Frameworks`) plus the packed `ffmpeg` (`Contents/MacOS`, where downloads look first)
-relinked to load only from the bundle. Signed ad-hoc unless `CODESIGN_IDENTITY` names an identity
-(then with the hardened runtime); not notarized.
+Needs nasm, autoconf, automake, libtool, pkg-config, meson and ninja. On Windows, run it in MSYS2
+MINGW64 (arm64: CLANGARM64 with `HOST_CC=clang`).
 
-A release build keeps the cookie key in the login Keychain. An ad-hoc signature changes with every
-build, so a rebuilt bundle stops at launch, before any window, on a Keychain access prompt for the item
-an earlier build created. To try a bundle without touching your profile, give it a throwaway `HOME`
-(release builds ignore `YMUSIC_DATA_DIR`), which also hides the login Keychain, and unregister it
-afterwards so `ymusic://` links don't route to a stale copy (macOS still writes
-`~/Library/Preferences/io.ymusic.desktop.rust.plist`):
+### 2. Engine bundles
 
 ```sh
-open -n --env HOME=/tmp/ym-home target/bundle/YMusic.app
-/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -u target/bundle/YMusic.app
+git clone https://github.com/ymusic-io/YMusicV4.git
+cd YMusicV4 && ./gradlew :engine-js:closureJs :engine-js:closurePlayerJs      # → engine-js/build/dist
 ```
+
+Needs JDK 21, Node 22 and the Android SDK.
+
+### 3. The app
+
+```sh
+git clone https://github.com/ymusic-io/ymusic-desktop.git
+cd ymusic-desktop && cargo run -p ymusic
+```
+
+Needs Rust 1.99.1, and:
+
+- **macOS**: Xcode with its Metal toolchain.
+- **Linux**: `libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libxcb1-dev libfreetype-dev libfontconfig-dev libpulse-dev libvulkan-dev`.
+- **Windows**: the `x86_64-pc-windows-gnu` toolchain with MSYS2's MinGW gcc on `PATH` (arm64: `aarch64-pc-windows-gnullvm` with CLANGARM64's clang).
+
+Debug builds keep their own data dir, apart from the installed app's `~/.ymusic`; `YMUSIC_DATA_DIR`
+picks another. Without a `secret.properties` (keys in `secret.properties.example`) the app runs on
+its embedded bundles, with no config service, QR sign-in, self-update or crash reports.
+
+### Packages
+
+```sh
+tools/bundle-macos.sh --dmg                 # DMG
+tools/package-linux.sh --deb --appimage     # .deb + AppImage
+tools/package-windows.sh --setup            # installer, needs Inno Setup
+```
+
+Releases come from YMusicV4's release workflow, which builds this repo as its `ymusic-desktop`
+submodule.
