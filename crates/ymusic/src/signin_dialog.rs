@@ -58,8 +58,12 @@ pub struct SignInView {
     /// Signed in; the password step is up, or about to be built.
     protecting: bool,
     protect: Option<(Entity<ProtectStep>, Subscription)>,
-    /// The bar's and the page's text and buttons.
+    /// The bar's and the page's buttons.
     focus: FocusList,
+    /// The title takes focus once, as the page opens, so the screen reader says where it is; it is
+    /// no Tab stop.
+    title_focus: FocusHandle,
+    title_focused: bool,
     _link: Option<Task<()>>,
 }
 
@@ -79,6 +83,8 @@ impl SignInView {
             protecting: false,
             protect: None,
             focus: FocusList::new(None),
+            title_focus: cx.focus_handle(),
+            title_focused: false,
             _link: None,
         };
         if !guest {
@@ -279,8 +285,8 @@ impl SignInView {
         };
         let ended = matches!(self.link, Link::Ended);
         vec![
-            label("signin-qr-title", t(Str::SigninQrTitle)).text_center().font_semibold().into_any_element(),
-            label("signin-qr-hint", t(Str::SigninQrHint))
+            announced("signin-qr-title", t(Str::SigninQrTitle)).text_center().font_semibold().into_any_element(),
+            announced("signin-qr-hint", t(Str::SigninQrHint))
                 .text_center()
                 .text_sm()
                 .text_color(theme.muted_foreground)
@@ -362,7 +368,7 @@ impl SignInView {
         let theme = cx.theme().clone();
         let blank = self.paste.read(cx).value().trim().is_empty();
         vec![
-            label("signin-paste-title", t(Str::SigninOrPaste)).text_center().font_semibold().into_any_element(),
+            announced("signin-paste-title", t(Str::SigninOrPaste)).text_center().font_semibold().into_any_element(),
             self.guide.clone().into_any_element(),
             v_flex()
                 .w_full()
@@ -407,6 +413,11 @@ impl Render for SignInView {
         if let Some(step) = self.protect_step(window, cx) {
             return step.into_any_element();
         }
+        if !self.title_focused {
+            self.title_focused = true;
+            let title = self.title_focus.clone();
+            window.defer(cx, move |window, cx| window.focus(&title, cx));
+        }
         let theme = cx.theme().clone();
         let bar = h_flex()
             .px_2()
@@ -421,10 +432,12 @@ impl Render for SignInView {
                     cx,
                 ),
             )
-            .child(heading("signin-heading", 2, t(Str::SigninScreenTitle)).font_semibold());
+            .child(
+                heading("signin-heading", 1, t(Str::SigninScreenTitle)).track_focus(&self.title_focus).font_semibold(),
+            );
         let content = match (&self.link, self.paste_mode) {
             (Link::Unavailable, _) => vec![
-                label("signin-unavailable", t(Str::SigninUnavailable))
+                announced("signin-unavailable", t(Str::SigninUnavailable))
                     .text_center()
                     .text_color(theme.muted_foreground)
                     .into_any_element(),
