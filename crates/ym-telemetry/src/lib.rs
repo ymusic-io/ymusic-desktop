@@ -15,7 +15,7 @@ use std::collections::BTreeMap;
 use std::error::Error;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, UNIX_EPOCH};
 
 use sentry::protocol::{
     Attachment, Breadcrumb, Context, DeviceContext, Event, Level as SentryLevel, OsContext, TraceContext, TraceId,
@@ -168,6 +168,8 @@ impl Telemetry {
             // The contexts integration fills in the host name, which can carry the user's name.
             event.server_name = None;
             lean_contexts(&mut event);
+            // The trail rides in last but happened first.
+            event.breadcrumbs.values.sort_by_key(|breadcrumb| breadcrumb.timestamp);
             stamp_tags(&mut event);
             trim_panic_frames(&mut event);
             if let Some(trace_id) = log_shipper::launch_trace() {
@@ -275,13 +277,6 @@ impl LogSink for SentrySink {
                 if let Some(code) = &code {
                     scope.set_tag(CODE_TAG, code);
                 }
-                for crumb in trail {
-                    if let Some(props) = &crumb.props {
-                        for (key, value) in props {
-                            scope.set_extra(&format!("{}.{key}", crumb.tag), value.clone());
-                        }
-                    }
-                }
                 if !extras.props.is_empty() {
                     let props = extras.props.iter().map(|(key, value)| (key.clone(), value.clone())).collect();
                     scope.set_context("capture", Context::Other(props));
@@ -295,6 +290,16 @@ impl LogSink for SentrySink {
                 }
             },
             || {
+                // As the JVM app: each hop a breadcrumb stamped when it was entered, its props as data,
+                // on this capture's scope only.
+                for crumb in trail {
+                    sentry::add_breadcrumb(Breadcrumb {
+                        timestamp: UNIX_EPOCH + Duration::from_millis(crumb.at_millis.max(0) as u64),
+                        message: Some(crumb.tag.clone()),
+                        data: crumb.props.iter().flatten().map(|(key, value)| (key.clone(), value.clone())).collect(),
+                        ..Default::default()
+                    });
+                }
                 let mut event = sentry::event_from_error(error);
                 event.message = Some(message.to_owned());
                 event.level = SentryLevel::Error;
