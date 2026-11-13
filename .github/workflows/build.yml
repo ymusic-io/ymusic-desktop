@@ -2,13 +2,11 @@ name: build
 
 # The desktop packages, in the shapes the JVM app's updater installs over its own: macOS DMGs
 # (tools/bundle-macos.sh), Windows Inno Setup installers (tools/package-windows.sh) and Linux .debs
-# plus AppImages (tools/package-linux.sh), each for arm64 and x86_64. Run by a release tag, as
-# YMusicV4's release workflow (git tag release-v4.1.0 && git push <remote> release-v4.1.0), or by
-# hand from the Actions tab. The checkouts sit side by side (ymusic-desktop/ + YMusicV4/ +
+# plus AppImages (tools/package-linux.sh), each for arm64 and x86_64. Test builds, by hand from the
+# Actions tab: releases come from YMusicV4's release workflow, which builds this repo as its
+# submodule against the tagged commit. The checkouts sit side by side (ymusic-desktop/ + YMusicV4/ +
 # ffmpeg-build/), as on a developer machine.
 on:
-  push:
-    tags: ['release-*', 'prerelease-*']
   workflow_dispatch:
     inputs:
       ymusic_v4_ref:
