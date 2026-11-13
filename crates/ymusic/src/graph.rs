@@ -283,8 +283,11 @@ impl AppGraph {
         Ok(graph)
     }
 
-    /// The engine new work goes to; hold it for one job.
+    /// The engine new work goes to; hold it for one job. Each job also refreshes a stale config,
+    /// which brings a newer bundle or app release to a running app.
     pub fn engine(&self) -> Arc<DynamicEngine> {
+        let remote = self.remote.clone();
+        self.tokio.spawn(async move { remote.check_update(BUNDLE_CONFIG_MAX_AGE).await });
         self.engines.current()
     }
 

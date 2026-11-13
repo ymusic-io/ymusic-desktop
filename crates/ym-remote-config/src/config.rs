@@ -189,7 +189,7 @@ impl RemoteConfig {
     pub async fn check_update(&self, max_age: Duration) {
         let Some(identity) = &self.identity else { return };
         let now = now_millis();
-        if now - self.current().updated_at < max_age.as_millis() as i64 {
+        if now - self.sender.borrow().updated_at < max_age.as_millis() as i64 {
             return;
         }
         let Ok(_guard) = self.in_flight.try_lock() else { return };
