@@ -1,5 +1,5 @@
-//! The self-update UI (JVM `UpdateDialog.kt` / `DesktopAppUpdates.kt`) over `ym_update`: the update
-//! prompt, "Check for update", and install-and-restart.
+//! The self-update UI (JVM `UpdateDialog.kt` / `DesktopAppUpdates.kt` / `UpgradeNotice.kt`) over
+//! `ym_update`: the update prompt, "Check for update", install-and-restart, and the "updated" notice.
 //!
 //! The prompt shows the version, its brief notes, the full changelog, and what the user's own
 //! download is doing. A background download stays invisible until it is ready; "Download" joins,
@@ -13,12 +13,13 @@ use std::time::Duration;
 use futures::StreamExt;
 use futures::channel::mpsc;
 use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::notification::Notification;
 use gpui_kit::component::progress::Progress;
 use gpui_kit::component::{ActiveTheme, Icon, IconName, Sizable, StyledExt, WindowExt, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use ym_i18n::{Str, t, tf};
-use ym_settings::SettingsStore;
+use ym_settings::{AppDb, SettingsStore};
 use ym_update::{Blocked, Failure, UpdatePrefs, UpdateService, UpdateState};
 
 use crate::a11y::{FocusList, focusable};
@@ -33,6 +34,8 @@ type OnPress = Box<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
 /// The JVM app's keys.
 const AUTO_DOWNLOAD_KEY: &str = "update.autoDownload";
 const AUTO_DOWNLOAD_FAILED_KEY: &str = "update.autoDownloadFailed";
+/// The versionCode of the last launch (0 = none recorded).
+const LAST_RUN_VERSION_KEY: &str = "update.lastRunVersionCode";
 /// How long "Check for update" waits for the config service.
 const CHECK_TIMEOUT: Duration = Duration::from_secs(3);
 
@@ -60,6 +63,62 @@ pub fn relaunch_env() -> Vec<String> {
         .filter(|(name, _)| name == "YMUSIC_DATA_DIR" || name.starts_with("YMUSIC_DEV_"))
         .map(|(name, value)| format!("{name}={value}"))
         .collect()
+}
+
+/// Whether this launch is the first of a newer version, decided once per process from the last
+/// recorded launch: a fresh install (settings that started empty) is never "updated", while an
+/// install that predates the record is.
+pub struct UpgradeNotice {
+    previous: i32,
+    pending: bool,
+}
+
+impl Global for UpgradeNotice {}
+
+impl UpgradeNotice {
+    /// Before anything this launch writes a setting.
+    pub fn read(settings: &AppDb) -> Self {
+        let previous = settings.int(LAST_RUN_VERSION_KEY, 0).unwrap_or(0);
+        Self { previous, pending: crate::graph::APP_VERSION > previous && settings.has_settings() }
+    }
+}
+
+/// Records this launch's versionCode, and on the first launch after an update says "YMusic updated
+/// to X" with View changelog. Once per process.
+pub fn show_upgrade_notice(window: &mut Window, cx: &mut App) {
+    if !cx.has_global::<UpgradeNotice>() {
+        return;
+    }
+    let notice = cx.global_mut::<UpgradeNotice>();
+    let (previous, pending) = (notice.previous, std::mem::take(&mut notice.pending));
+    notice.previous = crate::graph::APP_VERSION;
+    let graph = cx.global::<AppGraph>();
+    if previous != crate::graph::APP_VERSION {
+        let (settings, log) = (graph.settings.clone(), graph.log.fork("update"));
+        graph.tokio.spawn_blocking(move || {
+            if let Err(error) = settings.put_raw(LAST_RUN_VERSION_KEY, crate::graph::APP_VERSION.to_string()) {
+                log.warn("R90306 setting update.lastRunVersionCode not saved", Some(error.as_ref()));
+            }
+        });
+    }
+    if !pending {
+        return;
+    }
+    let changelog = crate::feedback_view::link(graph, "changelogUrl", crate::settings_view::CHANGELOG_URL);
+    let notification = Notification::new()
+        .message(tf(Str::UpgradedMessage, &[&crate::graph::APP_VERSION_NAME]))
+        .action(move |_, _, cx| {
+            let changelog = changelog.clone();
+            Button::new("upgrade-changelog").primary().label(t(Str::UpgradedViewChangelog)).on_click(cx.listener(
+                move |notification, _, window, cx| {
+                    cx.open_url(&changelog);
+                    notification.dismiss(window, cx);
+                },
+            ))
+        })
+        // `action` turns autohide off; a hover or keyboard focus on the toast still pauses it.
+        .autohide(true);
+    window.push_notification(notification, cx);
 }
 
 /// The update state the UI renders, with this run's "Ask later" and "Download" taps.

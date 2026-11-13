@@ -136,6 +136,7 @@ R90302 - self-update: the installer download failed (disk I/O other than full st
 R90303 - self-update: the installer failed to run (DMG copy, signature check, bundle swap, setup or apt)
 R90304 - self-update: the installer download was refused (non-2xx HTTP status)
 R90305 - self-update: another package manager held the dpkg lock past the wait (Linux)
+R90306 - self-update: update.lastRunVersionCode could not be saved to app.db (logged; the "updated" notice may show again next launch)
 R90750 - usage stats: an event could not be appended to stat-queue.json (logged; still queued in memory)
 R90751 - usage stats: POST /v1/pulse failed (logged; the queue waits for the next flush)
 R90752 - usage stats: stat-queue.json was not rewritten after a send (logged; a restart may resend)

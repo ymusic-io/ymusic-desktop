@@ -36,7 +36,7 @@ const AUTO_UPDATE_KEY: &str = "update.autoDownload";
 pub const SHOW_FPS_KEY: &str = "debug.showFps";
 const SOURCE_CODE_URL: &str = "https://github.com/ymusic-io/YMusicV4";
 const TERMS_URL: &str = "https://github.com/ymusic-io/YMusicV4/blob/master/TERMS.md";
-const CHANGELOG_URL: &str = "https://github.com/ymusic-io/YMusicV4/blob/master/CHANGELOG.md";
+pub const CHANGELOG_URL: &str = "https://github.com/ymusic-io/YMusicV4/blob/master/CHANGELOG.md";
 
 /// The saved theme: unset is dark (as in the JVM app), blank follows the system.
 fn saved_theme(settings: &dyn SettingsStore) -> String {

@@ -511,6 +511,7 @@ impl Shell {
         let tray_state = cx.observe(&playback, |shell, _, cx| shell.update_tray(cx));
         Self::listen_incoming(window, cx);
         crate::app_update::start(window, cx);
+        window.defer(cx, crate::app_update::show_upgrade_notice);
         crate::video_layer::forward_accessibility_focus(window);
         window.on_next_frame(|window, _| crate::video_layer::sync_accessibility_focus(window));
         // A window minimized to the tray can come back from the dock too.

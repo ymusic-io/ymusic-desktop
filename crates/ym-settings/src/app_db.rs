@@ -93,6 +93,10 @@ impl AppDb {
         Ok(())
     }
 
+    pub fn has_settings(&self) -> bool {
+        !self.settings.lock().unwrap().is_empty()
+    }
+
     /// Blocking.
     pub fn delete_setting(&self, key: &str) -> rusqlite::Result<()> {
         self.db.lock().unwrap().execute("DELETE FROM setting WHERE key = ?1", params![key])?;

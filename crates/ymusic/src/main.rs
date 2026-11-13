@@ -143,6 +143,7 @@ fn main() {
     let local_art = std::sync::Arc::new(crate::local_art::LocalArt::new(data_dir.join("art-cache"), log.fork("art")));
     let app_db = graph::open_app_db(&data_dir).unwrap_or_else(|error| boot_failed(&log, &error));
     crate::data_files::import_legacy_files(&app_db, &data_dir, &log);
+    let upgrade_notice = crate::app_update::UpgradeNotice::read(&app_db);
     let opened = crate::cookie_session::open(app_db.clone(), &data_dir, &log).unwrap_or_else(|error| {
         boot_failed(&log, &ym_engine::EngineError::site("R98000", format!("cookie store: {error}")))
     });
@@ -251,6 +252,7 @@ fn main() {
             Start::Locked(locked, inputs, log_setup) => Some((locked, inputs, log_setup)),
         };
         cx.set_global(app_logs);
+        cx.set_global(upgrade_notice);
         let options = WindowOptions {
             window_bounds: Some(window_bounds),
             // Windows hides the native caption: the app draws its title bar (`win_title_bar`).
