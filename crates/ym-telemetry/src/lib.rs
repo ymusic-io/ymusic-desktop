@@ -6,10 +6,11 @@ mod feedback;
 
 pub use feedback::{FeedbackError, FeedbackReport, send_feedback};
 
+use std::borrow::Cow;
 use std::error::Error;
 use std::sync::Arc;
 
-use sentry::protocol::{Attachment, Breadcrumb, Level as SentryLevel};
+use sentry::protocol::{Attachment, Breadcrumb, Event, Level as SentryLevel};
 use ym_common::log::{Crumb, Level, LogSink};
 use ym_logstore::LogStore;
 
@@ -151,10 +152,26 @@ impl LogSink for SentrySink {
                 let mut event = sentry::event_from_error(error);
                 event.message = Some(message.to_owned());
                 event.level = SentryLevel::Error;
+                if let Some(fingerprint) = fingerprint(code.as_deref(), &path, &event) {
+                    event.fingerprint = fingerprint.into_iter().map(Cow::Owned).collect::<Vec<_>>().into();
+                }
                 sentry::capture_event(event);
             },
         );
     }
+}
+
+/// The JVM app's grouping: a site code is one throw site, one issue; an uncoded error groups by its
+/// type within its trail, so one failure shape in two subsystems stays two issues.
+fn fingerprint(code: Option<&str>, trail: &str, event: &Event<'_>) -> Option<Vec<String>> {
+    if let Some(code) = code {
+        return Some(vec![code.to_owned()]);
+    }
+    if trail.is_empty() {
+        return None;
+    }
+    let kind = event.exception.values.last().map_or("error", |exception| exception.ty.as_str());
+    Some(vec![kind.to_owned(), trail.to_owned()])
 }
 
 /// A uniform 0..1 draw for sampling; quality is irrelevant.
