@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Builds the release ymusic on Windows (Git Bash, MinGW gcc on PATH) and stages the app folder:
-# YMusic.exe, the packed ffmpeg.exe and the libav / MinGW runtime DLLs beside it. --setup also
+# Builds the release ymusic on Windows (Git Bash; MinGW gcc, or clang on arm64, on PATH) and stages
+# the app folder: YMusic.exe, the packed ffmpeg.exe and the libav / MinGW runtime DLLs beside it,
+# plus any runtime DLL the executable imports from the compiler's bin folder. --setup also
 # compiles the Inno Setup installer that the JVM app's updater runs over its own install
 # (tools/windows/ymusic.iss), named as the release asset YMusic-<version>-windows-<x64|arm64>-setup.exe.
 #
@@ -33,8 +34,9 @@ done
 
 die() { echo "package-windows: $*" >&2; exit 1; }
 v4=$(cd "${YMUSIC_V4_DIR:-$root/../YMusicV4}" && pwd)
-case $(uname -m) in
-    aarch64 | arm64) arch=arm64; inno_arch=arm64 ;;
+# rustc's host, not uname: Git Bash may run emulated as x64 on an arm64 machine.
+case $(rustc -vV | sed -n 's/^host: //p') in
+    aarch64-*) arch=arm64; inno_arch=arm64 ;;
     *) arch=x86_64; inno_arch=x64compatible ;;
 esac
 asset_arch=$([[ $arch == arm64 ]] && echo arm64 || echo x64)
@@ -44,7 +46,8 @@ out=${out:-$target_dir/bundle}
 icon=$v4/desktopApp/ymusic.ico
 [[ -f $ffmpeg_root/pack/ffmpeg.exe ]] || die "no packed ffmpeg at $ffmpeg_root/pack/ffmpeg.exe (set FFMPEG_ROOT)"
 [[ -f $icon ]] || die "no icon at $icon (set YMUSIC_V4_DIR)"
-command -v gcc > /dev/null || die "no MinGW gcc on PATH (the C sources need GCC/Clang)"
+compiler=$(command -v gcc || command -v clang) || die "no MinGW gcc or clang on PATH (the C sources need GCC/Clang)"
+objdump=$(command -v objdump || command -v llvm-objdump) || die "no objdump or llvm-objdump on PATH"
 
 if [[ $build == 1 ]]; then
     cargo_profile=()
@@ -62,9 +65,11 @@ rm -rf "$app"
 mkdir -p "$app"
 cp "$binary" "$app/$APP_NAME.exe"
 cp "$ffmpeg_root"/pack/*.dll "$ffmpeg_root/pack/ffmpeg.exe" "$app/"
-# Every DLL the executable imports is shipped here or part of Windows (api-ms-win-* are API sets).
-missing=$(objdump -p "$app/$APP_NAME.exe" | sed -n 's/^\s*DLL Name: //p' | while read -r dll; do
-    [[ $dll == api-ms-win-* || -f $app/$dll || -f /c/Windows/System32/$dll ]] || echo "$dll"
+# Every DLL the executable imports is shipped here or part of Windows (api-ms-win-* are API sets);
+# a toolchain runtime the ffmpeg pack lacks (libunwind.dll under clang) comes from beside the compiler.
+missing=$("$objdump" -p "$app/$APP_NAME.exe" | sed -n 's/^\s*DLL Name: //p' | while read -r dll; do
+    [[ $dll == api-ms-win-* || -f $app/$dll || -f /c/Windows/System32/$dll ]] && continue
+    if [[ -f $(dirname "$compiler")/$dll ]]; then cp "$(dirname "$compiler")/$dll" "$app/"; else echo "$dll"; fi
 done)
 [[ -z $missing ]] || die "imports neither shipped nor in System32: $missing"
 echo "package-windows: $app"
