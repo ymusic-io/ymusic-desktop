@@ -1,6 +1,7 @@
 //! The Feedback screen's report: one anonymous event titled "Feedback: <subject>" carrying the app
 //! log, found in triage by its device id; a message also goes to the feedback inbox, linked to it.
 
+use std::borrow::Cow;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -125,8 +126,14 @@ pub fn send_feedback(
             ..Default::default()
         });
     }
-    let event =
+    let mut event =
         Event { message: Some(format!("Feedback: {}", report.subject)), level: Level::Info, ..Default::default() };
+    // As the JVM app's: every report is its own issue, with the app's tags, on its launch's trace.
+    event.fingerprint = vec![Cow::Borrowed("feedback"), Cow::Owned(event.event_id.simple().to_string())].into();
+    crate::stamp_tags(&mut event);
+    if let Some(trace_id) = crate::log_shipper::launch_trace() {
+        crate::link_trace(&mut event, trace_id);
+    }
     let event_id = client.capture_event(event, Some(&scope));
     if event_id.is_nil() {
         return Err(FeedbackError::Dropped);
