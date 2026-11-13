@@ -8,7 +8,7 @@ use std::{
     ffi::CString,
     sync::{
         Arc,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
     time::Duration,
 };
@@ -75,6 +75,14 @@ impl MediaControls {
         Ok(())
     }
 
+    /// Set the playback rate the OS extrapolates the position at (1.0 is normal speed); Now
+    /// Playing reports 0 while paused.
+    pub fn set_rate(&mut self, rate: f64) -> Result<(), Error> {
+        RATE_BITS.store(rate.to_bits(), Ordering::SeqCst);
+        unsafe { merge_playback_rate() };
+        Ok(())
+    }
+
     /// Publish the current shuffle state and enable its remote command.
     ///
     /// Available on macOS/iOS. Call after [`Self::attach`]. `None` disables
@@ -132,6 +140,20 @@ unsafe extern "C" {
     static MPMediaItemPropertyArtwork: Id; // NSString
     static MPMediaItemPropertyPlaybackDuration: Id; // NSString
     static MPNowPlayingInfoPropertyElapsedPlaybackTime: Id; // NSString
+    static MPNowPlayingInfoPropertyPlaybackRate: Id; // NSString
+}
+
+/// The rate `set_rate` last set, as f64 bits (1.0 until then).
+static RATE_BITS: AtomicU64 = AtomicU64::new(0x3FF0_0000_0000_0000);
+static PLAYING: AtomicBool = AtomicBool::new(false);
+
+/// What Now Playing extrapolates the position at: the rate while playing, else 0.
+fn published_rate() -> f64 {
+    if PLAYING.load(Ordering::SeqCst) {
+        f64::from_bits(RATE_BITS.load(Ordering::SeqCst))
+    } else {
+        0.0
+    }
 }
 
 unsafe fn set_playback_status(playback: MediaPlayback) {
@@ -142,6 +164,7 @@ unsafe fn set_playback_status(playback: MediaPlayback) {
             MediaPlayback::Paused { .. } => MPNowPlayingPlaybackStatePaused,
             MediaPlayback::Playing { .. } => MPNowPlayingPlaybackStatePlaying,
         };
+        PLAYING.store(matches!(playback, MediaPlayback::Playing { .. }), Ordering::SeqCst);
         let _: () = msg_send!(media_center, setPlaybackState: state);
         if let MediaPlayback::Paused {
             progress: Some(progress),
@@ -152,6 +175,23 @@ unsafe fn set_playback_status(playback: MediaPlayback) {
         {
             set_playback_progress(progress.0);
         }
+        merge_playback_rate();
+    }
+}
+
+/// Into the info already published; with none yet the rate waits for the next metadata.
+unsafe fn merge_playback_rate() {
+    unsafe {
+        let media_center: Id = msg_send!(class!(MPNowPlayingInfoCenter), defaultCenter);
+        let prev_now_playing: Id = msg_send!(media_center, nowPlayingInfo);
+        if prev_now_playing.is_null() {
+            return;
+        }
+        let now_playing: Id = msg_send!(class!(NSMutableDictionary), dictionary);
+        let _: () = msg_send!(now_playing, addEntriesFromDictionary: prev_now_playing);
+        let _: () = msg_send!(now_playing, setObject: ns_number(published_rate())
+                                              forKey: MPNowPlayingInfoPropertyPlaybackRate);
+        let _: () = msg_send!(media_center, setNowPlayingInfo: now_playing);
     }
 }
 
@@ -188,6 +228,8 @@ unsafe fn set_playback_metadata(metadata: MediaMetadata) {
             let _: () = msg_send!(now_playing, setObject: ns_number(duration.as_secs_f64())
                                                   forKey: MPMediaItemPropertyPlaybackDuration);
         }
+        let _: () = msg_send!(now_playing, setObject: ns_number(published_rate())
+                                              forKey: MPNowPlayingInfoPropertyPlaybackRate);
         let _: () = msg_send!(media_center, setNowPlayingInfo: now_playing);
         if let Some(cover_url) = metadata.cover_url {
             let cover_url = cover_url.to_owned();

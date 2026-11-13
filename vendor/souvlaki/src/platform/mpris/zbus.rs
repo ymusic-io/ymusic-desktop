@@ -34,14 +34,20 @@ enum InternalEvent {
     ChangeMetadata(OwnedMetadata),
     ChangePlayback(MediaPlayback),
     ChangeVolume(f64),
+    ChangeRate(f64),
     Kill,
 }
+
+/// The rates a player may report: the app's speed range.
+const MINIMUM_RATE: f64 = 0.25;
+const MAXIMUM_RATE: f64 = 4.0;
 
 #[derive(Clone, Debug)]
 struct ServiceState {
     metadata: OwnedMetadata,
     playback_status: MediaPlayback,
     volume: f64,
+    rate: f64,
 }
 
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
@@ -130,6 +136,12 @@ impl MediaControls {
     /// Set the volume level (0.0 - 1.0) (Only available on MPRIS)
     pub fn set_volume(&mut self, volume: f64) -> Result<(), Error> {
         self.send_internal_event(InternalEvent::ChangeVolume(volume))?;
+        Ok(())
+    }
+
+    /// Set the playback rate the OS extrapolates the position at (1.0 is normal speed).
+    pub fn set_rate(&mut self, rate: f64) -> Result<(), Error> {
+        self.send_internal_event(InternalEvent::ChangeRate(rate.clamp(MINIMUM_RATE, MAXIMUM_RATE)))?;
         Ok(())
     }
 
@@ -272,7 +284,7 @@ impl PlayerInterface {
 
     #[zbus(property)]
     fn rate(&self) -> f64 {
-        1.0
+        self.state.rate
     }
 
     #[zbus(property)]
@@ -344,12 +356,12 @@ impl PlayerInterface {
 
     #[zbus(property)]
     fn minimum_rate(&self) -> f64 {
-        1.0
+        MINIMUM_RATE
     }
 
     #[zbus(property)]
     fn maximum_rate(&self) -> f64 {
-        1.0
+        MAXIMUM_RATE
     }
 
     #[zbus(property)]
@@ -399,6 +411,7 @@ async fn run_service(
             metadata: OwnedMetadata::default(),
             playback_status: MediaPlayback::Stopped,
             volume: 1.0,
+            rate: 1.0,
         },
         event_handler,
     };
@@ -437,6 +450,10 @@ async fn run_service(
                 InternalEvent::ChangeVolume(volume) => {
                     interface.state.volume = volume;
                     interface.volume_changed(&ctxt).await?;
+                }
+                InternalEvent::ChangeRate(rate) => {
+                    interface.state.rate = rate;
+                    interface.rate_changed(&ctxt).await?;
                 }
                 InternalEvent::Kill => (),
             }

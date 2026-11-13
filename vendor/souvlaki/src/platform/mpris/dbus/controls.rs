@@ -31,8 +31,13 @@ enum InternalEvent {
     ChangeMetadata(OwnedMetadata),
     ChangePlayback(MediaPlayback),
     ChangeVolume(f64),
+    ChangeRate(f64),
     Kill,
 }
+
+/// The rates a player may report: the app's speed range.
+pub const MINIMUM_RATE: f64 = 0.25;
+pub const MAXIMUM_RATE: f64 = 4.0;
 
 #[derive(Debug)]
 pub struct ServiceState {
@@ -40,6 +45,7 @@ pub struct ServiceState {
     pub metadata_dict: HashMap<String, Variant<Box<dyn RefArg>>>,
     pub playback_status: MediaPlayback,
     pub volume: f64,
+    pub rate: f64,
 }
 
 impl ServiceState {
@@ -190,6 +196,11 @@ impl MediaControls {
         self.send_internal_event(InternalEvent::ChangeVolume(volume))
     }
 
+    /// Set the playback rate the OS extrapolates the position at (1.0 is normal speed).
+    pub fn set_rate(&mut self, rate: f64) -> Result<(), Error> {
+        self.send_internal_event(InternalEvent::ChangeRate(rate.clamp(MINIMUM_RATE, MAXIMUM_RATE)))
+    }
+
     fn send_internal_event(&mut self, event: InternalEvent) -> Result<(), Error> {
         let thread = &self.thread.as_ref().ok_or(Error::ThreadNotRunning)?;
         thread
@@ -213,6 +224,7 @@ where
         metadata_dict: create_metadata_dict(&Default::default()),
         playback_status: MediaPlayback::Stopped,
         volume: 1.0,
+        rate: 1.0,
     }));
     let event_handler = Arc::new(Mutex::new(event_handler));
     let seeked_signal = Arc::new(Mutex::new(None));
@@ -257,6 +269,11 @@ where
                     let mut state = state.lock().unwrap();
                     state.volume = volume;
                     changed_properties.insert("Volume".to_owned(), Variant(Box::new(volume)));
+                }
+                InternalEvent::ChangeRate(rate) => {
+                    let mut state = state.lock().unwrap();
+                    state.rate = rate;
+                    changed_properties.insert("Rate".to_owned(), Variant(Box::new(rate)));
                 }
                 _ => (),
             }

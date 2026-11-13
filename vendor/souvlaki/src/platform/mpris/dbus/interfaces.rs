@@ -136,7 +136,12 @@ where
             })
             .emits_changed_true();
 
-        b.property("Rate").get(|_, _| Ok(1.0)).emits_changed_true();
+        b.property("Rate")
+            .get({
+                let state = state.clone();
+                move |_, _| Ok(state.lock().unwrap().rate)
+            })
+            .emits_changed_true();
 
         b.property("Metadata")
             .get({
@@ -182,10 +187,10 @@ where
         });
 
         b.property("MinimumRate")
-            .get(|_, _| Ok(1.0))
+            .get(|_, _| Ok(super::controls::MINIMUM_RATE))
             .emits_changed_true();
         b.property("MaximumRate")
-            .get(|_, _| Ok(1.0))
+            .get(|_, _| Ok(super::controls::MAXIMUM_RATE))
             .emits_changed_true();
 
         b.property("CanGoNext")

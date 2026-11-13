@@ -43,4 +43,9 @@ impl MediaControls {
     pub fn set_metadata(&mut self, _metadata: MediaMetadata) -> Result<(), Error> {
         Ok(())
     }
+
+    /// Set the playback rate the OS extrapolates the position at (1.0 is normal speed).
+    pub fn set_rate(&mut self, _rate: f64) -> Result<(), Error> {
+        Ok(())
+    }
 }

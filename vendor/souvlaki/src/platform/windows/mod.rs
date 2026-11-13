@@ -177,6 +177,12 @@ impl MediaControls {
         Ok(())
     }
 
+    /// Set the playback rate the OS extrapolates the position at (1.0 is normal speed).
+    pub fn set_rate(&mut self, rate: f64) -> Result<(), Error> {
+        self.controls.SetPlaybackRate(rate)?;
+        Ok(())
+    }
+
     /// Set the metadata of the currently playing media item.
     pub fn set_metadata(&mut self, metadata: MediaMetadata) -> Result<(), Error> {
         let properties = self.display_updater.MusicProperties()?;
