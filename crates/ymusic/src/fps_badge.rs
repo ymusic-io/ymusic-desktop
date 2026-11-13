@@ -66,19 +66,21 @@ impl FpsBadge {
                     let enabled = cx.global::<AppGraph>().settings.get_raw(SHOW_FPS_KEY).ok().flatten().as_deref()
                         == Some("true");
                     let playback = playback.read(cx);
-                    let host = playback.video_host().filter(|_| enabled && playback.is_playing());
+                    let counter = playback.frame_counter().filter(|_| enabled && playback.is_playing());
                     let item = playback.current().map(|item| format!("{:?}", item.source));
                     let graph = cx.global::<AppGraph>();
-                    host.map(|host| (host, item, graph.tokio.clone(), graph.log.fork("fps")))
+                    counter.map(|counter| (counter, item, graph.tokio.clone(), graph.log.fork("fps")))
                 });
                 let label = match sample {
                     None => {
                         counts.last_shown = None;
                         None
                     }
-                    Some((host, item, tokio, log)) => {
-                        match tokio.spawn_blocking(move || (host.video_quality(), host.video_decoder())).await {
-                            Ok(((shown, dropped), decoder)) => counts.add(item, shown, dropped, decoder),
+                    Some((counter, item, tokio, log)) => {
+                        match tokio.spawn_blocking(move || counter.read()).await {
+                            Ok(Some((shown, dropped, decoder))) => counts.add(item, shown, dropped, decoder),
+                            // A busy player answers nothing: the shown label stands.
+                            Ok(None) => continue,
                             Err(error) => {
                                 log.warn("video quality read failed", Some(&error));
                                 None

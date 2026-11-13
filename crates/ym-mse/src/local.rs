@@ -23,6 +23,7 @@ unsafe extern "C" {
     fn file_av_set_virtualizer(player: *mut c_void, width: f32);
     fn file_av_set_preamp(player: *mut c_void, db: f32);
     fn file_av_pcm_levels(player: *mut c_void, out: *mut f32, count: c_int) -> c_int;
+    fn file_av_frames(player: *mut c_void) -> c_int;
     fn file_av_bind_presenter(player: *mut c_void, presenter: *mut c_void);
     fn file_av_duration(player: *mut c_void) -> f64;
     fn file_av_position(player: *mut c_void) -> f64;
@@ -141,6 +142,12 @@ impl LocalAv {
         let filled = unsafe { file_av_pcm_levels(self.raw, out.as_mut_ptr(), count as c_int) };
         out.truncate(filled.max(0) as usize);
         out
+    }
+
+    /// Pictures the presenter showed.
+    pub fn frames(&self) -> i32 {
+        // SAFETY: `raw` is live for as long as `self`.
+        unsafe { file_av_frames(self.raw) }
     }
 
     pub fn bind_presenter(&mut self, presenter: Option<&Presenter>) {

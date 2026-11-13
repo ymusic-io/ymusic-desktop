@@ -191,6 +191,26 @@ impl LevelTap {
     }
 }
 
+/// Where Settings → Show FPS reads the shown video's picture counts.
+pub enum FrameCounter {
+    YouTube(Arc<ym_mse::MseHost>),
+    Local(LocalLevelTap),
+}
+
+impl FrameCounter {
+    /// Pictures shown, pictures dropped and the video decoder; blocking. The local player counts
+    /// no drops and names no decoder, as in the JVM app.
+    pub fn read(&self) -> Option<(i32, i32, Option<String>)> {
+        match self {
+            Self::YouTube(host) => {
+                let (shown, dropped) = host.video_quality();
+                Some((shown, dropped, host.video_decoder()))
+            }
+            Self::Local(tap) => tap.frames().map(|shown| (shown, 0, None)),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Active {
     YouTube,
@@ -369,9 +389,15 @@ impl Playback {
     }
 
     /// The MSE host while it shows the current item's video.
-    pub fn video_host(&self) -> Option<Arc<ym_mse::MseHost>> {
-        let showing = self.active == Some(Active::YouTube) && self.video && !self.video_hidden;
-        self.session.as_ref().filter(|_| showing).map(|session| session.host.clone())
+    /// The counter of the video on screen, for either engine.
+    pub fn frame_counter(&self) -> Option<FrameCounter> {
+        if !self.video || self.video_hidden {
+            return None;
+        }
+        match self.active? {
+            Active::YouTube => self.session.as_ref().map(|session| FrameCounter::YouTube(session.host.clone())),
+            Active::Local => self.local.as_ref().map(|local| FrameCounter::Local(local.level_tap())),
+        }
     }
 
     pub fn is_playing(&self) -> bool {

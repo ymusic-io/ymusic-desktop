@@ -23,6 +23,8 @@ pub enum LocalCommand {
     Presenter(Option<Arc<Presenter>>),
     /// The spectrum of what plays now, `count` bars.
     Levels(usize, mpsc::Sender<Vec<f32>>),
+    /// Pictures shown since the file opened.
+    Frames(mpsc::Sender<i32>),
     Stop,
 }
 
@@ -92,6 +94,13 @@ impl LocalLevelTap {
         }
         levels.recv_timeout(LEVELS_WAIT).unwrap_or_default()
     }
+
+    /// Pictures shown since the file opened; None when the player thread is gone or busy.
+    pub fn frames(&self) -> Option<i32> {
+        let (reply, frames) = mpsc::channel();
+        self.commands.send(LocalCommand::Frames(reply)).ok()?;
+        frames.recv_timeout(LEVELS_WAIT).ok()
+    }
 }
 
 fn run(mut player: LocalAv, commands: mpsc::Receiver<LocalCommand>, status: Arc<Mutex<LocalStatus>>) {
@@ -160,6 +169,9 @@ fn run(mut player: LocalAv, commands: mpsc::Receiver<LocalCommand>, status: Arc<
                 LocalCommand::Presenter(presenter) => player.bind_presenter(presenter.as_deref()),
                 LocalCommand::Levels(count, reply) => {
                     let _ = reply.send(if loaded { player.levels(count) } else { Vec::new() });
+                }
+                LocalCommand::Frames(reply) => {
+                    let _ = reply.send(if loaded { player.frames() } else { 0 });
                 }
                 LocalCommand::Stop => {
                     player.pause();
