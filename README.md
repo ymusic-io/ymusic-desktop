@@ -2,6 +2,16 @@
 
 YMusicV4 Desktop written in Rust.
 
+## Download
+
+From the [YMusicV4 releases](https://github.com/ymusic-io/YMusicV4/releases/latest):
+
+| Platform | Architectures | Package |
+| --- | --- | --- |
+| macOS 11 or later | Apple silicon, Intel | `.dmg` |
+| Windows 10 or later | x64, arm64 | `-setup.exe` |
+| Linux, glibc 2.35 or later (Ubuntu 22.04, Debian 12) | x86_64, arm64 | `.deb`, `.AppImage` |
+
 ## Build
 
 The three checkouts sit side by side:
