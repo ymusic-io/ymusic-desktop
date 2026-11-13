@@ -855,7 +855,7 @@ pub enum TrayCommand {
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 pub struct Tray {
-    icon: tray_icon::TrayIcon,
+    icon: std::mem::ManuallyDrop<tray_icon::TrayIcon>,
     open: tray_icon::menu::MenuItem,
     toggle: tray_icon::menu::MenuItem,
     stop: tray_icon::menu::MenuItem,
@@ -868,6 +868,19 @@ pub struct Tray {
     /// The status item's NSImage: the logo at [`TRAY_POINTS`], a representation per scale.
     #[cfg(target_os = "macos")]
     image: objc2::rc::Retained<objc2::runtime::AnyObject>,
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+impl Drop for Tray {
+    fn drop(&mut self) {
+        // Hidden on Windows, the icon is already out of the notification area; tray-icon's drop would
+        // delete it again and print an error. Its hidden window goes with the process.
+        if cfg!(target_os = "windows") && !self.visible {
+            return;
+        }
+        // SAFETY: dropped once, here, and never used again.
+        unsafe { std::mem::ManuallyDrop::drop(&mut self.icon) };
+    }
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -939,7 +952,7 @@ impl Tray {
             _ => {}
         }));
         let tray = Self {
-            icon: tray,
+            icon: std::mem::ManuallyDrop::new(tray),
             open,
             toggle,
             stop,
