@@ -46,8 +46,14 @@ out=${out:-$target_dir/bundle}
 icon=$v4/desktopApp/ymusic.ico
 [[ -f $ffmpeg_root/pack/ffmpeg.exe ]] || die "no packed ffmpeg at $ffmpeg_root/pack/ffmpeg.exe (set FFMPEG_ROOT)"
 [[ -f $icon ]] || die "no icon at $icon (set YMUSIC_V4_DIR)"
-compiler=$(command -v gcc || command -v clang) || die "no MinGW gcc or clang on PATH (the C sources need GCC/Clang)"
-objdump=$(command -v objdump || command -v llvm-objdump) || die "no objdump or llvm-objdump on PATH"
+# By arch, not by what PATH has first: a runner may carry another gcc further down its PATH.
+if [[ $arch == arm64 ]]; then
+    compiler=$(command -v clang) || die "no CLANGARM64 clang on PATH (the C sources need GCC/Clang)"
+    objdump=$(command -v llvm-objdump) || die "no llvm-objdump on PATH"
+else
+    compiler=$(command -v gcc) || die "no MinGW gcc on PATH (the C sources need GCC/Clang)"
+    objdump=$(command -v objdump) || die "no objdump on PATH"
+fi
 
 if [[ $build == 1 ]]; then
     cargo_profile=()
