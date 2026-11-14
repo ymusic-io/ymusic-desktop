@@ -68,26 +68,42 @@ fn main() {
     ] {
         println!("cargo:rerun-if-env-changed={variable}");
     }
+    // Set by YMusicV4's release workflow: a shipped build without these could never update again.
+    println!("cargo:rerun-if-env-changed=YMUSIC_REQUIRE_SECRETS");
+    let require = std::env::var("YMUSIC_REQUIRE_SECRETS").is_ok_and(|value| value == "1");
     let secrets = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap()).join("../../secret.properties");
     println!("cargo:rerun-if-changed={}", secrets.display());
-    let Ok(text) = std::fs::read_to_string(&secrets) else { return };
-    for (key, variable) in [
-        ("remote.config.url", "YMUSIC_REMOTE_CONFIG_URL"),
-        ("bundle.signing.public.key", "YMUSIC_BUNDLE_PUBLIC_KEY"),
-        ("update.public.key", "YMUSIC_UPDATE_PUBLIC_KEY"),
-        ("api.key", "YMUSIC_API_KEY"),
-        ("sentry.dsn", "YMUSIC_SENTRY_DSN"),
+    let text = std::fs::read_to_string(&secrets).unwrap_or_default();
+    let mut missing = Vec::new();
+    for (key, variable, required) in [
+        ("remote.config.url", "YMUSIC_REMOTE_CONFIG_URL", true),
+        ("bundle.signing.public.key", "YMUSIC_BUNDLE_PUBLIC_KEY", true),
+        ("update.public.key", "YMUSIC_UPDATE_PUBLIC_KEY", true),
+        ("api.key", "YMUSIC_API_KEY", false),
+        ("sentry.dsn", "YMUSIC_SENTRY_DSN", true),
     ] {
-        if std::env::var_os(variable).is_some() {
+        if let Some(value) = std::env::var_os(variable) {
+            if required && value.is_empty() {
+                missing.push(key);
+            }
             continue;
         }
         let value = text.lines().find_map(|line| {
             let (name, value) = line.split_once('=')?;
             (name.trim() == key).then(|| unescape(value.trim()))
         });
-        if let Some(value) = value.filter(|value| !value.is_empty()) {
-            println!("cargo:rustc-env={variable}={value}");
+        match value.filter(|value| !value.is_empty()) {
+            Some(value) => println!("cargo:rustc-env={variable}={value}"),
+            None if required => missing.push(key),
+            None => {}
         }
+    }
+    if require && !missing.is_empty() {
+        panic!(
+            "YMUSIC_REQUIRE_SECRETS=1, but {} has no {} (nor the matching YMUSIC_* environment variable)",
+            secrets.display(),
+            missing.join(", ")
+        );
     }
 }
 
