@@ -7,6 +7,7 @@
 #
 # usage: tools/bundle-macos.sh [--no-build] [--debug] [--dmg] [--release] [--out <dir>]
 #   --debug    bundle target/debug/ymusic (local update tests; dev hooks stay on)
+#   The release profile also leaves ymusic.dSYM in <out>/debug for the Sentry upload.
 #   --release  the shipped identity: the JVM app's bundle id (its Keychain item and updater carry
 #              over), a DMG, a real signing identity, notarized (the Apple ID inputs are required)
 # env:   YMUSIC_V4_DIR      YMusicV4 checkout (default ../YMusicV4): icon sources, the version line
@@ -64,10 +65,19 @@ min_os=$(sed -n 's/.*const val macosMin = "\([0-9.]*\)".*/\1/p' "$v4/buildSrc/sr
 if [[ $build == 1 ]]; then
     cargo_profile=()
     [[ $profile == release ]] && cargo_profile=(--release --features production)
-    (cd "$root" && MACOSX_DEPLOYMENT_TARGET=$min_os YMUSIC_V4_DIR=$v4 FFMPEG_BUILD_DIR=$ffmpeg_build cargo build ${cargo_profile[@]+"${cargo_profile[@]}"} -p ymusic)
+    # Line tables go into ymusic.dSYM, which Sentry symbolicates with; the binary keeps its symbols only.
+    (cd "$root" && MACOSX_DEPLOYMENT_TARGET=$min_os YMUSIC_V4_DIR=$v4 FFMPEG_BUILD_DIR=$ffmpeg_build \
+        CARGO_PROFILE_RELEASE_DEBUG=line-tables-only CARGO_PROFILE_RELEASE_SPLIT_DEBUGINFO=packed \
+        cargo build ${cargo_profile[@]+"${cargo_profile[@]}"} -p ymusic)
 fi
 binary=$target_dir/$profile/ymusic
 [[ -f $binary ]] || die "no $profile binary at $binary"
+rm -rf "$out/debug"
+if [[ $profile == release ]]; then
+    [[ -d $binary.dSYM ]] || die "no $binary.dSYM (built without CARGO_PROFILE_RELEASE_SPLIT_DEBUGINFO=packed?)"
+    mkdir -p "$out/debug"
+    ditto "$binary.dSYM" "$out/debug/ymusic.dSYM"
+fi
 # The version line the binary reports (crates/ymusic/build.rs reads the same inputs).
 version=${YMUSIC_VERSION_NAME:-$(sed -n 's/^ymusic\.versionName=//p' "$v4/gradle.properties" | tr -d '[:space:]')}
 version_code=${YMUSIC_VERSION_CODE:-$(sed -n 's/^val desktopVersionCode = \([0-9]*\).*/\1/p' "$v4/desktopApp/build.gradle.kts")}

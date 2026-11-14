@@ -7,6 +7,7 @@
 #               same paths (dpkg drops jpackage's leftovers) and the JVM's desktop entry name, so dash
 #               pins and Open With defaults carry over.
 #   --appimage  the same files as an AppImage (AppRun is the executable; its rpath finds the DSOs).
+#   The release profile also leaves the unstripped binary in <out>/debug for the Sentry upload.
 #
 # usage: tools/package-linux.sh [--no-build] [--debug] [--deb] [--appimage] [--out <dir>]
 # env:   YMUSIC_V4_DIR      YMusicV4 checkout (default ../YMusicV4): icon, version line
@@ -64,10 +65,19 @@ command -v patchelf > /dev/null || die "patchelf is missing"
 if [[ $build == 1 ]]; then
     cargo_profile=()
     [[ $profile == release ]] && cargo_profile=(--release --features production)
-    (cd "$root" && YMUSIC_V4_DIR=$v4 FFMPEG_BUILD_DIR=$ffmpeg_build cargo build ${cargo_profile[@]+"${cargo_profile[@]}"} -p ymusic)
+    # Built with line tables; the packaged copy loses them below, the unstripped one goes to Sentry.
+    (cd "$root" && YMUSIC_V4_DIR=$v4 FFMPEG_BUILD_DIR=$ffmpeg_build \
+        CARGO_PROFILE_RELEASE_DEBUG=line-tables-only CARGO_PROFILE_RELEASE_STRIP=none \
+        cargo build ${cargo_profile[@]+"${cargo_profile[@]}"} -p ymusic)
 fi
 binary=$target_dir/$profile/ymusic
 [[ -f $binary ]] || die "no $profile binary at $binary"
+rm -rf "$out/debug"
+if [[ $profile == release ]]; then
+    command -v strip > /dev/null || die "strip is missing"
+    mkdir -p "$out/debug"
+    cp "$binary" "$out/debug/ymusic"
+fi
 version=${YMUSIC_VERSION_NAME:-$(sed -n 's/^ymusic\.versionName=//p' "$v4/gradle.properties" | tr -d '[:space:]')}
 version_code=${YMUSIC_VERSION_CODE:-$(sed -n 's/^val desktopVersionCode = \([0-9]*\).*/\1/p' "$v4/desktopApp/build.gradle.kts")}
 [[ -n $version && -n $version_code ]] || die "no version in $v4 (gradle.properties / desktopApp/build.gradle.kts)"
@@ -77,6 +87,7 @@ stage_app() {
     local bin=$1/bin lib=$1/lib
     mkdir -p "$bin" "$lib"
     cp "$binary" "$bin/$APP_NAME"
+    [[ $profile == release ]] && strip --strip-debug "$bin/$APP_NAME"
     cp "$pack/ffmpeg" "$bin/ffmpeg"
     local file name
     for file in "$pack"/lib*.so.*; do
