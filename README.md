@@ -73,3 +73,9 @@ tools/bundle-macos.sh --dmg                 # DMG
 tools/package-linux.sh --deb --appimage     # .deb + AppImage
 tools/package-windows.sh --setup            # installer, needs Inno Setup
 ```
+
+## License
+
+ymusic-desktop is open source under the [GNU General Public License v3.0](LICENSE), like YMusicV4,
+whose native player, engine bundles and strings it builds in. The vendored gpui crates in `vendor/`
+keep their own Apache-2.0 license ([vendor/README.md](vendor/README.md)).
