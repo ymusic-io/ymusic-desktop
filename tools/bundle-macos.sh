@@ -8,7 +8,7 @@
 # usage: tools/bundle-macos.sh [--no-build] [--debug] [--dmg] [--release] [--out <dir>]
 #   --debug    bundle target/debug/ymusic (local update tests; dev hooks stay on)
 #   --release  the shipped identity: the JVM app's bundle id (its Keychain item and updater carry
-#              over), a DMG, a real signing identity, notarized when the Apple ID inputs are set
+#              over), a DMG, a real signing identity, notarized (the Apple ID inputs are required)
 # env:   YMUSIC_V4_DIR      YMusicV4 checkout (default ../YMusicV4): icon sources, the version line
 #        FFMPEG_BUILD_DIR   ffmpeg-build checkout (default <workspace>/../ffmpeg-build), its out/macos-<arch>
 #        CODESIGN_IDENTITY  default "-" (ad-hoc); a real identity also gets the hardened runtime.
@@ -55,6 +55,8 @@ die() { echo "bundle-macos: $*" >&2; exit 1; }
 [[ -f $v4/desktopApp/ymusic.icns ]] || die "no icon at $v4/desktopApp/ymusic.icns (set YMUSIC_V4_DIR)"
 [[ $release == 1 && $identity == - ]] && die "--release needs CODESIGN_IDENTITY (the JVM app's Developer ID)"
 [[ $release == 1 && $profile == debug ]] && die "--release ships the release profile, not --debug"
+[[ $release == 1 && ( -z ${YMUSIC_MAC_APPLE_ID:-} || -z ${YMUSIC_MAC_APPLE_PASSWORD:-} || -z ${YMUSIC_MAC_TEAM_ID:-} ) ]] &&
+    die "--release needs YMUSIC_MAC_APPLE_ID, YMUSIC_MAC_APPLE_PASSWORD and YMUSIC_MAC_TEAM_ID to notarize"
 # The JVM app's floor: its updater offers this build to every Mac the JVM app runs on.
 min_os=$(sed -n 's/.*const val macosMin = "\([0-9.]*\)".*/\1/p' "$v4/buildSrc/src/main/kotlin/Dependencies.kt")
 [[ -n $min_os ]] || die "no macosMin in $v4/buildSrc/src/main/kotlin/Dependencies.kt"
@@ -248,11 +250,17 @@ hdiutil create -quiet -volname "$APP_NAME" -srcfolder "$staging" -fs HFS+ -forma
 if [[ $identity != - ]]; then
     codesign --force --sign "$identity" --timestamp "$dmg_file"
 fi
-if [[ $release == 1 && -n ${YMUSIC_MAC_APPLE_ID:-} && -n ${YMUSIC_MAC_APPLE_PASSWORD:-} && -n ${YMUSIC_MAC_TEAM_ID:-} ]]; then
-    xcrun notarytool submit "$dmg_file" --apple-id "$YMUSIC_MAC_APPLE_ID" --password "$YMUSIC_MAC_APPLE_PASSWORD" \
-        --team-id "$YMUSIC_MAC_TEAM_ID" --wait
-    # Right after notarytool accepts, stapler can fail to fetch the fresh ticket (exit 68); a rejected
-    # or never-submitted DMG has none, so the retries still fail it.
+if [[ $release == 1 ]]; then
+    notary=(--apple-id "$YMUSIC_MAC_APPLE_ID" --password "$YMUSIC_MAC_APPLE_PASSWORD" --team-id "$YMUSIC_MAC_TEAM_ID")
+    # A rejected submission can exit non-zero too; its id still leads to the log.
+    submission=$(xcrun notarytool submit "$dmg_file" "${notary[@]}" --wait --output-format plist) || true
+    submission_id=$(plutil -extract id raw -o - - <<<"$submission" 2>/dev/null) || die "notarytool submit failed: $submission"
+    status=$(plutil -extract status raw -o - - <<<"$submission" 2>/dev/null) || status=unknown
+    if [[ $status != Accepted ]]; then
+        xcrun notarytool log "$submission_id" "${notary[@]}" >&2 || echo "bundle-macos: no log for $submission_id" >&2
+        die "notarization $submission_id: $status"
+    fi
+    # Right after notarytool accepts, stapler can fail to fetch the fresh ticket (exit 68).
     for attempt in 1 2 3 4 5 6; do
         xcrun stapler staple "$dmg_file" && break
         [[ $attempt == 6 ]] && die "no notarization ticket to staple to $dmg_file"
@@ -260,7 +268,5 @@ if [[ $release == 1 && -n ${YMUSIC_MAC_APPLE_ID:-} && -n ${YMUSIC_MAC_APPLE_PASS
         sleep 30
     done
     xcrun stapler validate "$dmg_file"
-elif [[ $release == 1 ]]; then
-    echo "bundle-macos: not notarized (no YMUSIC_MAC_APPLE_ID / _PASSWORD / _TEAM_ID)" >&2
 fi
 echo "$dmg_file: $(du -sh "$dmg_file" | cut -f1)"
