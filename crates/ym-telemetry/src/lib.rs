@@ -18,7 +18,8 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, UNIX_EPOCH};
 
 use sentry::protocol::{
-    Attachment, Breadcrumb, Context, DeviceContext, Event, Level as SentryLevel, OsContext, TraceContext, TraceId,
+    Attachment, Breadcrumb, Context, DebugImage, DeviceContext, Event, Level as SentryLevel, OsContext, TraceContext,
+    TraceId,
 };
 use ym_common::log::{CaptureExtras, Crumb, Level, LogSink};
 
@@ -106,6 +107,37 @@ fn lean_contexts(event: &mut Event<'_>) {
     }
 }
 
+/// Debug images name the files the app and its libraries load from; under the home folder that path
+/// carries the user's name.
+fn scrub_image_paths(event: &mut Event<'_>) {
+    if event.debug_meta.images.is_empty() {
+        return;
+    }
+    let Some(home) = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
+        .map(|home| home.to_string_lossy().trim_end_matches(['/', '\\']).to_owned())
+        .filter(|home| !home.is_empty())
+    else {
+        return;
+    };
+    let tilde = |path: &mut String| {
+        if path.strip_prefix(home.as_str()).is_some_and(|rest| rest.starts_with(['/', '\\'])) {
+            path.replace_range(..home.len(), "~");
+        }
+    };
+    for image in &mut event.debug_meta.to_mut().images {
+        match image {
+            DebugImage::Symbolic(image) => {
+                tilde(&mut image.name);
+                if let Some(debug_file) = image.debug_file.as_mut() {
+                    tilde(debug_file);
+                }
+            }
+            DebugImage::Apple(image) => tilde(&mut image.name),
+            _ => {}
+        }
+    }
+}
+
 /// Puts the event on its launch's trace, the one its log lines carry.
 fn link_trace(event: &mut Event<'_>, trace_id: TraceId) {
     match event.contexts.get_mut("trace") {
@@ -168,6 +200,7 @@ impl Telemetry {
             // The contexts integration fills in the host name, which can carry the user's name.
             event.server_name = None;
             lean_contexts(&mut event);
+            scrub_image_paths(&mut event);
             // The trail rides in last but happened first.
             event.breadcrumbs.values.sort_by_key(|breadcrumb| breadcrumb.timestamp);
             stamp_tags(&mut event);
